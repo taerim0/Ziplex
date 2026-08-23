@@ -11,7 +11,8 @@ from file.textutil import relative_key as _rel_key
 from text_references import find_text_references_for_file
 from tokenizer import analyze_tokens, analyze_tokens_with_compression
 from file.selector import select_files, review_dangerous_files
-from llm import analyze_file_summary, analyze_rules, analyze_prompt
+from llm import analyze_rules, analyze_prompt
+from summarizer import generate_summaries
 from packager import pack, save_aif
 from corrector import correct_aif
 from edits import finalize_aif
@@ -203,10 +204,16 @@ def main():
 
         print(f"\n📁 분석 대상: {len(safe_files)}개 파일\n")
 
-        # 2. Per-file analysis
+        # 2. Per-file analysis -- delegates to summarizer.generate_summaries(),
+        # the same batched/threaded/retry-once-then-placeholder path pack()
+        # itself uses for its own per-file summaries, instead of a bespoke
+        # one-call-per-file loop with its own separate failure placeholder
+        # ("분석 실패" vs summarizer.SUMMARY_FAILED_PLACEHOLDER). A future fix to
+        # batching/retry/placeholder handling there (see CLAUDE.md's
+        # `summarizer.py` bullet) now applies here too, instead of silently
+        # missing this command the way a hand-rolled duplicate would.
+        pending = {}
         signatures_map = {}
-        summaries = {}
-
         for file in safe_files:
             sigs = extract_signatures(file)
             deps = extract_dependencies(file)
@@ -214,15 +221,11 @@ def main():
             if not sigs and not deps:
                 continue
 
-            print(f"  🔍 {Path(file).name} 분석 중...")
-            summary = analyze_file_summary(file, sigs, deps)
-            try:
-                summary_data = json.loads(summary)
-                summaries[file] = summary_data.get("summary", "분석 실패")
-            except json.JSONDecodeError:
-                summaries[file] = "분석 실패"
-
+            pending[file] = {"signatures": sigs, "dependencies": deps}
             signatures_map[file] = sigs
+
+        print(f"  🔍 {len(pending)}개 파일 분석 중...")
+        summaries = generate_summaries(pending, Path(args.path))
 
         # 3. Extract rules
         print(f"\n  📋 코딩 룰 추출 중...")
