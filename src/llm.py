@@ -7,6 +7,8 @@ from typing import Protocol
 import requests
 from dotenv import load_dotenv
 
+import settings as app_settings
+
 load_dotenv()
 
 
@@ -60,19 +62,44 @@ class GeminiProvider:
     DEFAULT_MODEL = "gemini-flash-latest"
 
     def __init__(self, api_key: str | None = None, model: str | None = None):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        # Not resolved to a final key here -- see _resolve_api_key() below
+        # for why the key specifically (unlike the model) has to stay
+        # re-resolved on every call instead of being baked in once at
+        # construction time.
+        self._explicit_api_key = api_key
         # Precedence: an explicit constructor arg (programmatic/test callers)
         # wins over GEMINI_MODEL (a user's own .env override) wins over
         # DEFAULT_MODEL.
         resolved_model = model or os.getenv("GEMINI_MODEL") or self.DEFAULT_MODEL
         self.url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{resolved_model}:generateContent?key={self.api_key}"
+            f"{resolved_model}:generateContent"
         )
 
+    def _resolve_api_key(self) -> str | None:
+        """Re-resolved on every generate() call, not cached at __init__ time
+        the way the model is -- llm.py's module-level `_provider` singleton
+        (see below) is built once at import and stays alive for the whole
+        process, so a key entered later via the GUI's Options page
+        (settings.py, GUI-editable at runtime) needs to take effect on the
+        very next pack, not only after a restart the way an env var change
+        would require anyway. Precedence: an explicit constructor arg
+        (programmatic/test callers, e.g. GeminiProvider(api_key="x")) wins
+        over settings.py's stored key (the Options page) wins over the
+        GEMINI_API_KEY env var / .env (the pre-existing CLI/power-user
+        path, unaffected either way if neither of the first two is set).
+        """
+        if self._explicit_api_key:
+            return self._explicit_api_key
+        stored = app_settings.resolve_gemini_api_key()
+        if stored:
+            return stored
+        return os.getenv("GEMINI_API_KEY")
+
     def generate(self, prompt: str, retry: int = 5) -> str:
+        api_key = self._resolve_api_key()
         for attempt in range(retry):
-            response = requests.post(self.url, json={
+            response = requests.post(f"{self.url}?key={api_key}", json={
                 "contents": [{"parts": [{"text": prompt}]}]
             })
             data = response.json()

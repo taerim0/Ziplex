@@ -6,7 +6,7 @@ import settings
 def test_load_settings_returns_defaults_when_no_file(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "SETTINGS_PATH", tmp_path / "settings.json")
 
-    assert settings.load_settings() == {"output_dir": "", "project_output_dirs": {}}
+    assert settings.load_settings() == {"output_dir": "", "project_output_dirs": {}, "gemini_api_key": ""}
 
 
 def test_load_settings_falls_back_to_defaults_on_invalid_json(tmp_path, monkeypatch):
@@ -14,7 +14,7 @@ def test_load_settings_falls_back_to_defaults_on_invalid_json(tmp_path, monkeypa
     path.write_text("{not valid json", encoding="utf-8")
     monkeypatch.setattr(settings, "SETTINGS_PATH", path)
 
-    assert settings.load_settings() == {"output_dir": "", "project_output_dirs": {}}
+    assert settings.load_settings() == {"output_dir": "", "project_output_dirs": {}, "gemini_api_key": ""}
 
 
 def test_load_settings_falls_back_to_defaults_when_not_an_object(tmp_path, monkeypatch):
@@ -22,7 +22,7 @@ def test_load_settings_falls_back_to_defaults_when_not_an_object(tmp_path, monke
     path.write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
     monkeypatch.setattr(settings, "SETTINGS_PATH", path)
 
-    assert settings.load_settings() == {"output_dir": "", "project_output_dirs": {}}
+    assert settings.load_settings() == {"output_dir": "", "project_output_dirs": {}, "gemini_api_key": ""}
 
 
 def test_load_settings_ignores_a_non_dict_project_output_dirs(tmp_path, monkeypatch):
@@ -38,9 +38,9 @@ def test_load_settings_ignores_a_non_dict_project_output_dirs(tmp_path, monkeypa
 def test_save_then_load_round_trips(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "SETTINGS_PATH", tmp_path / "nested" / "settings.json")
 
-    settings.save_settings({"output_dir": "D:/out", "project_output_dirs": {"C:/proj": "D:/proj-out"}})
+    settings.save_settings({"output_dir": "D:/out", "project_output_dirs": {"C:/proj": "D:/proj-out"}, "gemini_api_key": "abc123"})
 
-    assert settings.load_settings() == {"output_dir": "D:/out", "project_output_dirs": {"C:/proj": "D:/proj-out"}}
+    assert settings.load_settings() == {"output_dir": "D:/out", "project_output_dirs": {"C:/proj": "D:/proj-out"}, "gemini_api_key": "abc123"}
 
 
 def test_resolve_output_dir_prefers_project_pin_over_global_default(tmp_path, monkeypatch):
@@ -112,3 +112,16 @@ def test_set_project_output_dir_keyed_by_resolved_absolute_path(tmp_path, monkey
     settings.set_project_output_dir(str(project), "D:/pinned")
 
     assert settings.resolve_output_dir(str(project) + "/") == "D:/pinned"
+
+
+def test_resolve_gemini_api_key_returns_empty_string_when_unset(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "SETTINGS_PATH", tmp_path / "settings.json")
+
+    assert settings.resolve_gemini_api_key() == ""
+
+
+def test_resolve_gemini_api_key_returns_the_stored_key(tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    settings.save_settings({"output_dir": "", "project_output_dirs": {}, "gemini_api_key": "my-key"})
+
+    assert settings.resolve_gemini_api_key() == "my-key"

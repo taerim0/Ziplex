@@ -1,16 +1,18 @@
 // The topbar's fourth destination -- see app.js's header comment for the
-// overall module split. Two settings so far: the GUI's own display
+// overall module split. Three settings so far: the GUI's own display
 // language (i18n.js's getLang()/setLang(), localStorage-backed -- purely
-// client-side, so no server round-trip the way the output folder below
-// needs) and the default output folder new packs save to (settings.py's
-// `output_dir`, GET/POST /api/settings) -- ahead of whatever else
-// (per-project freshness checks, translating a *packed project's* own
-// content -- see the roadmap items this GUI reorg is being driven by) end
-// up living here later. Per-project folder pins aren't edited here at
-// all: typing an explicit path in landing.js's renderPackHome() own
-// "출력 경로" field is what sets one (see pack_service.start_pack_job())
-// -- this page only ever touches the global fallback every *unpinned*
-// project follows.
+// client-side, so no server round-trip the way the two below need), the
+// Gemini API key (settings.py's `gemini_api_key`, GET/POST /api/settings
+// -- a global credential, not a per-pack parameter, the same reasoning
+// that put the output folder here instead of on the pack form), and the
+// default output folder new packs save to (settings.py's `output_dir`) --
+// ahead of whatever else (per-project freshness checks, translating a
+// *packed project's* own content -- see the roadmap items this GUI reorg
+// is being driven by) end up living here later. Per-project folder pins
+// aren't edited here at all: typing an explicit path in landing.js's
+// renderPackHome() own "출력 경로" field is what sets one (see
+// pack_service.start_pack_job()) -- this page only ever touches the
+// global fallback every *unpinned* project follows.
 //
 // Imports `route` from router.js, which itself imports renderOptions from
 // here -- a real circular import, safe under ES modules because neither
@@ -31,6 +33,16 @@ export function renderOptions() {
   const saveButton = el("button", { text: t("options.save") });
   const savedNote = el("span", { class: "muted hidden", text: t("options.saved") });
   const errorBox = el("div", { class: "error hidden" });
+
+  // type="password" only masks the field visually (shoulder-surfing) --
+  // GET /api/settings still echoes the real key back in plain JSON so
+  // this field can be prefilled, same trust model as everything else this
+  // GUI already assumes (single-user, 127.0.0.1-only -- see gui_server.py's
+  // own docstring on why that binding choice is load-bearing here).
+  const apiKeyInput = el("input", { type: "password", placeholder: t("options.apiKeyPlaceholder") });
+  const apiKeySaveButton = el("button", { text: t("options.save") });
+  const apiKeySavedNote = el("span", { class: "muted hidden", text: t("options.saved") });
+  const apiKeyErrorBox = el("div", { class: "error hidden" });
 
   // GUI display-language switcher (i18n.js) -- ko/en only for now, easy to
   // add more later since every string in this app is already keyed
@@ -64,6 +76,21 @@ export function renderOptions() {
     }
   });
 
+  apiKeySaveButton.addEventListener("click", async () => {
+    apiKeySavedNote.classList.add("hidden");
+    apiKeyErrorBox.classList.add("hidden");
+    apiKeySaveButton.disabled = true;
+    try {
+      await apiPost("/api/settings", { gemini_api_key: apiKeyInput.value.trim() });
+      apiKeySavedNote.classList.remove("hidden");
+    } catch (e) {
+      apiKeyErrorBox.textContent = e.message;
+      apiKeyErrorBox.classList.remove("hidden");
+    } finally {
+      apiKeySaveButton.disabled = false;
+    }
+  });
+
   app.appendChild(el("div", { class: "landing" }, [
     el("div", { class: "card landing-intro" }, [
       el("h1", { text: t("nav.options") }),
@@ -71,6 +98,13 @@ export function renderOptions() {
     el("div", { class: "card" }, [
       el("h2", { text: t("options.languageTitle") }),
       el("div", { class: "input-row" }, [langSelect]),
+    ]),
+    el("div", { class: "card" }, [
+      el("h2", { text: t("options.apiKeyTitle") }),
+      el("p", { class: "muted", text: t("options.apiKeyDescription") }),
+      el("div", { class: "input-row" }, [apiKeyInput]),
+      el("div", { class: "copy-row" }, [apiKeySaveButton, apiKeySavedNote]),
+      apiKeyErrorBox,
     ]),
     el("div", { class: "card" }, [
       el("h2", { text: t("options.outputDirTitle") }),
@@ -81,5 +115,8 @@ export function renderOptions() {
     ]),
   ]));
 
-  api("/api/settings").then(data => { outputDirInput.value = data.output_dir || ""; }).catch(() => {});
+  api("/api/settings").then(data => {
+    outputDirInput.value = data.output_dir || "";
+    apiKeyInput.value = data.gemini_api_key || "";
+  }).catch(() => {});
 }
