@@ -120,6 +120,37 @@ def test_load_previous_summaries_excludes_a_changed_file(tmp_path):
     assert load_previous_summaries(str(project), [str(project / "a.py")], result_dir) == {}
 
 
+def test_load_previous_summaries_rejects_a_cross_project_basename_collision(tmp_path):
+    # Two different projects that happen to share a result-directory
+    # basename ("backend") must not have one's cached summaries silently
+    # applied to the other, even if a handful of files coincidentally hash-
+    # match (a shared boilerplate .gitignore, an empty __init__.py) -- the
+    # bulk of the *current* project's files are unrecognized by the
+    # previous manifest, which is the signal this isn't a real re-pack.
+    result_dir = tmp_path / "result"
+    result_dir.mkdir()
+    old_project = tmp_path / "acme" / "backend"
+    _write(old_project / "shared.txt", "same content\n")
+    for i in range(5):
+        _write(old_project / f"old_{i}.py", f"old file {i}\n")
+
+    (result_dir / "backend.json").write_text(
+        json.dumps({"files": {"shared.txt": {"summary": "old project's summary"}}}), encoding="utf-8"
+    )
+    old_files = [str(old_project / "shared.txt")] + [str(old_project / f"old_{i}.py") for i in range(5)]
+    (result_dir / "backend.cache.json").write_text(
+        json.dumps(build_manifest(old_files, str(old_project))), encoding="utf-8"
+    )
+
+    new_project = tmp_path / "other" / "backend"
+    _write(new_project / "shared.txt", "same content\n")  # coincidental hash match
+    for i in range(5):
+        _write(new_project / f"new_{i}.py", f"new file {i}\n")
+    new_files = [str(new_project / "shared.txt")] + [str(new_project / f"new_{i}.py") for i in range(5)]
+
+    assert load_previous_summaries(str(new_project), new_files, result_dir) == {}
+
+
 def test_load_previous_summaries_tolerates_a_corrupt_cache_file(tmp_path):
     result_dir = tmp_path / "result"
     result_dir.mkdir()

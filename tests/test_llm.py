@@ -7,6 +7,10 @@ GeminiProvider.__init__'s own comment on why the key specifically has to
 be re-resolved per call instead of cached at construction).
 """
 
+import json
+
+import requests
+
 import llm
 import settings as app_settings
 
@@ -67,3 +71,76 @@ def test_resolve_api_key_re_resolves_on_every_call_not_cached(monkeypatch, tmp_p
 
     app_settings.save_settings({"output_dir": "", "project_output_dirs": {}, "gemini_api_key": "just-saved"})
     assert provider._resolve_api_key() == "just-saved"
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def test_generate_retries_past_a_transport_level_exception(monkeypatch):
+    # A network blip (connection reset, DNS failure, read timeout) used to
+    # propagate straight out of generate() uncaught -- unlike an explicit
+    # 503/429 JSON error response, which was already retried. Must be
+    # retried the same way instead of crashing the whole pack() run.
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def fake_post(url, json):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise requests.exceptions.ConnectionError("simulated network blip")
+        return _FakeResponse({"candidates": [{"content": {"parts": [{"text": '{"summary": "ok"}'}]}}]})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.GeminiProvider(api_key="x")
+
+    result = provider.generate("prompt", retry=3)
+
+    assert result == '{"summary": "ok"}'
+    assert calls["n"] == 2
+
+
+def test_generate_retries_past_a_non_json_response(monkeypatch):
+    # A proxy returning an HTML error page (not JSON at all) raises
+    # JSONDecodeError from response.json() -- same treatment as a
+    # transport-level exception, not an uncaught crash.
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    class _BadJsonResponse:
+        def json(self):
+            raise json.JSONDecodeError("bad", "not json", 0)
+
+    def fake_post(url, json):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _BadJsonResponse()
+        return _FakeResponse({"candidates": [{"content": {"parts": [{"text": '{"summary": "ok"}'}]}}]})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.GeminiProvider(api_key="x")
+
+    result = provider.generate("prompt", retry=3)
+
+    assert result == '{"summary": "ok"}'
+    assert calls["n"] == 2
+
+
+def test_generate_gives_up_gracefully_after_repeated_transport_failures(monkeypatch):
+    # Exhausting every retry on transport failures alone (never even
+    # reaching a real HTTP response) must still return the same "{}"
+    # give-up sentinel every other exhausted-retry path returns, not
+    # propagate the underlying exception to the caller.
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+
+    def always_fails(url, json):
+        raise requests.exceptions.Timeout("simulated timeout")
+
+    monkeypatch.setattr(llm.requests, "post", always_fails)
+    provider = llm.GeminiProvider(api_key="x")
+
+    assert provider.generate("prompt", retry=2) == "{}"
