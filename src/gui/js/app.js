@@ -1,44 +1,44 @@
-// Ziplex GUI frontend, split into a few plain <script> files loaded in
-// order by index.html (app-i18n.js -> app-core.js -> app-graph.js ->
-// app-pack.js -> app-pages.js -> app-router.js) -- no build step, no
-// bundler, no ES modules, so every function here is a plain global shared
-// across all of them, the same as when this all lived in one 1250-line
-// app.js. Load order only matters for the bootstrap at the bottom of
-// app-router.js (the one place anything actually *runs* at top level, via
-// DOMContentLoaded/hashchange) -- every other file is just function/const
-// declarations, safe to load in any relative order as long as app-i18n.js
-// (t()/getLang(), which this file's own strings already call) comes
-// before this one, and this one (the next-lowest-level shared helpers)
-// comes before the rest.
+// Ziplex GUI frontend, real ES modules (native browser support via
+// `<script type="module">` in index.html -- still no bundler, still no
+// build step) instead of the plain-global/load-order-dependent split this
+// used to be. Each file now says exactly what it needs via `import` and
+// exactly what it offers via `export`, instead of every function being an
+// implicit global any other file could reach into, in any load order that
+// happened to put it first.
 //
 // This file: localStorage-backed state (aif_path/project_path/recent-
-// projects list), the api()/apiPost() fetch wrappers, the el()/svgEl()-
+// projects list), the shared `app`/`nav`/`topbar`/`staleBadge` DOM
+// element references, the api()/apiPost() fetch wrappers, the el()-
 // adjacent DOM-builder helpers (el, copyButton, showError, showLoading),
 // the native-picker button family (browseButton and friends, backed by
 // window.pywebview.api -- see gui_server.py's _Api), and the small
-// confidenceLevel()/setStale() display helpers used across every page.
+// confidenceLevel()/setStale()/setActiveNav()/setActiveTopbar() display
+// helpers used across every page. The lowest-level shared module --
+// everything else in js/ imports from this one.
+
+import { t } from "./i18n.js";
 
 const LS_AIF = "ziplex.aif_path";
 const LS_PROJECT = "ziplex.project_path";
 const LS_RECENT = "ziplex.recent"; // JSON array of {aif, project, openedAt}, most recent first
 const RECENT_MAX = 8;
 
-const app = document.getElementById("app");
-const nav = document.getElementById("nav");
-const topbar = document.getElementById("topbar");
-const staleBadge = document.getElementById("stale-badge");
+export const app = document.getElementById("app");
+export const nav = document.getElementById("nav");
+export const topbar = document.getElementById("topbar");
+export const staleBadge = document.getElementById("stale-badge");
 
-function getAif() { return localStorage.getItem(LS_AIF) || ""; }
-function getProject() { return localStorage.getItem(LS_PROJECT) || ""; }
+export function getAif() { return localStorage.getItem(LS_AIF) || ""; }
+export function getProject() { return localStorage.getItem(LS_PROJECT) || ""; }
 
-// "최근 프로젝트" on the landing page (Nielsen's "recognition rather than
+// "최근 프로젝트" on the check page (Nielsen's "recognition rather than
 // recall" -- a returning user shouldn't have to re-type or re-browse-to a
 // path they've already opened once). Keyed by aif_path since that's the
 // one required field; project_path travels alongside it for the freshness
 // check but isn't itself unique. Best-effort: a private window or a
 // browser with site data blocked can throw on either read or write here,
 // and an empty/broken list just means "no recents shown", never a crash.
-function getRecent() {
+export function getRecent() {
   try {
     const raw = JSON.parse(localStorage.getItem(LS_RECENT) || "[]");
     return Array.isArray(raw) ? raw : [];
@@ -54,20 +54,20 @@ function pushRecent(aif, project) {
   } catch { /* storage unavailable -- recent list just stays empty next time */ }
 }
 
-function removeRecent(aif) {
+export function removeRecent(aif) {
   try {
     localStorage.setItem(LS_RECENT, JSON.stringify(getRecent().filter(r => r.aif !== aif)));
   } catch { /* best-effort, see pushRecent */ }
 }
 
-function openProject(aif, project) {
+export function openProject(aif, project) {
   localStorage.setItem(LS_AIF, aif);
   localStorage.setItem(LS_PROJECT, project || "");
   pushRecent(aif, project);
   location.hash = "#/overview";
 }
 
-function relativeTime(ms) {
+export function relativeTime(ms) {
   const mins = Math.round((Date.now() - ms) / 60000);
   if (mins < 1) return t("core.time.justNow");
   if (mins < 60) return t("core.time.minutesAgo", { mins });
@@ -76,7 +76,7 @@ function relativeTime(ms) {
   return t("core.time.daysAgo", { days: Math.round(hours / 24) });
 }
 
-async function api(path, params = {}) {
+export async function api(path, params = {}) {
   const url = new URL(path, location.origin);
   for (const [k, v] of Object.entries(params)) {
     if (v !== null && v !== undefined && v !== "") url.searchParams.set(k, v);
@@ -87,7 +87,7 @@ async function api(path, params = {}) {
   return data;
 }
 
-async function apiPost(path, body = {}) {
+export async function apiPost(path, body = {}) {
   const res = await fetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -98,7 +98,7 @@ async function apiPost(path, body = {}) {
   return data;
 }
 
-function el(tag, attrs = {}, children = []) {
+export function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === "text") node.textContent = v;
@@ -110,7 +110,7 @@ function el(tag, attrs = {}, children = []) {
   return node;
 }
 
-function copyButton(getText, label = t("core.copy")) {
+export function copyButton(getText, label = t("core.copy")) {
   const btn = el("button", { class: "secondary", text: label });
   btn.addEventListener("click", async () => {
     await navigator.clipboard.writeText(getText());
@@ -120,7 +120,7 @@ function copyButton(getText, label = t("core.copy")) {
   return btn;
 }
 
-function showError(err) {
+export function showError(err) {
   app.innerHTML = "";
   app.appendChild(el("div", { class: "error", text: String(err.message || err) }));
 }
@@ -131,7 +131,7 @@ function showError(err) {
 // themselves (another app.innerHTML = "") once real content is ready to
 // render -- same pattern renderSearch's inline "검색 중..." already used,
 // just factored out so every page-level fetch gets it, not just search.
-function showLoading() {
+export function showLoading() {
   app.innerHTML = "";
   app.appendChild(el("p", { class: "muted loading", text: t("core.loading") }));
 }
@@ -160,28 +160,28 @@ function pickerButton(targetInput, apiMethod, label, unavailableMessage) {
   return btn;
 }
 
-function browseButton(targetInput) {
+export function browseButton(targetInput) {
   return pickerButton(targetInput, "choose_folder", t("core.picker.browseFolder"), t("core.picker.unavailable"));
 }
 
 // aif.json 경로: an existing file to open, so this is an OPEN dialog
 // (see gui_server.py's choose_aif_file), filtered to .json.
-function browseAifButton(targetInput) {
+export function browseAifButton(targetInput) {
   return pickerButton(targetInput, "choose_aif_file", t("core.picker.browseFile"), t("core.picker.unavailable"));
 }
 
 // 출력 경로: a file that doesn't necessarily exist yet -- pack's own
 // save_aif() will create it -- so this is a SAVE dialog, not OPEN
 // (see gui_server.py's choose_save_file).
-function browseSaveButton(targetInput) {
+export function browseSaveButton(targetInput) {
   return pickerButton(targetInput, "choose_save_file", t("core.picker.browseFile"), t("core.picker.unavailable"));
 }
 
-function confidenceLevel(conf) {
+export function confidenceLevel(conf) {
   return conf >= 0.67 ? "high" : conf >= 0.34 ? "medium" : "low";
 }
 
-function setStale(stale) {
+export function setStale(stale) {
   if (stale && stale.is_stale) {
     const parts = [];
     if (stale.changed?.length) parts.push(t("core.stale.changed", { n: stale.changed.length }));
@@ -197,10 +197,10 @@ function setStale(stale) {
 // Highlights the current section in the sidebar (see index.html's
 // data-route attributes) -- a sidebar needs a clear "you are here"
 // indicator the way the old top nav-bar's plain hyperlink list never did.
-// Called once from app-router.js's route() per navigation, not from each
+// Called once from router.js's route() per navigation, not from each
 // individual render*() -- keeping "which section is this route" in one
 // place instead of every page needing to know its own nav entry.
-function setActiveNav(routeName) {
+export function setActiveNav(routeName) {
   for (const a of nav.querySelectorAll("a[data-route]")) {
     a.classList.toggle("active", a.dataset.route === routeName);
   }
@@ -214,7 +214,7 @@ function setActiveNav(routeName) {
 // project (Overview/Files/...), since that's the sidebar's own territory,
 // not this bar's. name=null (browsing pages, or any route this bar
 // doesn't own) clears all four rather than leaving a stale one lit.
-function setActiveTopbar(name) {
+export function setActiveTopbar(name) {
   for (const a of topbar.querySelectorAll("a[data-topbar]")) {
     a.classList.toggle("active", a.dataset.topbar === name);
   }

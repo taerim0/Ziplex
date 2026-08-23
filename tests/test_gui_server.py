@@ -56,15 +56,20 @@ def _write_sample_aif(tmp_path):
 def test_index_serves_static_shell(client):
     res = client.get("/")
     assert res.status_code == 200
-    assert b"app-router.js" in res.data
+    assert b'type="module" src="js/router.js"' in res.data
 
 
 def test_static_assets_are_served(client):
-    # app.js used to be one file; split into app-i18n/-core/-graph/-pack/
-    # -pages/-router.js (see src/gui/CLAUDE.md's Frontend section) --
-    # index.html loads all six in that order, each has to actually be
-    # servable.
-    for name in ["app-i18n.js", "app-core.js", "app-graph.js", "app-pack.js", "app-pages.js", "app-router.js"]:
+    # app.js used to be one flat file, then split into six flat app-*.js
+    # files, then (see src/gui/CLAUDE.md's Frontend section) into real ES
+    # modules under js/ -- index.html now loads only js/router.js, but
+    # every module it transitively imports still has to be independently
+    # servable, since the browser fetches each one as its own request.
+    for name in [
+        "js/i18n.js", "js/app.js", "js/graph.js", "js/pack.js", "js/router.js",
+        "js/pages/landing.js", "js/pages/options.js", "js/pages/overview.js",
+        "js/pages/files.js", "js/pages/relationships.js", "js/pages/search.js",
+    ]:
         assert client.get(f"/{name}").status_code == 200, name
     assert client.get("/style.css").status_code == 200
 
@@ -268,7 +273,7 @@ def test_api_pack_no_llm_flag_reaches_pack_service(client, tmp_path, monkeypatch
 def test_api_pack_status_retry_params_can_resume_a_failed_job_over_http(client, tmp_path, monkeypatch):
     # Item 8: the pack-progress screen used to have no way forward at all
     # once a job landed in "error" (a repeated LLM failure) -- retry_params
-    # in /api/pack/status is what app-pack.js's retry button reposts to
+    # in /api/pack/status is what js/pack.js's retry button reposts to
     # /api/pack, and this is the route-level proof that round-trip actually
     # resumes from the checkpoint instead of starting over. pack_service.py's
     # own test suite covers the same behavior below the HTTP layer.

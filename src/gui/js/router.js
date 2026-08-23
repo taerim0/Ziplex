@@ -1,14 +1,22 @@
-// The hash router + page bootstrap, split out of app.js -- see
-// app-core.js's header comment for the overall file split and load order.
-// Loaded last (in index.html's script order) since the two event
-// listeners at the bottom are the only top-level code in this whole
-// split that actually *runs* immediately rather than just declaring a
-// function -- by the time either one can fire, every other script has
-// already finished executing and every render*/applyStaticI18n function
-// it calls exists.
+// The hash router + page bootstrap -- see app.js's header comment for the
+// overall module split. Entry point: index.html loads only this file
+// (`<script type="module" src="js/router.js">`) -- every other module gets
+// pulled in transitively via `import`, so load order is now whatever the
+// import graph resolves rather than something index.html has to get right
+// by listing <script> tags in the correct sequence.
 // ---- router -----------------------------------------------------------
 
-function route() {
+import { getAif, setActiveNav, setActiveTopbar } from "./app.js";
+import { applyStaticI18n } from "./i18n.js";
+import { renderPackJob } from "./pack.js";
+import { renderHome, renderPackHome, renderCheck } from "./pages/landing.js";
+import { renderOptions } from "./pages/options.js";
+import { renderOverview } from "./pages/overview.js";
+import { renderFiles, renderFileDetail } from "./pages/files.js";
+import { renderRelationships } from "./pages/relationships.js";
+import { renderSearch } from "./pages/search.js";
+
+export function route() {
   const raw = location.hash.slice(1) || "/";
   const [path, queryStr] = raw.split("?");
   const params = new URLSearchParams(queryStr || "");
@@ -53,6 +61,6 @@ function route() {
 
 window.addEventListener("hashchange", route);
 window.addEventListener("DOMContentLoaded", () => {
-  applyStaticI18n(); // index.html's own static topbar/sidebar labels (app-i18n.js) -- route() below never touches them
+  applyStaticI18n(); // index.html's own static topbar/sidebar labels (i18n.js) -- route() below never touches them
   route();
 });
