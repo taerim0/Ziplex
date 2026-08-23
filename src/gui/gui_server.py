@@ -111,16 +111,18 @@ def api_config():
 
 @app.route("/api/settings", methods=["GET", "POST"])
 def api_settings():
-    """GET returns settings.py's whole persisted shape (`output_dir` plus
-    `project_output_dirs`, the per-project pins -- see that module's own
-    docstring); the Options page only ever edits `output_dir` (the global
-    default) through here, since a pin is set implicitly by packing with an
-    explicit output path (pack_service.start_pack_job()), not through this
-    route. POST accepts a partial body -- {"output_dir": "..."} alone is the
-    only shape the Options page ever actually sends -- merged onto whatever
-    was already saved rather than requiring the whole shape back, so a
-    caller that only knows about one field can't accidentally wipe the
-    other out.
+    """GET returns settings.py's whole persisted shape (`output_dir`,
+    `project_output_dirs` -- the per-project pins -- and `gemini_api_key`;
+    see that module's own docstring); the Options page only ever edits
+    `output_dir` and `gemini_api_key` through here, since a folder pin is
+    set implicitly by packing with an explicit output path
+    (pack_service.start_pack_job()), not through this route. POST accepts
+    a partial body -- {"output_dir": "..."} or {"gemini_api_key": "..."}
+    alone are the only shapes the Options page ever actually sends --
+    merged onto whatever was already saved rather than requiring the whole
+    shape back, so a caller that only knows about one field can't
+    accidentally wipe another out (`project_output_dirs` in particular,
+    which no request body ever includes at all).
     """
     if request.method == "GET":
         return jsonify(app_settings.load_settings())
@@ -129,6 +131,8 @@ def api_settings():
     current = app_settings.load_settings()
     if "output_dir" in data:
         current["output_dir"] = (data.get("output_dir") or "").strip()
+    if "gemini_api_key" in data:
+        current["gemini_api_key"] = (data.get("gemini_api_key") or "").strip()
     app_settings.save_settings(current)
     return jsonify(current)
 

@@ -33,6 +33,7 @@ SETTINGS_PATH = Path.home() / ".ziplex" / "settings.json"
 DEFAULT_SETTINGS = {
     "output_dir": "",           # "" = no global override, packager.RESULT_DIR applies
     "project_output_dirs": {},  # {absolute project path: output dir}, explicit per-project pins
+    "gemini_api_key": "",       # "" = no override, GEMINI_API_KEY env var / .env applies (see llm.py)
 }
 
 
@@ -41,14 +42,15 @@ def load_settings() -> dict:
         with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return {"output_dir": "", "project_output_dirs": {}}
+        return {"output_dir": "", "project_output_dirs": {}, "gemini_api_key": ""}
     if not isinstance(data, dict):
-        return {"output_dir": "", "project_output_dirs": {}}
+        return {"output_dir": "", "project_output_dirs": {}, "gemini_api_key": ""}
 
     project_dirs = data.get("project_output_dirs")
     return {
         "output_dir": data.get("output_dir") or "",
         "project_output_dirs": project_dirs if isinstance(project_dirs, dict) else {},
+        "gemini_api_key": data.get("gemini_api_key") or "",
     }
 
 
@@ -104,3 +106,20 @@ def set_project_output_dir(project_path: str, output_dir: str) -> None:
     settings = load_settings()
     settings["project_output_dirs"][_abs_key(project_path)] = output_dir
     save_settings(settings)
+
+
+def resolve_gemini_api_key(settings: dict | None = None) -> str:
+    """The GUI-editable override for GEMINI_API_KEY -- "" if nothing's been
+    set via the Options page, in which case llm.py's own env var / .env
+    fallback applies, completely unchanged from before this setting
+    existed. `settings`, if not given, is loaded fresh.
+
+    Unlike output_dir/project_output_dirs, this is read fresh on every
+    llm.py request (see GeminiProvider._resolve_api_key()), not once at
+    provider-construction time -- llm.py's module-level `_provider` is a
+    singleton built once at import and stays alive for the whole GUI
+    server process, so a key saved here after that needs to take effect on
+    the very next pack, not after a restart.
+    """
+    settings = settings if settings is not None else load_settings()
+    return settings["gemini_api_key"] or ""

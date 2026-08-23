@@ -85,7 +85,7 @@ def test_config_reflects_startup_defaults(client):
 def test_settings_get_returns_defaults_when_unconfigured(client, tmp_path, monkeypatch):
     monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
     res = client.get("/api/settings")
-    assert res.get_json() == {"output_dir": "", "project_output_dirs": {}}
+    assert res.get_json() == {"output_dir": "", "project_output_dirs": {}, "gemini_api_key": ""}
 
 
 def test_settings_post_sets_the_global_output_dir(client, tmp_path, monkeypatch):
@@ -97,13 +97,31 @@ def test_settings_post_sets_the_global_output_dir(client, tmp_path, monkeypatch)
 
 def test_settings_post_does_not_clobber_project_pins(client, tmp_path, monkeypatch):
     monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
-    app_settings.save_settings({"output_dir": "", "project_output_dirs": {"C:/proj": "D:/pinned"}})
+    app_settings.save_settings({"output_dir": "", "project_output_dirs": {"C:/proj": "D:/pinned"}, "gemini_api_key": ""})
 
     client.post("/api/settings", json={"output_dir": str(tmp_path / "out")})
 
     loaded = app_settings.load_settings()
     assert loaded["output_dir"] == str(tmp_path / "out")
     assert loaded["project_output_dirs"] == {"C:/proj": "D:/pinned"}
+
+
+def test_settings_post_sets_the_gemini_api_key(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    res = client.post("/api/settings", json={"gemini_api_key": "my-secret-key"})
+    assert res.get_json()["gemini_api_key"] == "my-secret-key"
+    assert app_settings.load_settings()["gemini_api_key"] == "my-secret-key"
+
+
+def test_settings_post_api_key_does_not_clobber_output_dir(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    app_settings.save_settings({"output_dir": "D:/out", "project_output_dirs": {}, "gemini_api_key": ""})
+
+    client.post("/api/settings", json={"gemini_api_key": "my-secret-key"})
+
+    loaded = app_settings.load_settings()
+    assert loaded["output_dir"] == "D:/out"
+    assert loaded["gemini_api_key"] == "my-secret-key"
 
 
 def _wait_for_job(client, job_id, timeout=10):

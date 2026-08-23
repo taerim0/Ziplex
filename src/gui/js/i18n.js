@@ -143,6 +143,9 @@ const I18N = {
     "options.outputDirPlaceholder": "비우면 result/<프로젝트명>.json (Ziplex 설치 폴더 내부)",
     "options.save": "저장",
     "options.saved": "저장됨",
+    "options.apiKeyTitle": "Gemini API 키",
+    "options.apiKeyDescription": "패킹 시 요약/코딩 룰/AI 가이드 생성에 사용할 Gemini API 키입니다. 비워두면 .env의 GEMINI_API_KEY를 그대로 사용합니다 (여기서 설정하면 이 값이 우선함).",
+    "options.apiKeyPlaceholder": "비우면 .env의 GEMINI_API_KEY 사용",
     "options.outputDirTitle": "기본 저장 폴더",
     "options.outputDirDescription": "새로 패킹하는 프로젝트가 기본으로 저장될 폴더입니다. 패킹 화면의 \"출력 경로\"에 직접 경로를 입력한 프로젝트는 이 설정 대신 그 경로를 계속 기억해 사용합니다.",
 
@@ -270,6 +273,9 @@ const I18N = {
     "options.outputDirPlaceholder": "Defaults to result/<project-name>.json (inside Ziplex's own install folder)",
     "options.save": "Save",
     "options.saved": "Saved",
+    "options.apiKeyTitle": "Gemini API Key",
+    "options.apiKeyDescription": "The Gemini API key used to generate summaries/coding rules/AI guide when packing. Leave blank to use .env's GEMINI_API_KEY as-is (setting one here takes priority over it).",
+    "options.apiKeyPlaceholder": "Leave blank to use .env's GEMINI_API_KEY",
     "options.outputDirTitle": "Default Output Folder",
     "options.outputDirDescription": "The folder new packs save to by default. A project with an explicit path typed into the pack screen's \"Output path\" keeps remembering that path instead of this setting.",
 
