@@ -300,6 +300,45 @@ def test_extract_dependencies_from_rust_file(tmp_path):
     assert "crate.models.User" in deps
 
 
+def test_extract_dependencies_from_rust_use_group_with_aliased_sibling(tmp_path):
+    # A group whose own siblings can carry an "as" alias
+    # (`foo::{bar as baz, qux}`) -- code review caught a real bug here:
+    # splitting off " as " from the *whole* argument text before checking
+    # for a group truncated it mid-string ("foo::{bar", losing "qux"
+    # entirely and leaving a dangling "{"). Group-splitting now happens
+    # first, with each sibling's own alias stripped one level down.
+    file_path = tmp_path / "lib.rs"
+    file_path.write_text("use foo::{bar as baz, qux};\n", encoding="utf-8")
+
+    deps = extract_dependencies(str(file_path))
+    assert "foo.bar" in deps
+    assert "foo.qux" in deps
+    assert not any("{" in d for d in deps)
+
+
+def test_extract_dependencies_recurses_into_inline_rust_module(tmp_path):
+    # `mod tests { ... }` (a body-having inline submodule, the ordinary
+    # `#[cfg(test)] mod tests { ... }` pattern) is not itself a file
+    # reference -- code review caught the handler matching it
+    # unconditionally, both emitting a bogus "tests" dependency and (since
+    # it returned True) never recursing into the body at all, silently
+    # hiding every real use/mod declaration nested inside it.
+    file_path = tmp_path / "lib.rs"
+    file_path.write_text(
+        "mod tests {\n"
+        "    use crate::utils::helper;\n"
+        "    fn test_it() {}\n"
+        "}\n"
+        "mod real_mod;\n",
+        encoding="utf-8",
+    )
+
+    deps = extract_dependencies(str(file_path))
+    assert "crate.utils.helper" in deps
+    assert "real_mod" in deps
+    assert "tests" not in deps
+
+
 def test_extract_signatures_from_typescript_arrow_functions(tmp_path):
     # arrow_function/function_expression have no "name" field of their own
     # when anonymous -- extract_signatures() has to recover a readable name

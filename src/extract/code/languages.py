@@ -382,14 +382,18 @@ def _append_rust_use_paths(path_text: str, results: list) -> None:
     An alias (`as baz`) is dropped -- the alias name isn't a real path
     segment resolve_dependency() could ever match against a file stem, so
     keeping the original path is what best doubles as a guess.
-    """
-    path_text = path_text.split(" as ")[0].strip()
 
-    if path_text.endswith("::*"):
-        path_text = path_text[:-3].strip()
-        if path_text:
-            results.append(path_text.replace("::", "."))
-        return
+    Group-splitting is checked *before* alias-stripping, not after: a
+    group's own siblings can themselves carry an alias
+    (`foo::{bar as baz, qux}`), and splitting " as " off the whole
+    argument text first would truncate the group mid-string (into
+    "foo::{bar", losing "qux" entirely and leaving a dangling "{") before
+    the group was ever recognized as one. Each split-out sibling is fed
+    back through this same function recursively, so a per-item alias
+    (`bar as baz` above) still gets stripped correctly, just one level
+    down instead of on the whole statement up front.
+    """
+    path_text = path_text.strip()
 
     if path_text.endswith("}") and "{" in path_text:
         prefix, _, group = path_text.partition("{")
@@ -424,6 +428,14 @@ def _append_rust_use_paths(path_text: str, results: list) -> None:
             _append_rust_use_paths(combined, results)
         return
 
+    path_text = path_text.split(" as ")[0].strip()
+
+    if path_text.endswith("::*"):
+        path_text = path_text[:-3].strip()
+        if path_text:
+            results.append(path_text.replace("::", "."))
+        return
+
     if path_text:
         results.append(path_text.replace("::", "."))
 
@@ -436,7 +448,14 @@ def _rust_dependency_handler(node: Node, results: list) -> bool:
     form is a real file dependency) declares a submodule backed by its own
     file (foo.rs or foo/mod.rs) -- the single most precise, directly
     file-stem-resolvable dependency shape Rust has, read straight off the
-    "name" field with no path unwrapping needed at all.
+    "name" field with no path unwrapping needed at all. An inline
+    `mod foo { ... }` (real, common e.g. for `#[cfg(test)] mod tests {
+    ... }`) is deliberately left unmatched -- its own name isn't a file
+    reference at all, and its body can itself contain real use/mod
+    declarations (a nested test module importing `crate::...` is the
+    ordinary case), which still need to be found by recursing into it
+    rather than having this handler swallow the whole subtree as one
+    bogus dependency.
 
     `use path::to::Item;` (use_declaration) is a symbol import, not
     necessarily a file reference -- see _append_rust_use_paths()'s own
@@ -451,6 +470,10 @@ def _rust_dependency_handler(node: Node, results: list) -> bool:
     treated as a bonus, not the primary signal.
     """
     if node.type == "mod_item":
+        if node.child_by_field_name("body") is not None:
+            # inline submodule -- not a file reference; keep recursing so
+            # any real use/mod declarations inside its body are still found
+            return False
         name = node.child_by_field_name("name")
         if name:
             results.append(name.text.decode())
