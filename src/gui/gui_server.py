@@ -64,6 +64,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from flask import Flask, jsonify, request
 
 from gui import pack_service
+from gui import watcher
 import query_service
 import settings as app_settings
 from file.relationship import CycleError
@@ -146,6 +147,23 @@ def _project_dir_error(project_path: str):
     """
     if not Path(project_path).is_dir():
         return jsonify({"error": f"프로젝트 폴더를 찾을 수 없습니다: {project_path}"}), 404
+    return None
+
+
+def _cache_path_error(aif_path: str):
+    """None if aif_path's sibling cache.json exists, else a (jsonify,
+    status) tuple to return as-is. Specifically for /api/watch/start --
+    every *other* route taking an aif_path relies on query_service's own
+    OSError handling to catch a bad path, but watcher.start_watch() never
+    raises (a missing cache.json is swallowed inside its own recompute(),
+    same as any other transient IO error mid-burst -- see that function's
+    own comment on why), so without this a typo'd/missing aif_path here
+    would silently report {"ok": true} and leave the watch permanently
+    stuck on a null report instead of surfacing anything to the caller.
+    """
+    cache_path = Path(aif_path).with_name(f"{Path(aif_path).stem}.cache.json")
+    if not cache_path.exists():
+        return jsonify({"error": f"cache.json을 찾을 수 없습니다: {cache_path}"}), 404
     return None
 
 
@@ -390,6 +408,41 @@ def api_freshness():
     project_path = request.args["project_path"]
     aif_path = request.args["aif_path"]
     return jsonify(query_service.check_freshness(project_path, aif_path))
+
+
+@app.route("/api/watch/start", methods=["POST"])
+def api_watch_start():
+    """Starts (or restarts) live-watching project_path in the background --
+    see watcher.py's own module docstring for why this makes the Overview/
+    Files staleness badge update on its own instead of only on page load.
+    Fire-and-forget from the frontend's point of view: the actual status is
+    read back separately via /api/watch/status, polled on an interval (see
+    js/app.js's startStaleWatch()).
+    """
+    data = request.get_json(silent=True) or {}
+    project_path = (data.get("project_path") or "").strip()
+    aif_path = (data.get("aif_path") or "").strip()
+    if not project_path or not aif_path:
+        return jsonify({"error": "project_path와 aif_path가 필요합니다"}), 400
+    error = _project_dir_error(project_path) or _cache_path_error(aif_path)
+    if error:
+        return error
+    watcher.start_watch(project_path, aif_path)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/watch/status")
+def api_watch_status():
+    """The watcher's latest cached freshness report for project_path, or
+    {"report": None} if nothing's watching it yet (never started, or
+    evicted -- see watcher.py's MAX_WATCHERS). Never triggers a recompute
+    itself -- this only ever reads whatever the background watcher already
+    has cached, so polling it on an interval costs nothing beyond the read.
+    """
+    project_path = request.args.get("project_path", "").strip()
+    if not project_path:
+        return jsonify({"error": "project_path가 필요합니다"}), 400
+    return jsonify({"report": watcher.get_status(project_path)})
 
 
 @app.route("/api/search")

@@ -2,7 +2,7 @@
 // single file's detail page) -- see app.js's header comment for the
 // overall module split.
 
-import { app, nav, el, api, getAif, getProject, setStale, showError, showLoading, confidenceLevel, copyButton } from "../app.js";
+import { app, nav, el, api, getAif, getProject, setStale, showError, showLoading, confidenceLevel, copyButton, startStaleWatch } from "../app.js";
 import { t } from "../i18n.js";
 
 export async function renderFiles() {
@@ -11,6 +11,7 @@ export async function renderFiles() {
   try {
     const data = await api("/api/files", { aif_path: getAif(), project_path: getProject() });
     setStale(data._stale);
+    startStaleWatch(getProject(), getAif());
     delete data._stale;
 
     const filterInput = el("input", { type: "text", placeholder: t("files.searchPlaceholder") });
