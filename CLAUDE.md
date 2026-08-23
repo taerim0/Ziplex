@@ -6,7 +6,7 @@ Directory-scoped detail lives in nested CLAUDE.md files, loaded automatically wh
 - `src/extract/code/CLAUDE.md` — Tree-sitter code compression/extraction (`languages.py`/`parser.py`/`extractor.py`/`compressor.py`), one language per bullet (Python/Java/TypeScript/JavaScript/Lua/GDScript).
 - `src/extract/text/CLAUDE.md` — the non-Tree-sitter text compressors (json/markdown/txt).
 - `src/file/CLAUDE.md` — file collection, security scanning, and the dependency-graph API (`collector.py`/`scanner.py`/`selector.py`/`relationship.py`).
-- `src/gui/CLAUDE.md` — the local GUI: `gui_server.py` (Flask + pywebview), `pack_service.py` (the background job/review state machine), and the frontend (`index.html`, the `js/` ES-module tree, `style.css`).
+- `src/gui/CLAUDE.md` — the local GUI: `gui_server.py` (Flask + pywebview), `pack_service.py` (the background job/review state machine), `watcher.py` (live filesystem watching for the staleness badge), and the frontend (`index.html`, the `js/` ES-module tree, `style.css`).
 
 ## What this is
 

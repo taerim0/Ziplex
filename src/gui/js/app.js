@@ -194,6 +194,46 @@ export function setStale(stale) {
   }
 }
 
+// Live staleness (watcher.py, /api/watch/start + /api/watch/status) --
+// makes the badge above update on its own while a project page stays
+// open, instead of only ever being checked once at page-load time.
+// router.js's route() calls stopStaleWatch() unconditionally at the top
+// of every navigation (not just when leaving Overview/Files) so the
+// interval below can never outlive the page that started it -- this hash
+// router has no per-page "unmount" hook of its own, so the router itself
+// is the one place every navigation is guaranteed to pass through.
+let _staleWatchInterval = null;
+
+export function startStaleWatch(projectPath, aifPath, intervalMs = 3000) {
+  stopStaleWatch();
+  // Both required -- a falsy projectPath means no folder on disk to watch
+  // (a project opened by aif.json path alone); a falsy aifPath shouldn't
+  // actually reach here (route()'s no-project-loaded guard already bounces
+  // away before renderOverview()/renderFiles() would ever call this
+  // without one), but checking it here too means this function is safe to
+  // call on its own, from a future caller, without silently starting a
+  // setInterval that polls forever for a watch /api/watch/start's own
+  // validation was always going to 400 on.
+  if (!projectPath || !aifPath) return;
+  apiPost("/api/watch/start", { project_path: projectPath, aif_path: aifPath }).catch(() => {});
+  _staleWatchInterval = setInterval(async () => {
+    try {
+      const data = await api("/api/watch/status", { project_path: projectPath });
+      // null report (not yet computed, or the watcher got evicted) leaves
+      // whatever the page's own initial "_stale" field already showed
+      // alone, rather than forcing the badge to hide.
+      if (data.report) setStale(data.report);
+    } catch (e) { /* best-effort -- a dropped poll just tries again next tick */ }
+  }, intervalMs);
+}
+
+export function stopStaleWatch() {
+  if (_staleWatchInterval) {
+    clearInterval(_staleWatchInterval);
+    _staleWatchInterval = null;
+  }
+}
+
 // Highlights the current section in the sidebar (see index.html's
 // data-route attributes) -- a sidebar needs a clear "you are here"
 // indicator the way the old top nav-bar's plain hyperlink list never did.

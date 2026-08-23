@@ -1,7 +1,7 @@
 // The sidebar's Overview section -- see app.js's header comment for the
 // overall module split.
 
-import { app, nav, el, api, getAif, getProject, setStale, showError, showLoading, copyButton } from "../app.js";
+import { app, nav, el, api, getAif, getProject, setStale, showError, showLoading, copyButton, startStaleWatch } from "../app.js";
 import { t } from "../i18n.js";
 
 export async function renderOverview() {
@@ -10,6 +10,7 @@ export async function renderOverview() {
   try {
     const data = await api("/api/overview", { aif_path: getAif(), project_path: getProject() });
     setStale(data._stale);
+    startStaleWatch(getProject(), getAif());
     const rulesList = el("ul", {}, (data.rules || []).map(r => el("li", { text: r })));
     // named `tok`, not `t` -- this file's own t() (i18n.js) would
     // otherwise be shadowed inside this callback's scope.

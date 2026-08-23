@@ -6,7 +6,7 @@
 // by listing <script> tags in the correct sequence.
 // ---- router -----------------------------------------------------------
 
-import { getAif, setActiveNav, setActiveTopbar } from "./app.js";
+import { getAif, setActiveNav, setActiveTopbar, stopStaleWatch } from "./app.js";
 import { applyStaticI18n } from "./i18n.js";
 import { renderPackJob } from "./pack.js";
 import { renderHome, renderPackHome, renderCheck } from "./pages/landing.js";
@@ -17,6 +17,12 @@ import { renderRelationships } from "./pages/relationships.js";
 import { renderSearch } from "./pages/search.js";
 
 export function route() {
+  // Unconditional, not just on leaving Overview/Files -- this hash router
+  // has no per-page "unmount" hook, so route() itself is the one place
+  // every navigation is guaranteed to pass through. A no-op if nothing was
+  // watching (stopStaleWatch() itself checks before clearing).
+  stopStaleWatch();
+
   const raw = location.hash.slice(1) || "/";
   const [path, queryStr] = raw.split("?");
   const params = new URLSearchParams(queryStr || "");

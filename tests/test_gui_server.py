@@ -581,6 +581,65 @@ def test_api_freshness(client, tmp_path):
     }
 
 
+def _make_watch_project(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "a.py").write_text("x = 1\n", encoding="utf-8")
+    aif_path = tmp_path / "sample.json"
+    aif_path.write_text(json.dumps({"project": {"name": "sample"}}), encoding="utf-8")
+    (tmp_path / "sample.cache.json").write_text(
+        json.dumps(freshness.build_manifest([str(project / "a.py")], str(project))),
+        encoding="utf-8",
+    )
+    return project, aif_path
+
+
+def test_api_watch_start_then_status_reports_fresh(client, tmp_path, monkeypatch):
+    from gui import watcher
+    monkeypatch.setattr(watcher, "DEBOUNCE_SECONDS", 0.05)
+    project, aif_path = _make_watch_project(tmp_path)
+
+    start = client.post("/api/watch/start", json={"project_path": str(project), "aif_path": str(aif_path)})
+    assert start.status_code == 200
+
+    status = client.get("/api/watch/status", query_string={"project_path": str(project)})
+    assert status.get_json()["report"]["is_stale"] is False
+
+    watcher.stop_watch(str(project))  # don't leave a background Observer running past this test
+
+
+def test_api_watch_status_returns_none_report_when_never_started(client, tmp_path):
+    res = client.get("/api/watch/status", query_string={"project_path": str(tmp_path)})
+    assert res.get_json() == {"report": None}
+
+
+def test_api_watch_start_requires_project_path_and_aif_path(client, tmp_path):
+    res = client.post("/api/watch/start", json={"project_path": str(tmp_path)})
+    assert res.status_code == 400
+
+
+def test_api_watch_start_404s_on_a_missing_project_path(client, tmp_path):
+    res = client.post("/api/watch/start", json={
+        "project_path": str(tmp_path / "does-not-exist"), "aif_path": str(tmp_path / "x.json"),
+    })
+    assert res.status_code == 404
+
+
+def test_api_watch_start_404s_on_a_missing_cache_json(client, tmp_path):
+    # Regression, found by code review: watcher.start_watch() itself never
+    # raises on a missing/typo'd aif_path (a missing cache.json is
+    # swallowed inside its own recompute()), so without this check the
+    # route would have silently reported {"ok": true} for an aif_path with
+    # no sibling cache.json, leaving the watch permanently stuck on a null
+    # report with no error ever surfaced to the caller.
+    project = tmp_path / "project"
+    project.mkdir()
+    res = client.post("/api/watch/start", json={
+        "project_path": str(project), "aif_path": str(tmp_path / "never-packed.json"),
+    })
+    assert res.status_code == 404
+
+
 def test_api_search(client, tmp_path):
     project = tmp_path / "project"
     project.mkdir()

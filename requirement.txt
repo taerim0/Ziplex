@@ -11,3 +11,4 @@ requests
 mcp
 flask
 pywebview
+watchdog
