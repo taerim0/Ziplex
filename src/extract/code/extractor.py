@@ -17,7 +17,7 @@ def extract_signatures(file_path: str) -> list[str]:
 
     tree = parser.parse(bytes(code, "utf8"))
     results = []
-    _traverse_signatures(tree.root_node, results, node_types)
+    _traverse_signatures(tree.root_node, results, node_types, None)
     return results
 
 
@@ -55,21 +55,47 @@ def extract_api(file_path: str) -> list[str]:
     return results
 
 
-def _traverse_signatures(node, results: list, node_types: list):
+def _resolve_signature_name(node, parent):
+    """A matched function-type node's own "name" field, when it has one
+    (function_declaration, method_definition, Lua's/GDScript's function
+    nodes -- every language where a function names itself directly).
+
+    Falls back to the *parent* node's "name" field, then its "key" field,
+    when the matched node has neither -- the shape an anonymous
+    arrow_function/function_expression takes once it's assigned somewhere:
+    `const add = (a, b) => ...` (parent is a variable_declarator, "name"
+    field is the identifier), `class C { method = () => ... }` (parent is
+    a public_field_definition, also "name"), and `{ greet: () => ... }`
+    (parent is a pair -- object-literal properties use "key", not "name").
+    Not a per-language hardcode despite being motivated by TS/JS: any
+    grammar with an equivalent assignment-shaped wrapper around an
+    otherwise-anonymous function resolves the same way.
+    """
+    own_name = node.child_by_field_name("name")
+    if own_name:
+        return own_name.text.decode()
+    if parent is not None:
+        wrapper_name = parent.child_by_field_name("name") or parent.child_by_field_name("key")
+        if wrapper_name:
+            return wrapper_name.text.decode()
+    return None
+
+
+def _traverse_signatures(node, results: list, node_types: list, parent):
     if node.type in node_types:
-        name   = node.child_by_field_name("name")
+        name   = _resolve_signature_name(node, parent)
         params = node.child_by_field_name("parameters")
         ret    = node.child_by_field_name("return_type")
 
         if name and params:
-            sig = f"{name.text.decode()}{params.text.decode()}"
+            sig = f"{name}{params.text.decode()}"
             if ret:
                 sig += f" -> {ret.text.decode()}"
             results.append(sig)
         return
 
     for child in node.children:
-        _traverse_signatures(child, results, node_types)
+        _traverse_signatures(child, results, node_types, node)
 
 
 def _traverse_dependencies(node, results: list, handler):

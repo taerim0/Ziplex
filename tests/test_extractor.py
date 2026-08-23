@@ -117,6 +117,38 @@ def test_extract_dependencies_from_gdscript_recognizes_qualified_load(tmp_path):
     assert "x" in extract_dependencies(str(file_path))
 
 
+def test_extract_signatures_from_typescript_arrow_functions(tmp_path):
+    # arrow_function/function_expression have no "name" field of their own
+    # when anonymous -- extract_signatures() has to recover a readable name
+    # from the wrapping variable_declarator/public_field_definition/pair
+    # node's own "name"/"key" field instead.
+    file_path = tmp_path / "mod.ts"
+    file_path.write_text(
+        "const add = (a, b) => {\n  return a + b;\n};\n\n"
+        "const obj = {\n  greet: () => {\n    return 1;\n  },\n};\n\n"
+        "class Foo {\n  method = () => {\n    return 1;\n  };\n}\n\n"
+        "const namedExpr = function bar(a) {\n  return a;\n};\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert "add(a, b)" in sigs           # variable_declarator's "name" field
+    assert "greet()" in sigs             # pair's "key" field
+    assert "method()" in sigs            # public_field_definition's "name" field
+    assert "bar(a)" in sigs              # function_expression's own "name" field
+
+
+def test_extract_signatures_skips_bare_single_param_arrow(tmp_path):
+    # `x => x * 2` has no "parameters" field at all (the bare identifier is
+    # an unnamed positional child, not wrapped in formal_parameters) -- a
+    # documented, deliberate residual gap rather than teaching the generic
+    # traversal a per-node-type positional fallback.
+    file_path = tmp_path / "mod.ts"
+    file_path.write_text("const double = x => x * 2;\n", encoding="utf-8")
+
+    assert extract_signatures(str(file_path)) == []
+
+
 def test_extract_api_detects_decorator_based_routes(tmp_path):
     file_path = tmp_path / "app.py"
     file_path.write_text(
