@@ -40,6 +40,8 @@ import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from file.textutil import read_text as _safe_read_text
+
 try:
     import tomllib
 except ImportError:  # Python < 3.11 -- see module docstring's last paragraph
@@ -52,10 +54,13 @@ MAX_DEPENDENCIES = 40
 
 
 def _read_text(path: Path) -> str | None:
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return None
+    # Delegates to file/textutil.py's shared safe-read rather than a local
+    # path.read_text(encoding="utf-8") -- that only ever caught OSError,
+    # not UnicodeDecodeError, breaking this module's own "never raises, by
+    # contract" guarantee for a non-UTF-8 manifest (a real case for a
+    # legacy Windows-authored file). _safe_read_text() already handles
+    # both.
+    return _safe_read_text(str(path))
 
 
 def _load_json(path: Path) -> dict:

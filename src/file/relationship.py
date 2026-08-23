@@ -249,7 +249,9 @@ def build_tree(files: dict) -> dict:
         internal, external = [], []
         for dep in deps:
             matched = resolve_dependency(dep, stem_map)
-            if matched and matched != name:
+            if matched == name:
+                continue  # a file referencing itself isn't a real relationship in either direction
+            if matched:
                 internal.append(matched)
             else:
                 external.append(dep)

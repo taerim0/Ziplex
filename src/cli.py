@@ -313,6 +313,19 @@ def main():
                     sys.exit(1)
                 else:
                     print(f"\n✅ 토큰 예산 통과: {args.max_tokens_model} 기준 {actual:,} ≤ {args.max_tokens:,}")
+        elif args.max_tokens is not None:
+            # pack() returned {} -- a checkpoint-and-exit on a repeated LLM
+            # failure, or a cancelled/empty run -- so there's no aif["tokens"]
+            # for the guard above to even check. Left unhandled, this whole
+            # block (nested inside `if aif:`) never ran at all and main()
+            # exited 0 by default: exactly the scenario --max-tokens exists
+            # to catch (a CI pipeline silently passing despite pack() never
+            # actually completing), so an incomplete pack must fail loudly
+            # here too when the guard was requested. No message/exit change
+            # at all when --max-tokens wasn't passed -- unchanged from before.
+            print("\n❌ pack이 완료되지 않아 --max-tokens 검사를 수행할 수 없습니다"
+                  " (체크포인트 저장 후 중단되었을 수 있습니다)")
+            sys.exit(1)
 
     elif args.command == "tree":
         safe_files = _collect_and_scan(args.path)["safe"]
