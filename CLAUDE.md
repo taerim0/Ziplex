@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 Directory-scoped detail lives in nested CLAUDE.md files, loaded automatically when you're working in that subtree — this file stays high-level on purpose:
-- `src/extract/code/CLAUDE.md` — Tree-sitter code compression/extraction (`languages.py`/`parser.py`/`extractor.py`/`compressor.py`), one language per bullet (Python/Java/TypeScript/JavaScript/Lua/GDScript).
+- `src/extract/code/CLAUDE.md` — Tree-sitter code compression/extraction (`languages.py`/`parser.py`/`extractor.py`/`compressor.py`), one language per bullet (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust).
 - `src/extract/text/CLAUDE.md` — the non-Tree-sitter text compressors (json/markdown/txt).
 - `src/file/CLAUDE.md` — file collection, security scanning, and the dependency-graph API (`collector.py`/`scanner.py`/`selector.py`/`relationship.py`).
 - `src/gui/CLAUDE.md` — the local GUI: `gui_server.py` (Flask + pywebview), `pack_service.py` (the background job/review state machine), `watcher.py` (live filesystem watching for the staleness badge), and the frontend (`index.html`, the `js/` ES-module tree, `style.css`).

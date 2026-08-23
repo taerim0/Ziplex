@@ -30,7 +30,7 @@ project/  ──►  수집  ──►  보안 스캔  ──►  선택  ──
 
 ## 주요 기능
 
-- **다국어 코드 압축** — 지금은 Python, Java, TypeScript, JavaScript, Lua, GDScript를 지원합니다. 언어별 설정을 테이블(`LanguageConfig`) 하나로 관리해서, 새 문법을 추가할 때 코드를 갈아엎을 필요 없이 항목 하나만 추가하면 됩니다.
+- **다국어 코드 압축** — 지금은 Python, Java, TypeScript, JavaScript, Lua, GDScript, Go, C++, Rust를 지원합니다. 언어별 설정을 테이블(`LanguageConfig`) 하나로 관리해서, 새 문법을 추가할 때 코드를 갈아엎을 필요 없이 항목 하나만 추가하면 됩니다.
 - **코드 외 텍스트 압축** — JSON, Markdown(내부 코드 펜스 포함), 일반 텍스트도 각각 전용 압축기가 있습니다. 구조는 남기고 본문만 덜어내는, 코드 압축기와 같은 방식입니다.
 - **코드 파일 너머까지 무료로 관계 파악** — Godot 씬 파일의 `[ext_resource path="res://player.gd"]`, `player.gd`를 언급하는 Markdown 문서, 파일명으로 프로젝트 구조를 설명하는 README까지 — LLM 호출도, "경로처럼 생긴 패턴" 추측도 없이 **실제로 수집된 파일 목록과 직접 대조**해서, Tree-sitter 문법이 없는 파일이 다른 파일을 명백히 참조하는데도 `relationships`에서 그냥 고립된 리프로 남는 문제를 해결합니다.
 - **내장 보안 스캔** — `secretlint`를 우선 쓰고, 없으면 정규식으로 대체합니다. 민감한 파일은 수집 단계에서 걸러져 다음 단계로 아예 넘어가지 않습니다.
@@ -218,7 +218,7 @@ Ziplex는 한 사람의 로컬 스냅샷을 패킹합니다 — 공유 서버나
 
 ## 기술 스택
 
-Python 3.11 · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript 문법, GDScript는 `tree-sitter-language-pack` 경유) · [tiktoken](https://github.com/openai/tiktoken) · Gemini API (기본값 `gemini-flash-latest`, `GEMINI_MODEL`로 재정의 가능; `requests`를 통한 순수 REST 호출) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
+Python 3.11 · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust 문법, GDScript는 `tree-sitter-language-pack` 경유) · [tiktoken](https://github.com/openai/tiktoken) · Gemini API (기본값 `gemini-flash-latest`, `GEMINI_MODEL`로 재정의 가능; `requests`를 통한 순수 REST 호출) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
 
 ## 로드맵
 
@@ -226,7 +226,7 @@ Python 3.11 · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python
 
 **모든 파일 타입에 대한 관계 분석** — 의존성 그래프를 코드 파일 너머로 확장합니다. 무료·문법적인 절반은 완료 (위 [코드 파일 너머까지 무료로 관계 파악](#주요-기능) 참고 — 비코드 텍스트 안의 경로/파일명 리터럴 매칭, LLM 호출 없음). 아직 남은 것: 문자열 매칭으로는 절대 못 찾는 진짜 *의미적* 연결(문서엔 산문으로만 설명돼 있는 API를 실제로 구현하는 핸들러 같은) — 이미 생성된 요약을 활용한 LLM 추론으로, 낮은 신뢰도 요약처럼 검토 게이트를 거치게 설계해야 해서 그 confidence/검토 UI 설계를 따로 한 번 더 다루기 전까진 시작 안 함.
 
-**언어 지원 확대** — 게임 개발 전용 언어와 추가 프레임워크까지 Tree-sitter 지원 범위를 넓힙니다. Lua와 GDScript는 지원 완료 (GDScript는 전용 PyPI 패키지가 없어서 `tree-sitter-language-pack`에 번들된 문법을 대신 씁니다). ZenScript(마이너한 Minecraft 모딩 DSL)는 이 시점 기준 관리되는 Tree-sitter 문법 자체가 안 보여서 아직 열려있는 항목입니다.
+**언어 지원 확대** — 게임 개발 전용 언어와 추가 프레임워크까지 Tree-sitter 지원 범위를 넓힙니다. Lua, GDScript, Go, C++, Rust는 지원 완료 (GDScript는 전용 PyPI 패키지가 없어서 `tree-sitter-language-pack`에 번들된 문법을 대신 씁니다). ZenScript(마이너한 Minecraft 모딩 DSL)는 이 시점 기준 관리되는 Tree-sitter 문법 자체가 안 보여서 아직 열려있는 항목입니다. C#/PHP/Ruby는 Go/C++/Rust를 고른 것과 같은 숏리스트에서 남은 후보로, 셋 다 잘 관리되는 전용 PyPI `tree-sitter-*` 패키지가 있는 것까지 확인됐습니다.
 
 ## 라이선스
 

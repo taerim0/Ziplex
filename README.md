@@ -30,7 +30,7 @@ project/  ──►  collect  ──►  security scan  ──►  select  ─�
 
 ## Features
 
-- **Multi-language code compression** — Python, Java, TypeScript, JavaScript, Lua, and GDScript today, via a per-language config table (`LanguageConfig`) so adding a new grammar is a single entry, not a rewrite.
+- **Multi-language code compression** — Python, Java, TypeScript, JavaScript, Lua, GDScript, Go, C++, and Rust today, via a per-language config table (`LanguageConfig`) so adding a new grammar is a single entry, not a rewrite.
 - **Text-aware compression beyond code** — dedicated compressors for JSON and Markdown (including embedded code fences) and plain text, using the same body-preserving philosophy as the code compressor.
 - **Relationships past code files, for free** — a Godot scene's `[ext_resource path="res://player.gd"]`, a Markdown doc mentioning `player.gd`, a README documenting the project layout by filename: matched against the real collected-file list (no LLM call, no generic "looks like a path" guessing) so files with no Tree-sitter grammar stop showing up as disconnected leaves in `relationships` when they obviously reference other project files.
 - **Security scanning built in** — `secretlint` first, regex fallback second; sensitive files never make it past collection.
@@ -219,7 +219,7 @@ Ziplex packs one person's local snapshot — there's no shared server or live sy
 
 ## Tech stack
 
-Python 3.11 · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript grammars, GDScript via `tree-sitter-language-pack`) · [tiktoken](https://github.com/openai/tiktoken) · Gemini API (`gemini-flash-latest` by default, overridable via `GEMINI_MODEL`; plain REST via `requests`) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
+Python 3.11 · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust grammars, GDScript via `tree-sitter-language-pack`) · [tiktoken](https://github.com/openai/tiktoken) · Gemini API (`gemini-flash-latest` by default, overridable via `GEMINI_MODEL`; plain REST via `requests`) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
 
 ## Roadmap
 
@@ -227,7 +227,7 @@ Python 3.11 · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python
 
 **Relationship analysis across all file types** — extend the dependency graph past code files. The free, syntactic half shipped (see [Relationships past code files, for free](#features) above -- matching literal path/filename mentions in non-code text, no LLM call). What's still open: true *semantic* connections no literal string match could find (a handler that implements an API a doc merely describes in prose) via LLM inference over already-generated summaries -- lower-confidence, review-gated the way low-confidence summaries already are, and deliberately not started until that confidence/review design gets its own pass.
 
-**Expanded language support** — broader Tree-sitter coverage for game-specific languages and additional frameworks. Lua and GDScript shipped (GDScript's grammar has no dedicated PyPI package of its own -- sourced from `tree-sitter-language-pack`'s bundled copy instead). ZenScript (a niche Minecraft modding DSL) is still open; it doesn't appear to have a maintained Tree-sitter grammar at all as of this check.
+**Expanded language support** — broader Tree-sitter coverage for game-specific languages and additional frameworks. Lua, GDScript, Go, C++, and Rust shipped (GDScript's grammar has no dedicated PyPI package of its own -- sourced from `tree-sitter-language-pack`'s bundled copy instead). ZenScript (a niche Minecraft modding DSL) is still open; it doesn't appear to have a maintained Tree-sitter grammar at all as of this check. C#/PHP/Ruby remain candidates from the same shortlist Go/C++/Rust were picked off of, all confirmed to have dedicated, well-maintained PyPI `tree-sitter-*` packages.
 
 ## License
 

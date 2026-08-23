@@ -5,6 +5,7 @@ tree-sitter-typescript
 tree-sitter-lua
 tree-sitter-go
 tree-sitter-cpp
+tree-sitter-rust
 tree-sitter-language-pack
 tiktoken
 pathspec

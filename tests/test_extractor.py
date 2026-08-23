@@ -239,6 +239,67 @@ def test_extract_dependencies_from_cpp_file(tmp_path):
     assert "utils" in deps
 
 
+def test_extract_signatures_from_rust_file(tmp_path):
+    # function_item exposes "name"/"parameters"/"return_type"/"body" as
+    # direct fields -- unlike C++, no declarator unwrapping is needed. One
+    # node type covers a free function, an inline impl method, and a
+    # trait-impl method uniformly (the enclosing impl_item/trait_item is
+    # never read).
+    file_path = tmp_path / "server.rs"
+    file_path.write_text(
+        "fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n"
+        "struct Server;\n\n"
+        "impl Server {\n"
+        "    pub fn new() -> Self {\n        Server\n    }\n\n"
+        "    fn no_return(&self) {\n    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert "add(a: i32, b: i32) -> i32" in sigs
+    assert "new() -> Self" in sigs
+    # no "return_type" field at all -- must not append a dangling " -> "
+    # with nothing after it.
+    assert "no_return(&self)" in sigs
+
+
+def test_extract_signatures_from_rust_trait_method(tmp_path):
+    # function_signature_item -- a trait's own method declaration, no
+    # body at all (just a signature + ";"). Still has "name"/"parameters"/
+    # "return_type", so it should still produce a real signature; having
+    # no "body" field is harmless for compression (see the matching
+    # compressor test).
+    file_path = tmp_path / "greet.rs"
+    file_path.write_text("trait Greet {\n    fn greet(&self) -> String;\n}\n", encoding="utf-8")
+
+    assert "greet(&self) -> String" in extract_signatures(str(file_path))
+
+
+def test_extract_dependencies_from_rust_file(tmp_path):
+    # mod_item (a real file-backed submodule declaration) plus every real
+    # use_declaration shape: plain path, grouped list (one entry per
+    # sibling), wildcard (module path only, "*" dropped), and an aliased
+    # path (alias dropped, original path kept).
+    file_path = tmp_path / "lib.rs"
+    file_path.write_text(
+        "mod inner;\n"
+        "use std::collections::{HashMap, HashSet};\n"
+        "use foo::*;\n"
+        "use foo::bar as baz;\n"
+        "use crate::models::User;\n",
+        encoding="utf-8",
+    )
+
+    deps = extract_dependencies(str(file_path))
+    assert "inner" in deps
+    assert "std.collections.HashMap" in deps
+    assert "std.collections.HashSet" in deps
+    assert "foo" in deps
+    assert "foo.bar" in deps
+    assert "crate.models.User" in deps
+
+
 def test_extract_signatures_from_typescript_arrow_functions(tmp_path):
     # arrow_function/function_expression have no "name" field of their own
     # when anonymous -- extract_signatures() has to recover a readable name
