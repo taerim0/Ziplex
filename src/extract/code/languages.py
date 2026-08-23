@@ -178,12 +178,27 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     ),
     ".ts": LanguageConfig(
         language=Language(tstypescript.language_typescript()),
-        function_types=["function_declaration", "method_definition"],
+        # arrow_function/function_expression cover the two anonymous-function
+        # shapes function_declaration/method_definition miss entirely --
+        # `const add = (a, b) => ...`, `const handler = function(req, res)
+        # {...}`, object-literal methods, class-field arrows. Neither has a
+        # "name" field of its own when anonymous; extractor.py's
+        # _resolve_signature_name() falls back to the wrapping
+        # variable_declarator/public_field_definition/pair node's own
+        # "name"/"key" field to recover one. One known residual gap: a bare
+        # single-identifier-parameter arrow with no parens (`x => x * 2`)
+        # has no "parameters" field at all (the identifier is an unnamed
+        # positional child) and so still produces no signature -- left
+        # undone rather than teaching the generic extractor a
+        # per-node-type positional fallback, same restraint as GDScript's
+        # constructor_definition gap below. Doesn't affect body compression
+        # either way, which only needs a "body" field.
+        function_types=["function_declaration", "method_definition", "arrow_function", "function_expression"],
         dependency_handler=_ts_dependency_handler,
     ),
     ".js": LanguageConfig(
         language=Language(tstypescript.language_tsx()),
-        function_types=["function_declaration", "method_definition"],
+        function_types=["function_declaration", "method_definition", "arrow_function", "function_expression"],
         dependency_handler=_ts_dependency_handler,
     ),
     ".lua": LanguageConfig(

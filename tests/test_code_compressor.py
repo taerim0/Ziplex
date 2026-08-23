@@ -76,6 +76,30 @@ def test_gdscript_constructor_body_is_stripped():
     assert "total = x + y" not in result
 
 
+def test_typescript_arrow_function_body_is_stripped():
+    # arrow_function wasn't in .ts's function_types at all before this fix --
+    # a block-bodied arrow shipped fully uncompressed, unlike an equivalent
+    # function_declaration/method_definition.
+    code = "const add = (a, b) => {\n    return a + b;\n};\n"
+    result = compress_code(code, ".ts")
+
+    assert "const add = (a, b) => {" in result
+    assert MARKER.strip() in result
+    assert "return a + b" not in result
+    assert "}" in result
+
+
+def test_typescript_concise_arrow_body_is_left_alone():
+    # `x => x * 2` -- a single-line expression body with no braces. The
+    # existing "body starts on the same line as the signature" check already
+    # covers this for free: stripping it would blank the whole statement,
+    # not just an implementation detail, so nothing should be removed.
+    code = "const double = x => x * 2;\n"
+    result = compress_code(code, ".ts")
+
+    assert result == code.rstrip("\n")
+
+
 def test_unsupported_extension_returns_none():
     assert compress_code("whatever content", ".xyz") is None
 
