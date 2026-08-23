@@ -137,7 +137,14 @@ def pack(
     (corrector.py's move_file()) never silently gets skipped along with an
     unchanged file's dependency data; a fresh pack always rebuilds
     `relationships` from scratch regardless of this flag, same as before
-    incremental reuse existed.
+    incremental reuse existed. use_cache=False (CLI: `pack --no-cache`)
+    also discards a leftover checkpoint from an interrupted previous run,
+    not just previous summaries -- "ignore anything cached from before"
+    means the checkpoint too; without this, a non-interactive caller (the
+    GUI, always) would silently auto-resume that checkpoint regardless of
+    use_cache, which read as a bug from the outside (a "완전히 재패킹"
+    checkbox not actually starting fresh) even though each half worked as
+    designed in isolation.
 
     use_llm=False (CLI: `pack --no-llm`) skips every LLM call entirely --
     no GEMINI_API_KEY, no network, no Gemini rate limits -- for the
@@ -195,9 +202,16 @@ def pack(
     root = Path(root_path)
     effective_result_dir = Path(result_dir) if result_dir else RESULT_DIR
 
-    # auto-detect a checkpoint
+    # auto-detect a checkpoint -- use_cache=False means "ignore anything
+    # cached from before, pack this fully fresh," which includes a leftover
+    # checkpoint from an interrupted run, not just previous summaries (see
+    # this function's own use_cache docstring, further up). Short-circuits
+    # before ever calling resume_checkpoint_choice() in that case, so a
+    # non-cached run never gets an interactive resume-or-discard prompt (or
+    # a silent auto-resume, non-interactively) for something the caller
+    # already said to ignore.
     checkpoint = ckpt.load_checkpoint(root_path)
-    if checkpoint and not ckpt.resume_checkpoint_choice(interactive):
+    if checkpoint and (not use_cache or not ckpt.resume_checkpoint_choice(interactive)):
         checkpoint = None
         ckpt.delete_checkpoint(root_path)
 
