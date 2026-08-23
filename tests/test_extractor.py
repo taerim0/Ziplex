@@ -162,6 +162,89 @@ def test_extract_api_detects_decorator_based_routes(tmp_path):
     assert "GET /users" in api
 
 
+def test_extract_api_detects_express_style_routes(tmp_path):
+    # extract_api() used to run one hardcoded, Python-specific traversal
+    # unconditionally against every file's own AST -- harmless for other
+    # languages only because their AST never happened to contain a
+    # decorated_definition node, not because it was actually generalized.
+    file_path = tmp_path / "app.ts"
+    file_path.write_text(
+        'app.get("/users", (req, res) => { res.send([]); });\n'
+        'router.post("/users", handler);\n'
+        'router.delete("/users/:id", handler);\n',
+        encoding="utf-8",
+    )
+
+    api = extract_api(str(file_path))
+    assert "GET /users" in api
+    assert "POST /users" in api
+    assert "DELETE /users/:id" in api
+
+
+def test_extract_api_detects_nested_express_routes_inside_a_callback(tmp_path):
+    # A route-registration call's callback is an ordinary argument, not a
+    # dead end -- an (unusual but possible) nested registration inside it
+    # must still be found, unlike Python's decorator (which can't nest a
+    # second route inside itself the same way).
+    file_path = tmp_path / "app.ts"
+    file_path.write_text(
+        'app.get("/a", () => {\n  app.get("/b", handler);\n});\n',
+        encoding="utf-8",
+    )
+
+    api = extract_api(str(file_path))
+    assert "GET /a" in api
+    assert "GET /b" in api
+
+
+def test_extract_api_only_matches_the_actual_first_argument(tmp_path):
+    # A string that isn't the call's first argument must not be mistaken
+    # for the route path, even if it happens to start with "/".
+    file_path = tmp_path / "app.ts"
+    file_path.write_text('app.get(middleware, "/should-not-count");\n', encoding="utf-8")
+
+    assert extract_api(str(file_path)) == []
+
+
+def test_extract_api_ignores_non_route_get_calls(tmp_path):
+    # A same-shaped .get(...) call on some unrelated object (a Map, a
+    # config object) must not be mistaken for a route registration -- the
+    # path argument has to actually look like a route ("/"-prefixed).
+    file_path = tmp_path / "app.ts"
+    file_path.write_text('const value = cache.get("someKey");\n', encoding="utf-8")
+
+    assert extract_api(str(file_path)) == []
+
+
+def test_extract_api_ignores_template_literal_paths(tmp_path):
+    # Only a plain string-literal path is statically resolvable -- a
+    # template literal with interpolation is left uncaptured, same
+    # restraint _lua_dependency_handler takes for a dynamically-computed
+    # require().
+    file_path = tmp_path / "app.ts"
+    file_path.write_text("app.put(`/users/${id}`, handler);\n", encoding="utf-8")
+
+    assert extract_api(str(file_path)) == []
+
+
+def test_extract_api_returns_empty_for_languages_with_no_routing_convention(tmp_path):
+    file_path = tmp_path / "mod.lua"
+    file_path.write_text("local function greet(name)\n    return name\nend\n", encoding="utf-8")
+
+    assert extract_api(str(file_path)) == []
+
+
+def test_extract_signatures_from_gdscript_constructor(tmp_path):
+    # constructor_definition has no "name" field at all -- the grammar
+    # types its own fixed keyword ("_init") as a literal token, not an
+    # identifier under a field -- so LanguageConfig.implicit_names supplies
+    # the fallback.
+    file_path = tmp_path / "player.gd"
+    file_path.write_text("func _init(x, y):\n    var total = x + y\n", encoding="utf-8")
+
+    assert "_init(x, y)" in extract_signatures(str(file_path))
+
+
 def test_unsupported_extension_returns_empty_lists(tmp_path):
     file_path = tmp_path / "notes.xyz"
     file_path.write_text("whatever", encoding="utf-8")

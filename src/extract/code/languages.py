@@ -5,7 +5,7 @@ dependency handler if needed) — nothing else. extractor.py / compressor.py onl
 ever reference this config; they don't hardcode per-language node types themselves.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -37,6 +37,133 @@ from tree_sitter_language_pack import get_language as _get_bundled_language
 # (see _gdscript_dependency_handler and resolve_dependency()'s own
 # docstring for why the two shapes need different matching).
 DependencyHandler = Callable[[Node, list], bool]
+
+# Same (Node, list) -> bool shape and traversal contract as DependencyHandler
+# above (True = handled, stop recursing into this node's children; False =
+# not a route-shaped node, keep looking). A language with no established
+# web-routing convention (Lua, GDScript) just has no handler at all
+# (LanguageConfig.api_handler defaults to None) -- extract_api() then
+# returns [] for it outright rather than running a traversal that could
+# never match anything, same as extract_dependencies() would for a
+# language with no imports of its own.
+ApiHandler = Callable[[Node, list], bool]
+
+
+def _walk_all(node: Node):
+    """Every descendant of node, node itself included -- shared by the API
+    handlers below to search a small subtree (a decorator, an arguments
+    list) for a nested node type without writing a bespoke recursive
+    search each time. Deliberately not extractor.py's own traversal
+    (_traverse_dependencies/_traverse_api) -- this is unconditional (never
+    stops early on a match), used to search *inside* a node a handler has
+    already decided is relevant, not to decide relevance itself.
+    """
+    yield node
+    for child in node.children:
+        yield from _walk_all(child)
+
+
+def _py_api_handler(node: Node, results: list) -> bool:
+    """Flask-style route detection: a @app.get("/path")-shaped decorator
+    on a function/class definition. Matches on ".get"/".post"/etc.
+    appearing anywhere in the decorator's own text rather than requiring a
+    specific object name (app/bp/blueprint/router all decorate routes this
+    way in real Flask code) -- a heuristic, not a semantic guarantee, the
+    same restraint every dependency_handler above already takes for its
+    own language's import syntax.
+    """
+    if node.type != "decorated_definition":
+        return False
+
+    decorator = None
+    for child in node.children:
+        if child.type == "decorator":
+            decorator = child
+            break
+
+    if decorator:
+        method = None
+        path = None
+
+        for n in _walk_all(decorator):
+            if n.type == "attribute":
+                attr_text = n.text.decode()
+                if ".get"      in attr_text: method = "GET"
+                elif ".post"   in attr_text: method = "POST"
+                elif ".put"    in attr_text: method = "PUT"
+                elif ".delete" in attr_text: method = "DELETE"
+                elif ".patch"  in attr_text: method = "PATCH"
+                break
+
+        for n in _walk_all(decorator):
+            if n.type == "string_content":
+                path = n.text.decode()
+                break
+
+        if method and path:
+            results.append(f"{method} {path}")
+
+    return True
+
+
+_HTTP_METHOD_CALLS = {"get": "GET", "post": "POST", "put": "PUT", "delete": "DELETE", "patch": "PATCH"}
+
+
+def _js_api_handler(node: Node, results: list) -> bool:
+    """Express-style route detection: an `app.get("/path", ...)`-shaped
+    call, matched the same way Flask's decorator is above -- by the
+    property name (get/post/put/delete/patch) on whatever object it's
+    called on (app/router/api all register routes this way in real
+    Express code), not a specific variable name. Only a plain string-
+    literal first argument counts as a resolvable path -- a template
+    literal with interpolation (`/users/${id}`) is left uncaptured, same
+    "only capture what's statically resolvable" restraint
+    _lua_dependency_handler takes for a dynamically-computed require().
+    A route path is additionally required to start with "/", the one
+    signal that distinguishes an actual route registration from an
+    unrelated same-shaped call (Map.get("key"), someMap.get(id)) that
+    happens to use the same method name on some other kind of object --
+    still a heuristic, not a semantic guarantee, since a legitimate
+    non-routing `.get("/looks/like/a/path")` call can't be ruled out from
+    syntax alone.
+
+    Always returns False (keep recursing), unlike _py_api_handler's
+    unconditional True for a matched decorated_definition -- a decorator
+    can't meaningfully nest another route inside itself, but an Express
+    callback body is an ordinary argument to this same call_expression, so
+    a rare nested registration (`app.get("/a", () => { app.get("/b", ...)
+    })`) is still worth finding rather than silently dropped just because
+    the outer call already matched.
+    """
+    if node.type != "call_expression":
+        return False
+
+    func = node.child_by_field_name("function")
+    if func is None or func.type != "member_expression":
+        return False
+
+    property_node = func.child_by_field_name("property")
+    method = _HTTP_METHOD_CALLS.get(property_node.text.decode()) if property_node else None
+    if method is None:
+        return False
+
+    args = node.child_by_field_name("arguments")
+    if args is not None:
+        # The first *argument*, not just the first string anywhere in the
+        # arguments list -- a call whose first argument isn't a string but
+        # a later one happens to be (and happens to start with "/") would
+        # otherwise grab that unrelated string as the "path".
+        non_syntax = [c for c in args.children if c.type not in ("(", ")", ",")]
+        first_arg = non_syntax[0] if non_syntax else None
+        if first_arg is not None and first_arg.type == "string":
+            for n in _walk_all(first_arg):
+                if n.type == "string_fragment":
+                    path = n.text.decode()
+                    if path.startswith("/"):
+                        results.append(f"{method} {path}")
+                    break
+
+    return False
 
 
 def _py_dependency_handler(node: Node, results: list) -> bool:
@@ -163,6 +290,17 @@ class LanguageConfig:
     language: Language
     function_types: list[str]              # node types targeted for signature extraction + body compression
     dependency_handler: DependencyHandler   # strategy for extracting import statements
+    api_handler: ApiHandler | None = None   # strategy for extracting REST-route declarations, if this language has one
+    # Fallback name for a function_types node whose grammar gives it neither
+    # its own "name" field nor a wrapping node with one -- e.g. GDScript's
+    # constructor_definition, whose only "name" is the fixed keyword token
+    # "_init" itself (a literal, not an identifier under a field), unlike
+    # every other language here where a function names itself via a real
+    # field. Keeps this per-language fact in languages.py, where every
+    # other per-language quirk already lives, rather than teaching
+    # extractor.py's generic _resolve_signature_name() a GDScript-specific
+    # string.
+    implicit_names: dict[str, str] = field(default_factory=dict)
 
 
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
@@ -170,6 +308,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         language=Language(tspython.language()),
         function_types=["function_definition"],
         dependency_handler=_py_dependency_handler,
+        api_handler=_py_api_handler,
     ),
     ".java": LanguageConfig(
         language=Language(tsjava.language()),
@@ -195,11 +334,13 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # either way, which only needs a "body" field.
         function_types=["function_declaration", "method_definition", "arrow_function", "function_expression"],
         dependency_handler=_ts_dependency_handler,
+        api_handler=_js_api_handler,
     ),
     ".js": LanguageConfig(
         language=Language(tstypescript.language_tsx()),
         function_types=["function_declaration", "method_definition", "arrow_function", "function_expression"],
         dependency_handler=_ts_dependency_handler,
+        api_handler=_js_api_handler,
     ),
     ".lua": LanguageConfig(
         language=Language(tslua.language()),
@@ -224,14 +365,14 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # function_definition -- Godot's `_init` (its standard constructor)
         # parses distinctly, so without this it would ship fully
         # uncompressed while every sibling method got body-stripped. It
-        # doesn't help extract_signatures() the same way: this node has no
-        # "name" field at all (there's nothing to name -- it's always
-        # _init), so _traverse_signatures()'s `if name and params` guard
-        # skips it and no signature entry is produced. Left as a known,
-        # minor gap rather than teaching the generic (language-agnostic)
-        # extractor.py about a GDScript-specific fallback name.
+        # has no "name" field at all (there's nothing to name in the
+        # grammar's own terms -- the keyword "_init" is a literal token,
+        # not an identifier under a field), so implicit_names supplies the
+        # one fixed name every constructor_definition in any GDScript file
+        # always has.
         function_types=["function_definition", "constructor_definition"],
         dependency_handler=_gdscript_dependency_handler,
+        implicit_names={"constructor_definition": "_init"},
     ),
 }
 
