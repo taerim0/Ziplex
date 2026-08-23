@@ -3,6 +3,8 @@ import sys
 import pytest
 
 import cli
+import llm
+import summarizer
 from cli import _split_patterns, _check_max_tokens
 
 
@@ -81,3 +83,30 @@ def test_pack_main_exits_cleanly_when_pack_incomplete_and_no_max_tokens_requeste
     monkeypatch.setattr(sys, "argv", ["cli.py", "pack", str(tmp_path), "--auto", "--auto-correct"])
 
     cli.main()  # must not raise SystemExit
+
+
+def test_analyze_command_delegates_to_summarizer_and_shares_its_failure_placeholder(tmp_path, monkeypatch, capsys):
+    # analyze used to call llm.analyze_file_summary() directly in its own
+    # bespoke per-file loop -- no batching, no shared retry-once-then-
+    # placeholder logic, and its own separate failure string ("분석 실패")
+    # instead of summarizer.SUMMARY_FAILED_PLACEHOLDER ("요약 생성 실패"),
+    # the one confidence.py specifically recognizes. Refactored to delegate
+    # to summarizer.generate_summaries() -- the same path pack() itself
+    # uses -- so a future fix there (batching, retry, placeholder handling)
+    # no longer silently misses this command.
+    class _FailingProvider(llm.MockProvider):
+        def generate(self, prompt: str, retry: int = 5) -> str:
+            return "not valid json"
+
+    monkeypatch.setattr(llm, "_provider", _FailingProvider())
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "analyze", str(project)])
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert summarizer.SUMMARY_FAILED_PLACEHOLDER in out
+    assert "분석 실패" not in out
