@@ -154,6 +154,38 @@ def test_cpp_function_and_method_bodies_are_stripped():
     assert "};" in result
 
 
+def test_rust_function_and_method_bodies_are_stripped():
+    # A brace language -- covers a free function and an impl method via
+    # the one function_item node type this grammar uses uniformly.
+    code = (
+        "fn add(a: i32, b: i32) -> i32 {\n"
+        "    a + b\n"
+        "}\n\n"
+        "impl Server {\n"
+        "    pub fn start(&mut self) {\n"
+        "        run();\n"
+        "    }\n"
+        "}\n"
+    )
+    result = compress_code(code, ".rs")
+
+    assert "fn add(a: i32, b: i32) -> i32 {" in result
+    assert "pub fn start(&mut self) {" in result
+    assert MARKER.strip() in result
+    assert "run();" not in result
+    assert "impl Server {" in result
+
+
+def test_rust_trait_method_with_no_body_is_left_alone():
+    # function_signature_item (a trait's own method declaration) has no
+    # "body" field at all -- _collect_bodies' `if body:` guard must find
+    # nothing to strip here, leaving the one-line declaration untouched.
+    code = "trait Greet {\n    fn greet(&self) -> String;\n}\n"
+    result = compress_code(code, ".rs")
+
+    assert result == code.rstrip("\n")
+
+
 def test_unsupported_extension_returns_none():
     assert compress_code("whatever content", ".xyz") is None
 

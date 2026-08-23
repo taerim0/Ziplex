@@ -16,6 +16,7 @@ import tree_sitter_typescript as tstypescript
 import tree_sitter_lua as tslua
 import tree_sitter_go as tsgo
 import tree_sitter_cpp as tscpp
+import tree_sitter_rust as tsrust
 
 # GDScript has no dedicated tree-sitter-gdscript PyPI package (as of this
 # writing) the way the languages above do -- only a community grammar
@@ -360,6 +361,133 @@ def _cpp_dependency_handler(node: Node, results: list) -> bool:
     return True
 
 
+def _append_rust_use_paths(path_text: str, results: list) -> None:
+    """Expands one use_declaration argument's raw text into one dotted
+    dependency path per imported symbol, recursively -- text-based rather
+    than a node-type traversal (like _java_dependency_handler's own raw-
+    text stripping) since this grammar's argument shape varies more than
+    any other supported language's import syntax: a plain path
+    (scoped_identifier), an aliased path (use_as_clause, `as new_name`), a
+    glob (use_wildcard, `foo::*`), and -- unique to Rust among supported
+    languages -- a single statement naming several sibling paths under one
+    shared prefix (scoped_use_list, `use std::{fmt, collections::HashMap}`),
+    which can itself nest arbitrarily deep.
+
+    "::" is Rust's path separator, normalized to "." throughout so the
+    result matches every other handler's dotted-path convention --
+    resolve_dependency()'s existing split-on-"."-take-last-segment
+    fallback then applies unchanged, no Rust-specific matching needed
+    there.
+
+    An alias (`as baz`) is dropped -- the alias name isn't a real path
+    segment resolve_dependency() could ever match against a file stem, so
+    keeping the original path is what best doubles as a guess.
+
+    Group-splitting is checked *before* alias-stripping, not after: a
+    group's own siblings can themselves carry an alias
+    (`foo::{bar as baz, qux}`), and splitting " as " off the whole
+    argument text first would truncate the group mid-string (into
+    "foo::{bar", losing "qux" entirely and leaving a dangling "{") before
+    the group was ever recognized as one. Each split-out sibling is fed
+    back through this same function recursively, so a per-item alias
+    (`bar as baz` above) still gets stripped correctly, just one level
+    down instead of on the whole statement up front.
+    """
+    path_text = path_text.strip()
+
+    if path_text.endswith("}") and "{" in path_text:
+        prefix, _, group = path_text.partition("{")
+        prefix = prefix.rstrip(":").strip()
+        inner = group[:-1]
+
+        # Comma-split the group's own items, but only at depth 0 -- an
+        # item can itself be a nested group (`fmt::{self, Display}`
+        # inside an outer group), whose internal commas must not split
+        # the outer list.
+        items, item, depth = [], "", 0
+        for ch in inner:
+            if ch == "{":
+                depth += 1
+                item += ch
+            elif ch == "}":
+                depth -= 1
+                item += ch
+            elif ch == "," and depth == 0:
+                items.append(item)
+                item = ""
+            else:
+                item += ch
+        if item.strip():
+            items.append(item)
+
+        for raw_item in items:
+            raw_item = raw_item.strip()
+            if not raw_item:
+                continue
+            combined = f"{prefix}::{raw_item}" if prefix else raw_item
+            _append_rust_use_paths(combined, results)
+        return
+
+    path_text = path_text.split(" as ")[0].strip()
+
+    if path_text.endswith("::*"):
+        path_text = path_text[:-3].strip()
+        if path_text:
+            results.append(path_text.replace("::", "."))
+        return
+
+    if path_text:
+        results.append(path_text.replace("::", "."))
+
+
+def _rust_dependency_handler(node: Node, results: list) -> bool:
+    """Two distinct dependency shapes in Rust, both handled here:
+
+    `mod foo;` (mod_item, no body -- a body-having `mod foo { ... }` is an
+    inline submodule, not a file reference, so only the field-declaration
+    form is a real file dependency) declares a submodule backed by its own
+    file (foo.rs or foo/mod.rs) -- the single most precise, directly
+    file-stem-resolvable dependency shape Rust has, read straight off the
+    "name" field with no path unwrapping needed at all. An inline
+    `mod foo { ... }` (real, common e.g. for `#[cfg(test)] mod tests {
+    ... }`) is deliberately left unmatched -- its own name isn't a file
+    reference at all, and its body can itself contain real use/mod
+    declarations (a nested test module importing `crate::...` is the
+    ordinary case), which still need to be found by recursing into it
+    rather than having this handler swallow the whole subtree as one
+    bogus dependency.
+
+    `use path::to::Item;` (use_declaration) is a symbol import, not
+    necessarily a file reference -- see _append_rust_use_paths()'s own
+    docstring for the shapes its argument can take. Known, accepted
+    limitation shared with Go's own dependency_handler: a use path's last
+    segment often names a *type* (PascalCase, e.g. `crate::models::User`),
+    not the *file* that defines it (typically snake_case, user.rs) --
+    resolve_dependency()'s stem-matching will frequently miss this the
+    same way Go's package-vs-file granularity mismatch does. mod_item
+    resolution above is what actually carries most of Rust's real
+    internal file-dependency precision; use_declaration capture is best
+    treated as a bonus, not the primary signal.
+    """
+    if node.type == "mod_item":
+        if node.child_by_field_name("body") is not None:
+            # inline submodule -- not a file reference; keep recursing so
+            # any real use/mod declarations inside its body are still found
+            return False
+        name = node.child_by_field_name("name")
+        if name:
+            results.append(name.text.decode())
+        return True
+
+    if node.type == "use_declaration":
+        argument = node.child_by_field_name("argument")
+        if argument is not None:
+            _append_rust_use_paths(argument.text.decode().strip(), results)
+        return True
+
+    return False
+
+
 @dataclass(frozen=True)
 class LanguageConfig:
     language: Language
@@ -500,6 +628,25 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     ".cpp": _cpp_config,
     ".cc": _cpp_config,
     ".cxx": _cpp_config,
+    ".rs": LanguageConfig(
+        language=Language(tsrust.language()),
+        # Unlike C++, this grammar exposes a function's "name"/"parameters"/
+        # "return_type"/"body" as direct fields of function_item itself --
+        # no declarator indirection, so no extractor.py changes were needed
+        # at all (not even a second return-type field name: "return_type"
+        # already matches Python/TS/GDScript's own convention). One
+        # function_item covers every shape uniformly: a free function, an
+        # inline impl method, and a trait-impl method all parse identically
+        # (the enclosing impl_item/trait_item is simply never read).
+        # function_signature_item (a trait's own method declaration with no
+        # body, `fn greet(&self) -> String;`) is included too -- it still
+        # has "name"/"parameters"/"return_type" for a real signature, and
+        # having no "body" field is harmless for compression (_collect_
+        # bodies' `if body:` guard just finds nothing to strip, correctly
+        # leaving the one-line declaration untouched).
+        function_types=["function_item", "function_signature_item"],
+        dependency_handler=_rust_dependency_handler,
+    ),
 }
 
 
