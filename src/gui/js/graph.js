@@ -1,12 +1,15 @@
-// Dependency-graph visualization + editing, split out of app.js -- see
-// app-core.js's header comment for the overall file split and load order.
-// This file: svgEl()/truncateTail()/shortLabels() (small SVG/label
-// helpers), renderMiniGraph() (one file's ego-graph), and the two whole-
-// tree-shaped components built on it -- renderDependencyTreeOverview()
-// (read-only, collapsible, shown first) and renderRelationshipEditor()
-// (master-detail, reached by clicking a file in the overview). Used by
-// both the pack review flow (app-pack.js) and the post-pack Relationships
-// page (app-pages.js).
+// Dependency-graph visualization + editing -- see app.js's header comment
+// for the overall module split. This file: svgEl()/truncateTail()/
+// shortLabels() (small SVG/label helpers, internal to this module), and
+// the three exported components -- renderMiniGraph() (one file's ego-
+// graph), renderDependencyTreeOverview() (read-only, collapsible, shown
+// first), and renderRelationshipEditor() (master-detail, reached by
+// clicking a file in the overview). Used by both the pack review flow
+// (pack.js) and the post-pack Relationships page (pages/relationships.js).
+
+import { el } from "./app.js";
+import { t } from "./i18n.js";
+
 function svgEl(tag, attrs = {}, children = []) {
   const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -62,7 +65,7 @@ function shortLabels(names) {
 // re-searching the file list for every hop.
 const REL_GRAPH_MAX_NEIGHBORS = 6;
 
-function renderMiniGraph(name, parents, children, onSelect) {
+export function renderMiniGraph(name, parents, children, onSelect) {
   const shownParents = parents.slice(0, REL_GRAPH_MAX_NEIGHBORS);
   const extraParents = parents.length - shownParents.length;
   const shownChildren = children.slice(0, REL_GRAPH_MAX_NEIGHBORS);
@@ -154,12 +157,12 @@ function renderMiniGraph(name, parents, children, onSelect) {
 // Read-only "whole project at a glance" view over the same build_tree()-
 // shaped dependency tree ({file: {internal: [...], external: [...]}})
 // renderRelationshipEditor below edits -- shown first when a pack review's
-// relationship section loads (see showReviewState()), instead of jumping
-// straight into per-file edit mode for the first flagged file the way an
-// earlier version did. The idea: let a human spot what actually looks wrong
-// by eye across the *whole* tree first, and only drop into the edit UI for a
-// file once they've decided (by looking, not by clicking through a search
-// list one file at a time) that it needs a change.
+// relationship section loads (see pack.js's showReviewState()), instead of
+// jumping straight into per-file edit mode for the first flagged file the
+// way an earlier version did. The idea: let a human spot what actually
+// looks wrong by eye across the *whole* tree first, and only drop into the
+// edit UI for a file once they've decided (by looking, not by clicking
+// through a search list one file at a time) that it needs a change.
 //
 // Same roots-first + cycle-guarded traversal as corrector.py's terminal
 // print_current_tree() (a "root" is any file nothing else's `internal` list
@@ -175,7 +178,7 @@ function renderMiniGraph(name, parents, children, onSelect) {
 // toggle for clicks on the row itself, while a click on the actual triangle
 // (part of <summary>, not this row) still expands/collapses normally, the
 // same split VS Code's own file tree uses (chevron toggles, label opens).
-function renderDependencyTreeOverview(tree, allFiles, flaggedFiles, onSelectFile) {
+export function renderDependencyTreeOverview(tree, allFiles, flaggedFiles, onSelectFile) {
   const flagged = new Set(flaggedFiles);
 
   function fileRow(name, note) {
@@ -246,8 +249,8 @@ function renderDependencyTreeOverview(tree, allFiles, flaggedFiles, onSelectFile
 // never what you want). onLink/onUnlink(file, target) are called on each
 // add/remove click; the caller is expected to redraw via the returned
 // .setTree() once the server confirms the change (see /api/pack/link,
-// /api/pack/unlink in showReviewState).
-function renderRelationshipEditor(tree, allFiles, onLink, onUnlink, initialSelected) {
+// /api/pack/unlink in pack.js's showReviewState).
+export function renderRelationshipEditor(tree, allFiles, onLink, onUnlink, initialSelected) {
   const box = el("div", { class: "rel-master-detail" });
   let currentTree = tree;
   let selected = initialSelected && allFiles.includes(initialSelected) ? initialSelected : (allFiles[0] || null);
@@ -366,4 +369,3 @@ function renderRelationshipEditor(tree, allFiles, onLink, onUnlink, initialSelec
     setTree: (tree) => { currentTree = tree; buildReverseDeps(); drawList(); drawDetail(); },
   };
 }
-

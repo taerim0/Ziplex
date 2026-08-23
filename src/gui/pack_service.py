@@ -462,7 +462,7 @@ def start_pack_job(
         # Stashed only so get_job_status() can hand back a retry_params
         # payload identical in shape to what gui_server.py's /api/pack
         # route accepts -- a failed job's error screen can then just repost
-        # this verbatim (see app-pack.js's showErrorState()) instead of
+        # this verbatim (see js/pack.js's showErrorState()) instead of
         # sending a human back to reselect files/retype paths from scratch,
         # letting pack()'s own non-interactive checkpoint auto-resume (see
         # checkpoint.resume_checkpoint_choice()) pick up where it left off.
@@ -564,7 +564,7 @@ def get_review(job_id: str) -> dict | None:
 
 def has_reviewing_job() -> bool:
     """True if any job is currently paused in "reviewing" -- backs
-    gui_server.py's native-window close guard. app-pack.js's own beforeunload
+    gui_server.py's native-window close guard. js/pack.js's own beforeunload
     handler (see showReviewState()'s comment) only fires on an in-page
     reload/navigation; clicking the OS window's close button destroys the
     webview directly without ever running the page's unload event, so

@@ -31,7 +31,7 @@ project folder, aif.json, pack output -- get a real OS file/folder-picker
 dialog instead of requiring a typed path. pywebview injects that bridge as
 `window.pywebview.api` only in the native window, so it's simply absent in
 `--no-window`/bare-`flask run` mode, and the frontend's picker buttons (see
-app-core.js's hasApi()) fall back to asking for a typed path there rather
+js/app.js's hasApi()) fall back to asking for a typed path there rather
 than assuming the bridge exists.
 
 Binds to 127.0.0.1 only -- there is no --host flag, on purpose. Exposing
@@ -68,14 +68,15 @@ import query_service
 import settings as app_settings
 from file.relationship import CycleError
 
-# static_folder="." -- not "gui" -- since index.html/the app-*.js files/
+# static_folder="." -- not "gui" -- since index.html/the js/ module tree/
 # style.css are this file's own siblings now that gui_server.py itself
-# lives in src/gui/.
+# lives in src/gui/. Flask's static route handles the nested js/pages/
+# path the same as a top-level file, so no extra config is needed for it.
 app = Flask(__name__, static_folder=".", static_url_path="")
 
 # Filled in from CLI args at startup (see main()); read by GET /api/config
 # so the frontend can prefill the landing page without a templating layer --
-# index.html/the app-*.js files stay plain static files this way.
+# index.html/the js/ module tree stay plain static files this way.
 _default_config = {"aif_path": None, "project_path": None}
 
 
@@ -84,7 +85,7 @@ _default_config = {"aif_path": None, "project_path": None}
 # likely failure mode this GUI has. Only /api/detail and /api/search had
 # their own try/except (for get_detail's/search_project's ValueError);
 # without these two handlers, a bad path anywhere else fell through as
-# Flask's default 500 HTML page, which app-core.js's api() error-message
+# Flask's default 500 HTML page, which js/app.js's api() error-message
 # handling can't extract anything useful from ("요청 실패 (500)" with no
 # reason). Registered
 # once here instead of adding try/except to every route.
@@ -410,7 +411,7 @@ class _Api:
     by hand, for every path field the landing page has. Only available in
     the default windowed mode: --no-window opens a plain browser tab with
     no pywebview bridge, so the frontend falls back to manual entry there
-    (see app-core.js's hasApi()).
+    (see js/app.js's hasApi()).
 
     Defined at module level (not nested inside main(), where it used to
     live) even though `webview` itself is only ever imported lazily inside
@@ -456,7 +457,7 @@ class _Api:
 def _confirm_close_if_reviewing(window) -> bool | None:
     """Registered on window.events.closing (see the pywebview source: a
     handler returning False cancels the close, anything else lets it
-    proceed). app-pack.js's beforeunload guard protects an in-page reload/
+    proceed). js/pack.js's beforeunload guard protects an in-page reload/
     navigation during a pack review, but clicking this native window's own
     close button bypasses the DOM entirely -- pywebview tears the webview
     down directly rather than navigating it away, so beforeunload never

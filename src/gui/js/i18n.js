@@ -6,14 +6,14 @@
 // runtime AI/translation-API call: the GUI's own text is a small, fixed,
 // already-known set of strings, so translating it once at dev time (like
 // this file) costs nothing per view, needs no API key, and works with
-// --no-window/no network exactly like everything else in this frontend
-// split. Loaded first (index.html), before every other app-*.js file --
-// they all call t() from the very first render, several as early as
-// their own top-level `const` initializers (e.g. app-pack.js's button
-// labels), so this has to exist before any of them run.
+// --no-window/no network exactly like everything else in this frontend.
+//
+// Real ES modules (native browser support, `<script type="module">` in
+// index.html -- no bundler, still no build step) -- this has no imports
+// of its own, since it's the lowest layer everything else depends on.
 //
 // This file: LANG_KEY/getLang()/setLang() (localStorage-backed, same
-// pattern as app-core.js's aif_path/project_path -- a purely client-side
+// pattern as app.js's aif_path/project_path -- a purely client-side
 // display preference, never sent to the server, so it lives alongside
 // the other browser-only state rather than in settings.py's per-user
 // config file, which only ever holds things the *backend* needs to know),
@@ -25,12 +25,12 @@
 
 const LANG_KEY = "ziplex.lang";
 
-function getLang() {
+export function getLang() {
   const saved = localStorage.getItem(LANG_KEY);
   return saved === "en" ? "en" : "ko"; // ko is the default -- always was, before this setting existed
 }
 
-function setLang(lang) {
+export function setLang(lang) {
   localStorage.setItem(LANG_KEY, lang === "en" ? "en" : "ko");
 }
 
@@ -301,7 +301,7 @@ const I18N = {
 // this codebase started as) rather than the bare key -- a translation gap
 // should degrade to "shows Korean" instead of "shows core.some.key" to a
 // human who has no idea what that means.
-function t(key, vars) {
+export function t(key, vars) {
   const dict = I18N[getLang()] || I18N.ko;
   const entry = key in dict ? dict[key] : I18N.ko[key];
   if (entry === undefined) return key;
@@ -312,8 +312,9 @@ function t(key, vars) {
 // render*() -- nothing re-translates them on navigation the way t() calls
 // inside a render*() body do automatically. Each carries a data-i18n
 // attribute naming its own key; called once on DOMContentLoaded and again
-// whenever the language switcher changes (see app-pages.js's renderOptions()).
-function applyStaticI18n() {
+// whenever the language switcher changes (see pages/options.js's
+// renderOptions()).
+export function applyStaticI18n() {
   for (const el of document.querySelectorAll("[data-i18n]")) {
     el.textContent = t(el.dataset.i18n);
   }

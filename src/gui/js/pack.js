@@ -1,10 +1,15 @@
-// The pack job/review flow, split out of app.js -- see app-core.js's
-// header comment for the overall file split and load order. This file:
-// renderPackJob() -- kicks off/polls a background pack job (gui_server.py's
-// /api/pack*), then the "reviewing" state's full correction form (project
-// name/guide/rules/summaries, plus the dependency-tree overview + editor
-// from app-graph.js for relationships) before submit/finalize.
-async function renderPackJob(jobId) {
+// The pack job/review flow -- see app.js's header comment for the overall
+// module split. This file: renderPackJob() -- kicks off/polls a background
+// pack job (gui_server.py's /api/pack*), then the "reviewing" state's full
+// correction form (project name/guide/rules/summaries, plus the
+// dependency-tree overview + editor from graph.js for relationships)
+// before submit/finalize.
+
+import { app, nav, el, api, apiPost, openProject, confidenceLevel } from "./app.js";
+import { t } from "./i18n.js";
+import { renderDependencyTreeOverview, renderRelationshipEditor } from "./graph.js";
+
+export async function renderPackJob(jobId) {
   nav.classList.add("hidden");
   app.innerHTML = "";
 
