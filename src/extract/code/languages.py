@@ -503,20 +503,38 @@ def _csharp_dependency_handler(node: Node, results: list) -> bool:
     node.type, not "identifier"), so they never get mistaken for a path.
 
     Read positionally instead, like Lua's/GDScript's own callee-name
-    reads: the *last* identifier/qualified_name-typed child is always the
-    real path across every one of these shapes -- the only such child at
-    all for a plain/static/global using, and the one after "=" for an
-    aliased using (since the alias identifier is always the *first* one,
-    appearing before "="). Already dot-separated (a qualified_name's own
-    text already uses "." as C#'s real namespace separator, unlike Rust's
-    "::"), so no normalization is needed before appending --
-    resolve_dependency()'s existing split-on-"."-take-last-segment
-    fallback applies directly, same as Java's own dotted import text.
+    reads: the *last* identifier/qualified_name-typed child is the real
+    path for a plain/static/global using (the only such child at all),
+    and the one after "=" for an aliased using (since the alias
+    identifier is always the *first* one, appearing before "="). Already
+    dot-separated (a qualified_name's own text already uses "." as C#'s
+    real namespace separator, unlike Rust's "::"), so no normalization is
+    needed before appending -- resolve_dependency()'s existing
+    split-on-"."-take-last-segment fallback applies directly, same as
+    Java's own dotted import text.
+
+    For an aliased using, the search is scoped to children *after* "="
+    -- not simply "the last identifier/qualified_name in the whole
+    node," which code review caught being wrong: a type alias whose
+    right-hand side isn't itself an identifier/qualified_name (`using
+    MyInt = int;`, `using IntArray = int[];`, `using Nullable =
+    System.Int32?;` -- predefined_type/array_type/nullable_type/etc. are
+    all real, common alias targets) has no path-shaped child after "="
+    at all, so the whole-node search fell back to the *alias name*
+    itself (the "identifier" before "="), wrongly emitting it as a
+    bogus dependency. Scoping to after "=" makes that case correctly
+    find nothing instead, the same "only capture what's a real path"
+    restraint every other handler here already takes for an
+    unresolvable target (e.g. GDScript's `extends Node`).
     """
     if node.type != "using_directive":
         return False
+
+    equals_index = next((i for i, child in enumerate(node.children) if child.type == "="), None)
+    search_children = node.children[equals_index + 1:] if equals_index is not None else node.children
+
     path_node = None
-    for child in node.children:
+    for child in search_children:
         if child.type in ("identifier", "qualified_name"):
             path_node = child
     if path_node is not None:

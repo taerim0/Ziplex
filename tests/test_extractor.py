@@ -415,6 +415,29 @@ def test_extract_dependencies_from_csharp_file(tmp_path):
     assert "Alias" not in deps
 
 
+def test_extract_dependencies_ignores_csharp_non_path_type_aliases(tmp_path):
+    # A type alias whose right-hand side isn't itself an identifier/
+    # qualified_name (a primitive, array, or nullable type -- all real,
+    # common alias targets) has no path-shaped child after "=" at all.
+    # Code review caught the first version falling back to the *alias
+    # name itself* (the identifier before "=") in this case, wrongly
+    # emitting it as a bogus dependency -- must find nothing instead,
+    # the same restraint every other handler here takes for an
+    # unresolvable target.
+    file_path = tmp_path / "Aliases.cs"
+    file_path.write_text(
+        "using MyInt = int;\n"
+        "using IntArray = int[];\n"
+        "using Nullable = System.Int32?;\n",
+        encoding="utf-8",
+    )
+
+    deps = extract_dependencies(str(file_path))
+    assert "MyInt" not in deps
+    assert "IntArray" not in deps
+    assert "Nullable" not in deps
+
+
 def test_extract_signatures_from_typescript_arrow_functions(tmp_path):
     # arrow_function/function_expression have no "name" field of their own
     # when anonymous -- extract_signatures() has to recover a readable name
