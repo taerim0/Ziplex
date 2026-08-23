@@ -23,6 +23,11 @@ def test_build_tree_dedupes_and_excludes_self_reference():
     }
     tree = build_tree(files)
     assert tree["a.py"]["internal"] == ["b.py"]
+    # a self-reference must be dropped outright, not fall through into
+    # "external" just because it failed the `matched != name` check --
+    # this file's test name always claimed this, but never actually
+    # asserted the "external" side, so the leak passed undetected.
+    assert tree["a.py"]["external"] == []
 
 
 def test_build_tree_resolves_a_dependency_stem_containing_a_dot():

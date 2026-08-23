@@ -1,3 +1,8 @@
+import sys
+
+import pytest
+
+import cli
 from cli import _split_patterns, _check_max_tokens
 
 
@@ -47,3 +52,32 @@ def test_check_max_tokens_returns_none_for_unknown_model():
     passed, actual = _check_max_tokens(_tokens(100), max_tokens=200, model="Not-A-Real-Model")
     assert passed is False
     assert actual is None
+
+
+def test_pack_main_fails_loudly_when_max_tokens_requested_but_pack_never_completed(tmp_path, monkeypatch):
+    # pack() returns {} on a checkpoint-and-exit (a repeated LLM failure) or
+    # a cancelled/empty run -- the whole --max-tokens guard block used to
+    # sit inside `if aif:` with no else, so main() just exited 0 in that
+    # case: exactly the scenario the flag exists to catch (a CI pipeline
+    # silently passing despite pack() never actually completing).
+    monkeypatch.setattr(cli, "pack", lambda *a, **k: {})
+    monkeypatch.setattr(
+        sys, "argv",
+        ["cli.py", "pack", str(tmp_path), "--auto", "--auto-correct", "--max-tokens", "1000"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+
+
+def test_pack_main_exits_cleanly_when_pack_incomplete_and_no_max_tokens_requested(tmp_path, monkeypatch):
+    # Without --max-tokens, an incomplete pack() (checkpoint-and-exit, or
+    # nothing selected) must behave exactly as before this fix -- no error
+    # message, no non-zero exit, since nothing was ever asked to be
+    # verified.
+    monkeypatch.setattr(cli, "pack", lambda *a, **k: {})
+    monkeypatch.setattr(sys, "argv", ["cli.py", "pack", str(tmp_path), "--auto", "--auto-correct"])
+
+    cli.main()  # must not raise SystemExit

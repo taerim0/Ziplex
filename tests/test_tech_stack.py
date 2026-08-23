@@ -160,6 +160,23 @@ def test_skips_a_malformed_manifest_without_raising(tmp_path):
     }]
 
 
+def test_survives_a_manifest_that_isnt_valid_utf8(tmp_path):
+    # A legacy Windows-authored manifest saved in a non-UTF-8 encoding used
+    # to raise UnicodeDecodeError uncaught -- _read_text() only caught
+    # OSError, breaking this module's own "never raises, by contract"
+    # guarantee. Must degrade to an empty dependency list like any other
+    # unreadable/malformed manifest, not crash pack()'s tech-stack step.
+    (tmp_path / "requirements.txt").write_bytes("café==1.0\n".encode("latin-1"))
+    stacks = detect_tech_stack(str(tmp_path))
+    assert stacks == [{
+        "manifest": "requirements.txt",
+        "language": "Python",
+        "package_manager": "pip",
+        "dependencies": [],
+        "dependencies_truncated": False,
+    }]
+
+
 def test_ignores_a_manifest_found_in_a_subdirectory(tmp_path):
     nested = tmp_path / "nested"
     nested.mkdir()

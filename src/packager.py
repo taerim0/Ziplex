@@ -328,8 +328,16 @@ def pack(
         if name in restored_files_data:
             print(f"  ✅ {name} (체크포인트에서 복원)")
             files_data[file_path] = restored_files_data[name]
-            if files_data[file_path].get("signatures"):
-                signatures_map[file_path] = files_data[file_path]["signatures"]
+            # Same condition the fresh-extraction branch below uses (`sigs
+            # or deps`, not just `sigs`) -- this used to check "signatures"
+            # alone, silently excluding a checkpoint-restored file that has
+            # dependencies but no functions (e.g. a thin index.ts that's
+            # just top-level imports) from analyze_rules()'s input. That
+            # made the inferred coding rules depend on whether a run
+            # happened to get interrupted and resumed, for an otherwise
+            # identical pack.
+            if files_data[file_path].get("signatures") or files_data[file_path].get("dependencies"):
+                signatures_map[file_path] = files_data[file_path].get("signatures", [])
             continue
 
         sigs = extract_signatures(file_path)
@@ -406,7 +414,15 @@ def pack(
         return {}
 
     # extract rules (restored from checkpoint if available)
-    rules = restored_rules
+    # use_llm=False ignores restored_rules outright, even if a checkpoint
+    # left over from an earlier use_llm=True run has real inferred rules --
+    # pack(use_llm=False)'s documented contract is that rules always ends
+    # up [] (and prompt always ends up STRUCTURAL_ONLY_NOTE, see below).
+    # Restoring a genuine prior LLM result here would silently ship an
+    # aif.json with real coding rules alongside a prompt asserting no LLM
+    # inference ever happened -- a direct self-contradiction in the same
+    # document.
+    rules = restored_rules if use_llm else []
     if not rules and use_llm:
         print("  📋 코딩 룰 추출 중...")
         while not rules:
@@ -429,14 +445,22 @@ def pack(
                 elif result is None:
                     continue
                 else:
-                    rules = [r.strip() for r in result.split(",")]
+                    # Filtered, not just stripped: "".split(",") is ['']
+                    # (a one-element list holding an empty string, not an
+                    # empty list) -- pressing Enter with no input at this
+                    # prompt used to silently become a single bogus
+                    # empty-string rule instead of re-prompting, since
+                    # `while not rules:` only re-loops on a genuinely
+                    # empty list.
+                    rules = [r.strip() for r in result.split(",") if r.strip()]
     elif rules:
         print("  📋 코딩 룰 (체크포인트에서 복원)")
     else:
         print("  📋 코딩 룰 추출 건너뜀 (--no-llm)")
 
     # generate prompt (restored from checkpoint if available)
-    prompt = restored_prompt
+    # Same use_llm guard as rules above, and for the same reason.
+    prompt = restored_prompt if use_llm else ""
     if not prompt and use_llm:
         print("  ✍️  AI 가이드 생성 중...")
         while not prompt:

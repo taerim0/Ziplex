@@ -86,6 +86,41 @@ def test_pack_use_llm_false_never_calls_the_llm_and_uses_structural_summaries(tm
     assert aif["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE
 
 
+def test_pack_use_llm_false_ignores_rules_and_prompt_from_an_earlier_llm_run_checkpoint(tmp_path, monkeypatch):
+    # A prior use_llm=True run can succeed at the rules step, then fail at
+    # the prompt step and checkpoint with real inferred rules but no
+    # prompt. Retrying with use_llm=False (e.g. "LLM 사용 안 함" in the GUI,
+    # after a real API-key/quota problem) auto-resumes that checkpoint
+    # (use_cache=True is the default) -- pack(use_llm=False)'s contract is
+    # that rules is always [] and prompt is always STRUCTURAL_ONLY_NOTE,
+    # and restoring a genuine prior LLM result here would silently ship an
+    # aif.json with real coding rules alongside a prompt asserting no LLM
+    # inference ever happened.
+    class _RaisingProvider(llm.MockProvider):
+        def generate(self, prompt: str, retry: int = 5) -> str:
+            raise AssertionError("use_llm=False must never call the LLM provider")
+
+    monkeypatch.setattr(llm, "_provider", _RaisingProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    checkpoint.save_checkpoint(
+        str(project),
+        {
+            "project": {"name": "project", "prompt": ""},  # prompt step never completed
+            "rules": ["a real, previously-inferred rule"],
+            "files_data": {},
+        },
+    )
+
+    aif = packager.pack(str(project), auto=True, interactive=False, use_llm=False)
+
+    assert aif["rules"] == []
+    assert aif["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE
+
+
 def test_pack_use_llm_false_still_reuses_a_cached_real_summary(tmp_path, monkeypatch):
     # use_llm=False means "don't call the LLM now," not "throw away a
     # better answer already on hand" -- a file unchanged since a prior
@@ -283,6 +318,29 @@ def test_pack_rules_failure_interactive_manual_input_is_used(tmp_path, monkeypat
     aif = packager.pack(str(project), auto=True, interactive=True)
 
     assert aif["rules"] == ["manual rule one", "manual rule two"]
+
+
+def test_pack_rules_failure_interactive_blank_manual_input_reprompts(tmp_path, monkeypatch):
+    # "".split(",") is [''] -- a one-element list holding an empty string,
+    # not an empty list -- so pressing Enter with no text at the manual-
+    # entry prompt used to silently become a single bogus empty-string
+    # rule instead of re-prompting (`while not rules:` only re-loops on a
+    # genuinely empty list). Must go back through the failure menu again,
+    # not accept the blank input as if it were real.
+    monkeypatch.setattr(llm, "_provider", _EmptyRulesProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    # "2" = manual input, "" = pressed Enter with nothing typed -- must
+    # re-loop back to the failure menu instead of accepting [''] as rules.
+    responses = iter(["2", "", "2", "real rule one, real rule two"])
+    monkeypatch.setattr(builtins, "input", lambda *a, **k: next(responses))
+
+    aif = packager.pack(str(project), auto=True, interactive=True)
+
+    assert aif["rules"] == ["real rule one", "real rule two"]
 
 
 def test_pack_rules_failure_interactive_save_and_exit_checkpoints(tmp_path, monkeypatch):
@@ -705,6 +763,61 @@ def test_pack_use_cache_false_resummarizes_everything(tmp_path, monkeypatch):
 
     # 1 batch call + rules + prompt = 3, same as an unseen project -- nothing reused
     assert provider.calls == 3
+
+
+def test_pack_includes_a_checkpoint_restored_dependency_only_file_in_rules_input(tmp_path, monkeypatch):
+    # The checkpoint-restore branch used to only check "signatures" (not
+    # "dependencies") before including a file in signatures_map (rules
+    # inference's input) -- diverging from the fresh-extraction branch just
+    # below it, which checks `sigs or deps`. A file with real dependencies
+    # but no functions (a thin index.ts that's just top-level imports, a
+    # real case) would silently be excluded from analyze_rules() only when
+    # restored from a checkpoint, making the inferred rules depend on
+    # whether a run happened to get interrupted and resumed.
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    captured_prompts = []
+
+    class _CapturingMockProvider(llm.MockProvider):
+        def generate(self, prompt: str, retry: int = 5) -> str:
+            captured_prompts.append(prompt)
+            return super().generate(prompt, retry)
+
+    monkeypatch.setattr(llm, "_provider", _CapturingMockProvider())
+
+    project = tmp_path / "project"
+    _write(project / "deps_only.py", "import os\n")  # no functions, only a dependency
+
+    checkpoint.save_checkpoint(
+        str(project),
+        {
+            "project": {"name": "project", "prompt": ""},
+            "rules": [],
+            "files_data": {
+                "deps_only.py": {
+                    "signatures": [],
+                    "dependencies": ["os"],
+                    "api": [],
+                    "compressed": "import os",
+                    "summary": "imports os",
+                }
+            },
+        },
+    )
+
+    packager.pack(str(project), auto=True, interactive=False)
+
+    rules_prompts = [p for p in captured_prompts if '"rules"' in p]
+    assert rules_prompts, "expected at least one rules-generation prompt"
+    # basename only, not the full path -- the prompt embeds signatures_map
+    # via an f-string (str() -> repr() on each dict key), which doubles up
+    # backslashes on Windows paths; the basename has none, so it's immune
+    # to that escaping mismatch.
+    assert any("deps_only.py" in p for p in rules_prompts), (
+        "the checkpoint-restored dependency-only file should still be included in "
+        "analyze_rules()'s input, same as if it had been freshly extracted -- got:\n"
+        + "\n---\n".join(rules_prompts)
+    )
 
 
 def test_pack_use_cache_true_resumes_an_existing_checkpoint(tmp_path, monkeypatch):
