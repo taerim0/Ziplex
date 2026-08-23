@@ -117,6 +117,49 @@ def test_extract_dependencies_from_gdscript_recognizes_qualified_load(tmp_path):
     assert "x" in extract_dependencies(str(file_path))
 
 
+def test_extract_signatures_from_go_file(tmp_path):
+    file_path = tmp_path / "main.go"
+    file_path.write_text(
+        "package main\n\n"
+        "func Add(a int, b int) int {\n    return a + b\n}\n\n"
+        "func (s *Server) Start() error {\n    return nil\n}\n\n"
+        "func NoReturn() {\n}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert "Add(a int, b int) -> int" in sigs
+    # method_declaration -- a receiver method, not a plain function; its
+    # "receiver" field ((s *Server)) is simply never read, only "name"/
+    # "parameters"/"result"/"body".
+    assert "Start() -> error" in sigs
+    # no "result" field at all when a function has no return value --
+    # must not append a dangling " -> " with nothing after it.
+    assert "NoReturn()" in sigs
+
+
+def test_extract_dependencies_from_go_file(tmp_path):
+    # Covers all four real import shapes: single, grouped, aliased, blank
+    # (`_`) -- import_spec is the common unit underneath every one of them.
+    file_path = tmp_path / "main.go"
+    file_path.write_text(
+        'package main\n\n'
+        'import "fmt"\n'
+        'import (\n'
+        '\t"strings"\n'
+        '\tmyalias "path/filepath"\n'
+        '\t_ "encoding/json"\n'
+        ')\n',
+        encoding="utf-8",
+    )
+
+    deps = extract_dependencies(str(file_path))
+    assert "fmt" in deps
+    assert "strings" in deps
+    assert "path/filepath" in deps
+    assert "encoding/json" in deps
+
+
 def test_extract_signatures_from_typescript_arrow_functions(tmp_path):
     # arrow_function/function_expression have no "name" field of their own
     # when anonymous -- extract_signatures() has to recover a readable name

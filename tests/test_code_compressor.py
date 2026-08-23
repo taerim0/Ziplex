@@ -100,6 +100,28 @@ def test_typescript_concise_arrow_body_is_left_alone():
     assert result == code.rstrip("\n")
 
 
+def test_go_function_and_method_bodies_are_stripped():
+    # A brace language like Java/JS -- the opening "{" sits on the same
+    # line as the signature (both function_declaration and, for a receiver
+    # method, method_declaration), and the closing "}" survives.
+    code = (
+        "func Add(a int, b int) int {\n"
+        "    total := a + b\n"
+        "    return total\n"
+        "}\n\n"
+        "func (s *Server) Start() error {\n"
+        "    return nil\n"
+        "}\n"
+    )
+    result = compress_code(code, ".go")
+
+    assert "func Add(a int, b int) int {" in result
+    assert "func (s *Server) Start() error {" in result
+    assert MARKER.strip() in result
+    assert "total := a + b" not in result
+    assert result.count("}") == 2
+
+
 def test_unsupported_extension_returns_none():
     assert compress_code("whatever content", ".xyz") is None
 

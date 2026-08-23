@@ -14,6 +14,7 @@ import tree_sitter_python as tspython
 import tree_sitter_java as tsjava
 import tree_sitter_typescript as tstypescript
 import tree_sitter_lua as tslua
+import tree_sitter_go as tsgo
 
 # GDScript has no dedicated tree-sitter-gdscript PyPI package (as of this
 # writing) the way the languages above do -- only a community grammar
@@ -285,6 +286,45 @@ def _gdscript_dependency_handler(node: Node, results: list) -> bool:
     return False
 
 
+def _go_dependency_handler(node: Node, results: list) -> bool:
+    """Matches on import_spec, not import_declaration -- Go's grammar gives
+    both a single import (`import "fmt"`) and a grouped block (`import
+    (...)`) the same import_spec unit underneath (directly under
+    import_declaration for the single form, nested one level inside
+    import_spec_list for the grouped form), so matching the inner node
+    covers both shapes without needing to know which one wraps it.
+
+    Only the "path" field's string content is captured -- an aliased
+    (`myalias "path/filepath"`) or blank (`_ "encoding/json"`) import's own
+    "name" field is irrelevant to dependency resolution, which only cares
+    what's actually being imported.
+
+    Known, accepted limitation: unlike every other language here, a Go
+    import path (`"myproject/internal/utils"`) names a *package*
+    (typically a whole directory of files sharing one namespace), not a
+    single file -- Ziplex's dependency graph is file-to-file throughout
+    (resolve_dependency() matches against file stems). An internal
+    multi-package import will therefore usually resolve as "external"
+    rather than being matched to a specific file, the same way it would
+    for any language if resolve_dependency() only ever matched files, not
+    directories. Not fixed here: doing so properly would need directory-
+    level resolution (and reading go.mod for the module's own import
+    prefix), a materially bigger change than a dependency_handler can
+    make on its own. Many real Go projects are single-package anyway
+    (no internal imports to resolve in the first place), which tempers
+    how often this actually bites in practice.
+    """
+    if node.type != "import_spec":
+        return False
+    path_node = node.child_by_field_name("path")
+    if path_node is not None:
+        for child in path_node.children:
+            if child.type == "interpreted_string_literal_content":
+                results.append(child.text.decode())
+                break
+    return True
+
+
 @dataclass(frozen=True)
 class LanguageConfig:
     language: Language
@@ -373,6 +413,18 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         function_types=["function_definition", "constructor_definition"],
         dependency_handler=_gdscript_dependency_handler,
         implicit_names={"constructor_definition": "_init"},
+    ),
+    ".go": LanguageConfig(
+        language=Language(tsgo.language()),
+        # method_declaration covers a receiver method (`func (s *Server)
+        # Start() ...`) separately from a plain function_declaration --
+        # both expose "name"/"parameters"/"body" fields directly (no
+        # anonymous-function parent-fallback needed, unlike TS/JS), and
+        # method_declaration's "receiver" field (the `(s *Server)` part)
+        # is simply never read, since extractor.py only ever looks at
+        # "name"/"parameters"/"result"/"body".
+        function_types=["function_declaration", "method_declaration"],
+        dependency_handler=_go_dependency_handler,
     ),
 }
 

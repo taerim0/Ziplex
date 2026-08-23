@@ -3,6 +3,7 @@ tree-sitter-python
 tree-sitter-java
 tree-sitter-typescript
 tree-sitter-lua
+tree-sitter-go
 tree-sitter-language-pack
 tiktoken
 pathspec
