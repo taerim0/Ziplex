@@ -339,6 +339,82 @@ def test_extract_dependencies_recurses_into_inline_rust_module(tmp_path):
     assert "tests" not in deps
 
 
+def test_extract_signatures_from_csharp_file(tmp_path):
+    # method_declaration/constructor_declaration expose "name"/"parameters"/
+    # "body" as direct fields, same shape as Java/Go -- no declarator
+    # unwrapping needed. The return-type field is named "returns", a fourth
+    # naming convention alongside return_type/result/type.
+    file_path = tmp_path / "Server.cs"
+    file_path.write_text(
+        "public class Server\n"
+        "{\n"
+        "    public Server(string name) {}\n\n"
+        "    public static int Add(int a, int b)\n"
+        "    {\n"
+        "        return a + b;\n"
+        "    }\n\n"
+        "    public void Start() {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    # constructor -- no return type at all, must not append a dangling " -> ".
+    assert "Server(string name)" in sigs
+    assert "Add(int a, int b) -> int" in sigs
+    assert "Start() -> void" in sigs
+
+
+def test_extract_signatures_from_csharp_interface_method(tmp_path):
+    # An interface's own method declaration (no body, just a signature +
+    # ";") is the *same* method_declaration node type as a class method --
+    # still has "name"/"parameters"/"returns", so it should still produce a
+    # real signature (compression is separately verified to leave it alone).
+    file_path = tmp_path / "IGreet.cs"
+    file_path.write_text("public interface IGreet\n{\n    string Greet();\n}\n", encoding="utf-8")
+
+    assert "Greet() -> string" in extract_signatures(str(file_path))
+
+
+def test_extract_signatures_from_csharp_destructor_is_distinguished_from_constructor(tmp_path):
+    # destructor_declaration's own "name" field is the bare identifier with
+    # no "~" -- the token that actually distinguishes it from a same-named
+    # constructor is a separate, unnamed sibling child, not part of the
+    # field. Without LanguageConfig.name_prefixes, a class defining both
+    # would produce two identical "Widget()" signatures.
+    file_path = tmp_path / "Widget.cs"
+    file_path.write_text(
+        "class Widget\n{\n    public Widget() {}\n    ~Widget() {}\n}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert "Widget()" in sigs
+    assert "~Widget()" in sigs
+
+
+def test_extract_dependencies_from_csharp_file(tmp_path):
+    # Every real using_directive shape: plain, multi-segment, static,
+    # aliased (the real path, not the alias name, must be captured).
+    file_path = tmp_path / "Server.cs"
+    file_path.write_text(
+        "using System;\n"
+        "using System.Collections.Generic;\n"
+        "using static System.Math;\n"
+        "using Alias = MyApp.Models.Settings;\n",
+        encoding="utf-8",
+    )
+
+    deps = extract_dependencies(str(file_path))
+    assert "System" in deps
+    assert "System.Collections.Generic" in deps
+    assert "System.Math" in deps
+    # the real path, not the "Alias" name bound to using_directive's own
+    # "name" field.
+    assert "MyApp.Models.Settings" in deps
+    assert "Alias" not in deps
+
+
 def test_extract_signatures_from_typescript_arrow_functions(tmp_path):
     # arrow_function/function_expression have no "name" field of their own
     # when anonymous -- extract_signatures() has to recover a readable name
