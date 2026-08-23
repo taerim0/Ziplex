@@ -99,10 +99,26 @@ class GeminiProvider:
     def generate(self, prompt: str, retry: int = 5) -> str:
         api_key = self._resolve_api_key()
         for attempt in range(retry):
-            response = requests.post(f"{self.url}?key={api_key}", json={
-                "contents": [{"parts": [{"text": prompt}]}]
-            })
-            data = response.json()
+            try:
+                response = requests.post(f"{self.url}?key={api_key}", json={
+                    "contents": [{"parts": [{"text": prompt}]}]
+                })
+                data = response.json()
+            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+                # A transport-level failure (DNS, connection reset, read
+                # timeout) or a non-JSON response body (a proxy's HTML error
+                # page) is just as transient as an explicit 503/429 from the
+                # API itself -- retried the same way, rather than propagating
+                # straight out of generate() uncaught. Left uncaught, this
+                # used to skip every caller's checkpoint-on-failure path
+                # (summarizer.py's thread pool, packager.py's rules/prompt
+                # calls, checkpoint.handle_llm_failure()) entirely, crashing
+                # the whole pack() run and losing all extraction work done
+                # so far instead of saving a resumable checkpoint first.
+                wait = 5 * (attempt + 1)  # 5s, 10s, 15s, ...
+                print(f"  ⚠️  네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도 ({attempt+1}/{retry})")
+                time.sleep(wait)
+                continue
 
             if "candidates" in data:
                 text = data["candidates"][0]["content"]["parts"][0]["text"]

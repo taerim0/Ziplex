@@ -12,6 +12,7 @@ a failing LLM call, always-resume for a found checkpoint -- instead of
 EOFError-ing against closed stdin.
 """
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -20,18 +21,48 @@ from file.textutil import relative_key as _rel_key
 CHECKPOINT_DIR = Path(__file__).parent.parent / "checkpoint"
 
 
+def _checkpoint_path(root_path: str) -> Path:
+    """checkpoint/<basename>-<hash>.json -- the hash suffix (first 8 hex
+    chars of sha256 of the resolved absolute path) keeps this filename
+    collision-proof across two different projects that happen to share a
+    folder name (e.g. C:\\clients\\acme\\backend and C:\\clients\\other\\
+    backend). A basename-only filename doesn't: the second project's pack
+    would find and silently auto-resume the first project's leftover
+    checkpoint (non-interactive callers -- the GUI, always -- never even
+    get a resume-vs-discard prompt to catch it), splicing one project's
+    file summaries/signatures into the other's output.
+
+    Safe to key on the raw absolute path here specifically because
+    checkpoint.json is purely local, ephemeral tool bookkeeping -- deleted
+    on a successful pack, never committed to the target project's own
+    repo the way aif.json/detail.json/cache.json are (see README's Team
+    use section) -- so there's no cross-machine-portability requirement
+    the way there is for freshness.py's own mitigation of the same class
+    of bug in the *committed* cache (which can't use a path fingerprint
+    for exactly that reason).
+
+    One consequence: a checkpoint already on disk under the pre-fix
+    basename-only naming becomes unreachable once this ships -- accepted
+    as a safe degrade (a pack resumes from scratch instead of picking up
+    a stale in-flight checkpoint) rather than a real loss, since a
+    checkpoint only ever holds re-derivable extraction state, never a
+    project's actual source.
+    """
+    resolved = str(Path(root_path).resolve())
+    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:8]
+    return CHECKPOINT_DIR / f"{Path(root_path).name}-{digest}.json"
+
+
 def save_checkpoint(root_path: str, data: dict) -> None:
     CHECKPOINT_DIR.mkdir(exist_ok=True)
-    name = Path(root_path).name
-    path = CHECKPOINT_DIR / f"{name}.json"
+    path = _checkpoint_path(root_path)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     print(f"\n  💾 체크포인트 저장됨: {path}")
 
 
 def load_checkpoint(root_path: str) -> dict | None:
-    name = Path(root_path).name
-    path = CHECKPOINT_DIR / f"{name}.json"
+    path = _checkpoint_path(root_path)
     if not path.exists():
         return None
     with open(path, "r", encoding="utf-8") as f:
@@ -39,8 +70,7 @@ def load_checkpoint(root_path: str) -> dict | None:
 
 
 def delete_checkpoint(root_path: str) -> None:
-    name = Path(root_path).name
-    path = CHECKPOINT_DIR / f"{name}.json"
+    path = _checkpoint_path(root_path)
     if path.exists():
         path.unlink()
 

@@ -23,7 +23,7 @@ def test_handle_llm_failure_non_interactive_checkpoints_without_prompting(tmp_pa
     )
 
     assert result == "EXIT"
-    assert (tmp_path / "project.json").exists()
+    assert checkpoint.load_checkpoint("some/project") == {"project": {"name": "x"}}
 
 
 def test_handle_llm_failure_interactive_still_prompts(monkeypatch):
@@ -105,6 +105,29 @@ def test_save_load_delete_checkpoint_round_trip(tmp_path, monkeypatch):
 
     checkpoint.delete_checkpoint("some/project")
     assert checkpoint.load_checkpoint("some/project") is None
+
+
+def test_checkpoints_for_same_named_projects_at_different_paths_dont_collide(tmp_path, monkeypatch):
+    # Two different projects that happen to share a folder basename (e.g.
+    # C:\clients\acme\backend and C:\clients\other\backend) must not load
+    # or overwrite each other's checkpoint -- a bare basename-only filename
+    # would make the second project's pack silently auto-resume (or clobber)
+    # the first's leftover checkpoint.
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path)
+    project_a = tmp_path / "acme" / "backend"
+    project_b = tmp_path / "other" / "backend"
+    project_a.mkdir(parents=True)
+    project_b.mkdir(parents=True)
+
+    checkpoint.save_checkpoint(str(project_a), {"rules": ["a's rule"]})
+    checkpoint.save_checkpoint(str(project_b), {"rules": ["b's rule"]})
+
+    assert checkpoint.load_checkpoint(str(project_a)) == {"rules": ["a's rule"]}
+    assert checkpoint.load_checkpoint(str(project_b)) == {"rules": ["b's rule"]}
+
+    checkpoint.delete_checkpoint(str(project_a))
+    assert checkpoint.load_checkpoint(str(project_a)) is None
+    assert checkpoint.load_checkpoint(str(project_b)) == {"rules": ["b's rule"]}  # untouched
 
 
 def test_delete_checkpoint_is_a_no_op_when_none_exists(tmp_path, monkeypatch):

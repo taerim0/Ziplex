@@ -25,6 +25,13 @@ from pathlib import Path
 
 from file.textutil import read_text, relative_key
 
+# load_previous_summaries()'s guard against a cross-project cache collision
+# (see that function's own docstring): the minimum fraction of the
+# *current* file set that must already appear in the previous manifest --
+# hash match or not -- before any of it is trusted as "this is the same
+# project, incrementally edited" at all.
+_MIN_OVERLAP_RATIO = 0.5
+
 
 def hash_file(file_path: str) -> str | None:
     """SHA-256 of a file's text content, or None if it can't be read as text.
@@ -101,6 +108,21 @@ def load_previous_summaries(root_path: str, selected: list[str], result_dir: Pat
     Returns {} on any cache miss -- no previous pack there, or its output
     files are missing/unreadable/corrupt -- rather than raising. A miss just
     means every file gets summarized fresh, same as before this existed.
+
+    Also returns {} if the previous manifest doesn't look like it actually
+    belongs to this project at all (see the overlap check below) -- e.g.
+    two different projects that happen to share a result-directory basename
+    (both named "backend", both packed to the same default result/ folder,
+    or the same GUI-configured output folder). Per-file content-hash
+    matching alone can't tell that apart from a genuine re-pack of the same
+    project: a boilerplate .gitignore or an empty __init__.py can coincide
+    by content hash across two wholly unrelated projects. Deliberately not
+    fixed with a path fingerprint the way checkpoint.py's own version of
+    this bug is (see that module's _checkpoint_path() docstring) -- unlike
+    checkpoint.json, this file's aif.json/cache.json are meant to be
+    committed and shared across machines (README's Team use section), so a
+    teammate re-packing the *same* project from a different absolute path
+    must still get cache hits.
     """
     name = Path(root_path).name
     aif_path = result_dir / f"{name}.json"
@@ -117,6 +139,17 @@ def load_previous_summaries(root_path: str, selected: list[str], result_dir: Pat
         return {}
 
     report = check_freshness(selected, root_path, previous_manifest)
+
+    # "changed" + "unchanged" = current files the previous manifest also
+    # knew about at all (regardless of hash match); "added" = current files
+    # it had never seen. A low ratio means most of the current project is
+    # unrecognized by the previous manifest -- not "this project changed a
+    # lot since last pack", but "this probably isn't the same project".
+    total_current = len(report.changed) + len(report.unchanged) + len(report.added)
+    recognized = len(report.changed) + len(report.unchanged)
+    if total_current and recognized / total_current < _MIN_OVERLAP_RATIO:
+        return {}
+
     return {
         rel: previous_files[rel]["summary"]
         for rel in report.unchanged

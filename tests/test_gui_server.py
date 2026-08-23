@@ -445,7 +445,7 @@ def test_api_pack_stop_saves_and_stops_a_running_job(client, tmp_path, monkeypat
 
     assert status["state"] == "error"
     assert "체크포인트에 저장됨" in status["error"]
-    assert (tmp_path / "checkpoint" / "project.json").exists()
+    assert checkpoint._checkpoint_path(str(project)).exists()
 
 
 def test_api_overview(client, tmp_path):

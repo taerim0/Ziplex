@@ -950,7 +950,7 @@ def test_request_cancel_save_stops_a_running_job_and_checkpoints_it(tmp_path, mo
 
     assert status["state"] == "error"
     assert "체크포인트에 저장됨" in status["error"]
-    assert (tmp_path / "checkpoint" / "project.json").exists()
+    assert checkpoint._checkpoint_path(str(project)).exists()
 
 
 def test_request_cancel_discard_stops_a_running_job_without_a_checkpoint(tmp_path, monkeypatch):
@@ -971,4 +971,4 @@ def test_request_cancel_discard_stops_a_running_job_without_a_checkpoint(tmp_pat
 
     assert status["state"] == "error"
     assert "저장하지 않음" in status["error"]
-    assert not (tmp_path / "checkpoint" / "project.json").exists()
+    assert not checkpoint._checkpoint_path(str(project)).exists()
