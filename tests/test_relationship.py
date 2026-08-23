@@ -3,6 +3,7 @@ import pytest
 from file.relationship import (
     build_tree, has_cycle, move_file, add_dependency, remove_dependency, build_stem_map, CycleError,
     get_dependents, get_blast_radius, has_relationship_cycle, add_relationship, remove_relationship,
+    resolve_dependency,
 )
 
 
@@ -46,6 +47,52 @@ def test_build_tree_resolves_a_dependency_stem_containing_a_dot():
     }
     tree = build_tree(files)
     assert tree["player.gd"]["internal"] == ["player.controller.gd"]
+
+
+def test_build_stem_map_keeps_every_file_sharing_a_stem():
+    # A header/implementation pair (Config.h + Config.cpp, a normal,
+    # extremely common C/C++ convention) shares a stem -- build_stem_map()
+    # must not let one silently overwrite the other's entry the way a
+    # plain {stem: name} dict would.
+    stem_map = build_stem_map(["Config.h", "Config.cpp", "main.cpp"])
+    assert set(stem_map["Config"]) == {"Config.h", "Config.cpp"}
+    assert stem_map["main"] == ["main.cpp"]
+
+
+def test_resolve_dependency_matches_exact_filename_even_with_a_stem_collision():
+    # A text-reference match (text_references.py) or an already-pinned
+    # move_file() name is always an exact filename, not a bare stem -- it
+    # must resolve to itself regardless of how many other files share its
+    # stem, since this is the first check resolve_dependency() makes.
+    stem_map = build_stem_map(["Config.h", "Config.cpp"])
+    assert resolve_dependency("Config.cpp", stem_map) == "Config.cpp"
+    assert resolve_dependency("Config.h", stem_map) == "Config.h"
+
+
+def test_resolve_dependency_prefers_header_extension_for_a_bare_stem_collision():
+    # A bare-stem dependency (a stem-normalized #include, or a raw dotted
+    # import's last segment) carries no extension information by the time
+    # it reaches resolve_dependency() -- when more than one file shares
+    # that stem, an #include overwhelmingly names what's *declared*
+    # (the header), never what implements it.
+    stem_map = build_stem_map(["Config.cpp", "Config.h"])  # .cpp collected first
+    assert resolve_dependency("Config", stem_map) == "Config.h"
+
+
+def test_build_tree_resolves_both_sides_of_a_header_impl_pair(tmp_path):
+    # End-to-end regression for the bug this was caught by: a project with
+    # a real Config.h/Config.cpp pair, where a third file references
+    # *both* by their exact (already-resolved, text-reference-shaped)
+    # names -- both must resolve internal, not just whichever one happens
+    # to currently occupy the stem_map slot.
+    files = {
+        "Config.h": {"dependencies": []},
+        "Config.cpp": {"dependencies": ["Config.h"]},
+        "README.md": {"dependencies": ["Config.h", "Config.cpp"]},
+    }
+    tree = build_tree(files)
+    assert tree["README.md"]["internal"] == ["Config.h", "Config.cpp"]
+    assert tree["README.md"]["external"] == []
 
 
 def test_has_cycle_detects_would_be_cycle():

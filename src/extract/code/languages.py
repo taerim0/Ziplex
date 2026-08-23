@@ -15,6 +15,7 @@ import tree_sitter_java as tsjava
 import tree_sitter_typescript as tstypescript
 import tree_sitter_lua as tslua
 import tree_sitter_go as tsgo
+import tree_sitter_cpp as tscpp
 
 # GDScript has no dedicated tree-sitter-gdscript PyPI package (as of this
 # writing) the way the languages above do -- only a community grammar
@@ -325,6 +326,40 @@ def _go_dependency_handler(node: Node, results: list) -> bool:
     return True
 
 
+def _cpp_dependency_handler(node: Node, results: list) -> bool:
+    """`#include` is its own preproc_include node (a preprocessor
+    directive, not part of the language grammar proper the way an
+    import_statement is) with a "path" field holding either a
+    system_lib_string (`<iostream>`, angle-bracket-delimited, no nested
+    content node -- the delimiters are stripped directly) or a
+    string_literal (`"utils.h"`, quoted, with the usual nested
+    string_content child every other quoted string in this grammar has).
+
+    Normalized to the bare stem (Path(path).stem), the same restraint
+    _gdscript_dependency_handler already takes for its own path-based
+    imports: a local include's path is relative to whatever the compiler's
+    own -I search paths are, which won't generally match the file's own
+    collected relative-key path exactly (`#include "models/user.hpp"`
+    doesn't guarantee the project's own layout puts user.hpp under a
+    models/ directory from the collection root) -- resolve_dependency()'s
+    exact-stem-match branch is the one this needs to hit, not its raw-
+    dotted-path fallback (which assumes "." separates module segments, not
+    a file extension).
+    """
+    if node.type != "preproc_include":
+        return False
+    path_node = node.child_by_field_name("path")
+    if path_node is not None:
+        if path_node.type == "system_lib_string":
+            results.append(Path(path_node.text.decode().strip("<>")).stem)
+        elif path_node.type == "string_literal":
+            for child in path_node.children:
+                if child.type == "string_content":
+                    results.append(Path(child.text.decode()).stem)
+                    break
+    return True
+
+
 @dataclass(frozen=True)
 class LanguageConfig:
     language: Language
@@ -341,6 +376,40 @@ class LanguageConfig:
     # extractor.py's generic _resolve_signature_name() a GDScript-specific
     # string.
     implicit_names: dict[str, str] = field(default_factory=dict)
+
+
+# `.cpp`/`.cc`/`.cxx` all parse with the same grammar, so all three
+# extension keys below share this exact config object -- unlike
+# `.ts`/`.js` (genuinely different grammar variants, TS vs. TSX, each
+# needing its own Language()/config), there's no per-extension difference
+# here to justify separate instances.
+#
+# function_definition covers every function shape in this grammar
+# uniformly -- a free function, an in-class method, an out-of-class
+# `ReturnType ClassName::method(...)` definition, a constructor, and a
+# destructor all parse as the same node type, unlike Java/Go's separate
+# method_declaration. What's genuinely new here (not covered by any
+# existing per-language quirk): a function's actual name and parameter
+# list aren't direct fields of function_definition at all -- they're
+# nested one level inside a "declarator" sub-node (function_declarator),
+# which extractor.py's _unwrap_declarator()/_resolve_signature_name()
+# handle generically (see their own docstrings), not as a per-language
+# hardcode -- any grammar with this same declarator-indirection shape
+# (the wider C family) would resolve the same way.
+#
+# Deliberately scoped to implementation files only (.cpp/.cc/.cxx), not
+# .h/.hpp headers: a header with only prototype declarations (no function
+# body -- `void foo();`, or a pure virtual `virtual void foo() = 0;`)
+# parses as a plain `declaration`/`field_declaration`, never a
+# function_definition, so header-only files would extract zero signatures
+# under this config anyway. Whether/how to also cover declaration-only
+# headers (and the real C-vs-C++ ambiguity a bare .h extension carries)
+# is left as a follow-up decision, not folded into this pass.
+_cpp_config = LanguageConfig(
+    language=Language(tscpp.language()),
+    function_types=["function_definition"],
+    dependency_handler=_cpp_dependency_handler,
+)
 
 
 LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
@@ -426,6 +495,11 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         function_types=["function_declaration", "method_declaration"],
         dependency_handler=_go_dependency_handler,
     ),
+    # See _cpp_config's own definition above for what .cpp/.cc/.cxx share
+    # and why they're all one config object.
+    ".cpp": _cpp_config,
+    ".cc": _cpp_config,
+    ".cxx": _cpp_config,
 }
 
 

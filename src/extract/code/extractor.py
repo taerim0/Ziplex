@@ -87,8 +87,17 @@ def _resolve_signature_name(node, parent, implicit_names):
     neither of the above -- GDScript's constructor_definition, whose only
     "name" is the fixed keyword token "_init" itself, not an identifier
     under a field.
+
+    The "declarator" fallback on the own-node check is for C-family
+    grammars (C++): called here with an already-unwrapped function_
+    declarator node (see _unwrap_declarator()), whose own identifier --
+    plain identifier, field_identifier for an in-class method,
+    qualified_identifier for an out-of-class `Server::Stop`,
+    destructor_name for `~Server` -- sits under a field called
+    "declarator" too, not "name". Harmless for every other language,
+    which has no field by that name at all on a function-type node.
     """
-    own_name = node.child_by_field_name("name")
+    own_name = node.child_by_field_name("name") or node.child_by_field_name("declarator")
     if own_name:
         return own_name.text.decode()
     if parent is not None:
@@ -98,16 +107,52 @@ def _resolve_signature_name(node, parent, implicit_names):
     return implicit_names.get(node.type)
 
 
+def _unwrap_declarator(node):
+    """C-family grammars (C++) separate a function's actual identifier and
+    parameter list into a distinct "declarator" sub-node from the
+    definition node itself, which instead carries the return type and
+    body directly -- the same "declarator" concept those grammars reuse
+    for variable declarations too, so a function's name/parameters aren't
+    direct fields of function_definition the way they are for every other
+    language here. If `node` has a function_declarator under its own
+    "declarator" field, that inner node is what actually carries
+    "parameters" directly and the identifier one level further in (under
+    its own "declarator" field -- see _resolve_signature_name()) -- return
+    that instead so name/parameter resolution both read from the right
+    place. Every other currently-supported language has no such
+    indirection (name/parameters/body all sit directly on the matched
+    node), so this returns `node` unchanged for them.
+    """
+    declarator = node.child_by_field_name("declarator")
+    if declarator is not None and declarator.type == "function_declarator":
+        return declarator
+    return node
+
+
 def _traverse_signatures(node, results: list, node_types: list, implicit_names: dict, parent):
     if node.type in node_types:
-        name   = _resolve_signature_name(node, parent, implicit_names)
-        params = node.child_by_field_name("parameters")
+        sig_node = _unwrap_declarator(node)
+        name   = _resolve_signature_name(sig_node, parent, implicit_names)
+        params = sig_node.child_by_field_name("parameters")
         # "return_type" covers Python/TS/GDScript's own field name for this;
-        # Go's grammar names the equivalent field "result" instead -- not a
-        # per-language hardcode, just a second known field-naming
-        # convention, the same restraint _resolve_signature_name() already
-        # takes for "name" vs. "key".
-        ret    = node.child_by_field_name("return_type") or node.child_by_field_name("result")
+        # Go's grammar names the equivalent field "result" instead. Read
+        # off `node` (not `sig_node`): the return type sits on the outer
+        # definition node even for C++, never on the inner declarator.
+        ret = node.child_by_field_name("return_type") or node.child_by_field_name("result")
+        if sig_node is not node:
+            # "type" is C++'s own name for this field -- but it is NOT
+            # checked unconditionally the way "return_type"/"result" are:
+            # Java's method_declaration also has a field literally named
+            # "type" (its return type), and Java's node is never unwrapped
+            # (it has no "declarator" field, so _unwrap_declarator() always
+            # returns it unchanged) -- checking "type" unconditionally
+            # silently changed every Java signature from "add(int a, int
+            # b)" to "add(int a, int b) -> int", an unrelated, undocumented
+            # behavior change caught by code review before merge. Gating
+            # this on sig_node being an actually-unwrapped declarator
+            # (currently only ever true for C++'s function_declarator)
+            # scopes "type" to the grammar that actually needs it.
+            ret = ret or node.child_by_field_name("type")
 
         if name and params:
             sig = f"{name}{params.text.decode()}"

@@ -122,6 +122,38 @@ def test_go_function_and_method_bodies_are_stripped():
     assert result.count("}") == 2
 
 
+def test_cpp_function_and_method_bodies_are_stripped():
+    # A brace language -- covers a free function, an in-class method, and
+    # an out-of-class Class::method definition all via the one
+    # function_definition node type this grammar uses uniformly.
+    code = (
+        "int Add(int a, int b) {\n"
+        "    return a + b;\n"
+        "}\n\n"
+        "class Server {\n"
+        "public:\n"
+        "    void Start() {\n"
+        "        run();\n"
+        "    }\n"
+        "};\n\n"
+        "void Server::Stop() {\n"
+        "    halt();\n"
+        "}\n"
+    )
+    result = compress_code(code, ".cpp")
+
+    assert "int Add(int a, int b) {" in result
+    assert "void Start() {" in result
+    assert "void Server::Stop() {" in result
+    assert MARKER.strip() in result
+    assert "run();" not in result
+    assert "halt();" not in result
+    # class body itself (field declarations, access specifiers) survives --
+    # only function_definition bodies get stripped
+    assert "public:" in result
+    assert "};" in result
+
+
 def test_unsupported_extension_returns_none():
     assert compress_code("whatever content", ".xyz") is None
 
