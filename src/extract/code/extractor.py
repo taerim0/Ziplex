@@ -102,7 +102,12 @@ def _traverse_signatures(node, results: list, node_types: list, implicit_names: 
     if node.type in node_types:
         name   = _resolve_signature_name(node, parent, implicit_names)
         params = node.child_by_field_name("parameters")
-        ret    = node.child_by_field_name("return_type")
+        # "return_type" covers Python/TS/GDScript's own field name for this;
+        # Go's grammar names the equivalent field "result" instead -- not a
+        # per-language hardcode, just a second known field-naming
+        # convention, the same restraint _resolve_signature_name() already
+        # takes for "name" vs. "key".
+        ret    = node.child_by_field_name("return_type") or node.child_by_field_name("result")
 
         if name and params:
             sig = f"{name}{params.text.decode()}"
