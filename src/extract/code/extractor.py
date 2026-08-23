@@ -14,10 +14,11 @@ def extract_signatures(file_path: str) -> list[str]:
 
     config = get_language_config(Path(file_path).suffix)
     node_types = config.function_types if config else []
+    implicit_names = config.implicit_names if config else {}
 
     tree = parser.parse(bytes(code, "utf8"))
     results = []
-    _traverse_signatures(tree.root_node, results, node_types, None)
+    _traverse_signatures(tree.root_node, results, node_types, implicit_names, None)
     return results
 
 
@@ -49,13 +50,23 @@ def extract_api(file_path: str) -> list[str]:
     if code is None:
         return []
 
+    config = get_language_config(Path(file_path).suffix)
+    handler = config.api_handler if config else None
+    if handler is None:
+        # No established web-routing convention for this language
+        # (Java/Lua/GDScript as of this writing) -- same "nothing to look
+        # for" short-circuit extract_dependencies() takes for a language
+        # with no config at all, just one level narrower (a config can
+        # exist, with no api_handler specifically).
+        return []
+
     tree = parser.parse(bytes(code, "utf8"))
     results = []
-    _traverse_api(tree.root_node, results)
+    _traverse_api(tree.root_node, results, handler)
     return results
 
 
-def _resolve_signature_name(node, parent):
+def _resolve_signature_name(node, parent, implicit_names):
     """A matched function-type node's own "name" field, when it has one
     (function_declaration, method_definition, Lua's/GDScript's function
     nodes -- every language where a function names itself directly).
@@ -70,6 +81,12 @@ def _resolve_signature_name(node, parent):
     Not a per-language hardcode despite being motivated by TS/JS: any
     grammar with an equivalent assignment-shaped wrapper around an
     otherwise-anonymous function resolves the same way.
+
+    Falls back once more to implicit_names (from the language's own
+    LanguageConfig) keyed by node.type, for a node whose grammar gives it
+    neither of the above -- GDScript's constructor_definition, whose only
+    "name" is the fixed keyword token "_init" itself, not an identifier
+    under a field.
     """
     own_name = node.child_by_field_name("name")
     if own_name:
@@ -78,12 +95,12 @@ def _resolve_signature_name(node, parent):
         wrapper_name = parent.child_by_field_name("name") or parent.child_by_field_name("key")
         if wrapper_name:
             return wrapper_name.text.decode()
-    return None
+    return implicit_names.get(node.type)
 
 
-def _traverse_signatures(node, results: list, node_types: list, parent):
+def _traverse_signatures(node, results: list, node_types: list, implicit_names: dict, parent):
     if node.type in node_types:
-        name   = _resolve_signature_name(node, parent)
+        name   = _resolve_signature_name(node, parent, implicit_names)
         params = node.child_by_field_name("parameters")
         ret    = node.child_by_field_name("return_type")
 
@@ -95,7 +112,7 @@ def _traverse_signatures(node, results: list, node_types: list, parent):
         return
 
     for child in node.children:
-        _traverse_signatures(child, results, node_types, node)
+        _traverse_signatures(child, results, node_types, implicit_names, node)
 
 
 def _traverse_dependencies(node, results: list, handler):
@@ -106,45 +123,12 @@ def _traverse_dependencies(node, results: list, handler):
         _traverse_dependencies(child, results, handler)
 
 
-def _traverse_api(node, results: list):
-    if node.type == "decorated_definition":
-        decorator = None
-        for child in node.children:
-            if child.type == "decorator":
-                decorator = child
-                break
-
-        if decorator:
-            method = None
-            path = None
-
-            for n in _walk(decorator):
-                if n.type == "attribute":
-                    attr_text = n.text.decode()
-                    if ".get"      in attr_text: method = "GET"
-                    elif ".post"   in attr_text: method = "POST"
-                    elif ".put"    in attr_text: method = "PUT"
-                    elif ".delete" in attr_text: method = "DELETE"
-                    elif ".patch"  in attr_text: method = "PATCH"
-                    break
-
-            for n in _walk(decorator):
-                if n.type == "string_content":
-                    path = n.text.decode()
-                    break
-
-            if method and path:
-                results.append(f"{method} {path}")
+def _traverse_api(node, results: list, handler):
+    if handler(node, results):
         return
 
     for child in node.children:
-        _traverse_api(child, results)
-
-
-def _walk(node):
-    yield node
-    for child in node.children:
-        yield from _walk(child)
+        _traverse_api(child, results, handler)
 
 
 def debug_tree(file_path: str):
