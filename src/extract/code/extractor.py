@@ -15,10 +15,11 @@ def extract_signatures(file_path: str) -> list[str]:
     config = get_language_config(Path(file_path).suffix)
     node_types = config.function_types if config else []
     implicit_names = config.implicit_names if config else {}
+    name_prefixes = config.name_prefixes if config else {}
 
     tree = parser.parse(bytes(code, "utf8"))
     results = []
-    _traverse_signatures(tree.root_node, results, node_types, implicit_names, None)
+    _traverse_signatures(tree.root_node, results, node_types, implicit_names, name_prefixes, None)
     return results
 
 
@@ -129,16 +130,33 @@ def _unwrap_declarator(node):
     return node
 
 
-def _traverse_signatures(node, results: list, node_types: list, implicit_names: dict, parent):
+def _traverse_signatures(node, results: list, node_types: list, implicit_names: dict, name_prefixes: dict, parent):
     if node.type in node_types:
         sig_node = _unwrap_declarator(node)
         name   = _resolve_signature_name(sig_node, parent, implicit_names)
+        if name and node.type in name_prefixes:
+            # A real "name" field that's still not the full readable name --
+            # C#'s destructor_declaration is the motivating case: its own
+            # "name" field is just the bare identifier ("Widget"), with the
+            # "~" that actually distinguishes it from a same-named
+            # constructor tokenized as a separate, unnamed sibling child
+            # instead of being part of the field. Without this, a class
+            # defining both a constructor and destructor would produce two
+            # identical-looking "Widget()" signatures. Keyed by node.type
+            # (not sig_node.type -- irrelevant here since C# never unwraps a
+            # declarator), unlike implicit_names this only ever applies on
+            # top of a name that was actually found, never as a substitute
+            # for a missing one.
+            name = name_prefixes[node.type] + name
         params = sig_node.child_by_field_name("parameters")
         # "return_type" covers Python/TS/GDScript's own field name for this;
-        # Go's grammar names the equivalent field "result" instead. Read
-        # off `node` (not `sig_node`): the return type sits on the outer
-        # definition node even for C++, never on the inner declarator.
-        ret = node.child_by_field_name("return_type") or node.child_by_field_name("result")
+        # Go's grammar names the equivalent field "result" instead, and
+        # C#'s names it "returns" instead again. Read off `node` (not
+        # `sig_node`): the return type sits on the outer definition node
+        # even for C++, never on the inner declarator.
+        ret = (node.child_by_field_name("return_type")
+               or node.child_by_field_name("result")
+               or node.child_by_field_name("returns"))
         if sig_node is not node:
             # "type" is C++'s own name for this field -- but it is NOT
             # checked unconditionally the way "return_type"/"result" are:
@@ -162,7 +180,7 @@ def _traverse_signatures(node, results: list, node_types: list, implicit_names: 
         return
 
     for child in node.children:
-        _traverse_signatures(child, results, node_types, implicit_names, node)
+        _traverse_signatures(child, results, node_types, implicit_names, name_prefixes, node)
 
 
 def _traverse_dependencies(node, results: list, handler):

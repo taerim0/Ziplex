@@ -186,6 +186,42 @@ def test_rust_trait_method_with_no_body_is_left_alone():
     assert result == code.rstrip("\n")
 
 
+def test_csharp_method_and_constructor_bodies_are_stripped():
+    # A brace language -- covers a constructor and a regular method via
+    # constructor_declaration/method_declaration.
+    code = (
+        "public class Server\n"
+        "{\n"
+        "    public Server(string name)\n"
+        "    {\n"
+        "        this.name = name;\n"
+        "    }\n\n"
+        "    public void Start()\n"
+        "    {\n"
+        "        Run();\n"
+        "    }\n"
+        "}\n"
+    )
+    result = compress_code(code, ".cs")
+
+    assert "public Server(string name)" in result
+    assert "public void Start()" in result
+    assert MARKER.strip() in result
+    assert "this.name = name;" not in result
+    assert "Run();" not in result
+    assert "public class Server" in result
+
+
+def test_csharp_interface_method_with_no_body_is_left_alone():
+    # An interface's own method_declaration (no body, just a signature +
+    # ";") -- _collect_bodies' `if body:` guard must find nothing to
+    # strip here, leaving the one-line declaration untouched.
+    code = "public interface IGreet\n{\n    string Greet();\n}\n"
+    result = compress_code(code, ".cs")
+
+    assert result == code.rstrip("\n")
+
+
 def test_unsupported_extension_returns_none():
     assert compress_code("whatever content", ".xyz") is None
 

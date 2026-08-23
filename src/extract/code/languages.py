@@ -17,6 +17,7 @@ import tree_sitter_lua as tslua
 import tree_sitter_go as tsgo
 import tree_sitter_cpp as tscpp
 import tree_sitter_rust as tsrust
+import tree_sitter_c_sharp as tscsharp
 
 # GDScript has no dedicated tree-sitter-gdscript PyPI package (as of this
 # writing) the way the languages above do -- only a community grammar
@@ -488,6 +489,59 @@ def _rust_dependency_handler(node: Node, results: list) -> bool:
     return False
 
 
+def _csharp_dependency_handler(node: Node, results: list) -> bool:
+    """`using X;`/`using X.Y.Z;`/`using static X.Y;`/`global using X;`/
+    `using Alias = X.Y;` all parse as one using_directive node type, but
+    none of its shapes exposes the actually-imported path under a
+    consistently-named field the way most other languages' import nodes
+    do: a plain/static/global using has no field name at all for its path
+    child (a bare positional "identifier" or "qualified_name"), and the
+    aliased form's own "name" field actually names the *alias* itself,
+    not the real path -- the real path is the qualified_name/identifier
+    child that comes after "=" instead, with no field name of its own
+    either. "static"/"global" are literal keyword tokens (their own
+    node.type, not "identifier"), so they never get mistaken for a path.
+
+    Read positionally instead, like Lua's/GDScript's own callee-name
+    reads: the *last* identifier/qualified_name-typed child is the real
+    path for a plain/static/global using (the only such child at all),
+    and the one after "=" for an aliased using (since the alias
+    identifier is always the *first* one, appearing before "="). Already
+    dot-separated (a qualified_name's own text already uses "." as C#'s
+    real namespace separator, unlike Rust's "::"), so no normalization is
+    needed before appending -- resolve_dependency()'s existing
+    split-on-"."-take-last-segment fallback applies directly, same as
+    Java's own dotted import text.
+
+    For an aliased using, the search is scoped to children *after* "="
+    -- not simply "the last identifier/qualified_name in the whole
+    node," which code review caught being wrong: a type alias whose
+    right-hand side isn't itself an identifier/qualified_name (`using
+    MyInt = int;`, `using IntArray = int[];`, `using Nullable =
+    System.Int32?;` -- predefined_type/array_type/nullable_type/etc. are
+    all real, common alias targets) has no path-shaped child after "="
+    at all, so the whole-node search fell back to the *alias name*
+    itself (the "identifier" before "="), wrongly emitting it as a
+    bogus dependency. Scoping to after "=" makes that case correctly
+    find nothing instead, the same "only capture what's a real path"
+    restraint every other handler here already takes for an
+    unresolvable target (e.g. GDScript's `extends Node`).
+    """
+    if node.type != "using_directive":
+        return False
+
+    equals_index = next((i for i, child in enumerate(node.children) if child.type == "="), None)
+    search_children = node.children[equals_index + 1:] if equals_index is not None else node.children
+
+    path_node = None
+    for child in search_children:
+        if child.type in ("identifier", "qualified_name"):
+            path_node = child
+    if path_node is not None:
+        results.append(path_node.text.decode())
+    return True
+
+
 @dataclass(frozen=True)
 class LanguageConfig:
     language: Language
@@ -504,6 +558,15 @@ class LanguageConfig:
     # extractor.py's generic _resolve_signature_name() a GDScript-specific
     # string.
     implicit_names: dict[str, str] = field(default_factory=dict)
+    # Prefix to prepend to a function_types node's *already-found* name --
+    # unlike implicit_names above (a substitute for a missing name), this
+    # only ever applies on top of a real one. C#'s destructor_declaration is
+    # the motivating case: its "name" field is the bare identifier
+    # ("Widget"), with the "~" that actually distinguishes it from a
+    # same-named constructor tokenized as a separate, unnamed sibling child
+    # rather than being part of the field -- without this, a class defining
+    # both would produce two identical "Widget()" signatures.
+    name_prefixes: dict[str, str] = field(default_factory=dict)
 
 
 # `.cpp`/`.cc`/`.cxx` all parse with the same grammar, so all three
@@ -646,6 +709,33 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # leaving the one-line declaration untouched).
         function_types=["function_item", "function_signature_item"],
         dependency_handler=_rust_dependency_handler,
+    ),
+    ".cs": LanguageConfig(
+        language=Language(tscsharp.language()),
+        # method_declaration/constructor_declaration/destructor_declaration
+        # all expose "name"/"parameters"/"body" as direct fields, same
+        # shape as Java/Go -- no declarator indirection to unwrap.
+        # constructor/destructor have no return type at all, correctly
+        # producing no "-> ..." suffix (same as every other language's
+        # constructor/destructor handling). An interface's own method
+        # declaration (`string Greet();`, no body) is the *same*
+        # method_declaration node type as a class method, just missing a
+        # "body" field -- handled for free the same way Rust's
+        # function_signature_item is: still produces a real signature,
+        # and the missing body is harmless for compression.
+        #
+        # method_declaration's return-type field is named "returns" --
+        # yet a fourth field-naming convention this grammar happens to
+        # use, alongside Python/TS/GDScript's "return_type", Go's
+        # "result", and C++'s "type" -- extractor.py's
+        # _traverse_signatures() now checks all four generically, not a
+        # per-language hardcode.
+        function_types=["method_declaration", "constructor_declaration", "destructor_declaration"],
+        dependency_handler=_csharp_dependency_handler,
+        # See LanguageConfig.name_prefixes' own docstring: destructor_declaration's
+        # "name" field is the bare identifier with no "~", which would
+        # otherwise render identically to the class's own constructor.
+        name_prefixes={"destructor_declaration": "~"},
     ),
 }
 
