@@ -2,9 +2,58 @@ from pathlib import Path
 
 
 def build_stem_map(file_names) -> dict:
-    """Maps file stem (file name without extension) -> file name.
-    Used to match against the last segment of an import path (e.g. "extract.code.parser")."""
-    return {Path(name).stem: name for name in file_names}
+    """Maps file stem (file name without extension) -> every collected
+    file name sharing that stem, in the order given (typically collection
+    order) -- a list, not a single file name, since a stem is not
+    guaranteed unique across a project.
+
+    Usually a list of one, but a header/implementation pair sharing a base
+    name (Config.h + Config.cpp, a normal, extremely common C/C++
+    convention) is a real exception, not a hypothetical one -- caught
+    while adding C++ support, where this used to be a plain {stem: name}
+    dict. That shape let whichever file was processed last silently
+    overwrite the other's entry, making the *other* file invisible to
+    resolve_dependency()'s exact-filename check (its own name simply
+    stopped appearing anywhere in the map's values) -- observed directly:
+    a README mentioning "Config.cpp" by its exact name resolved as
+    external, purely because "Config.h" happened to win the same stem in
+    that particular collection order.
+    """
+    stem_map: dict[str, list[str]] = {}
+    for name in file_names:
+        stem_map.setdefault(Path(name).stem, []).append(name)
+    return stem_map
+
+
+# Extensions _pick_candidate() prefers when a bare-stem dependency (no
+# filename/extension survives to this point -- a stem-normalized
+# #include, or a raw dotted import's last segment) has more than one
+# same-stem file to choose between. A header extension wins: an #include
+# (or any equivalent path-based import) overwhelmingly names what's being
+# *declared*, never what implements it -- C/C++'s Config.h + Config.cpp
+# is the motivating, extremely common case. Harmless for every other
+# currently-supported language, none of which produce this kind of
+# same-stem extension collision today.
+_HEADER_EXTENSIONS = (".h", ".hpp", ".hh", ".hxx")
+
+
+def _pick_candidate(candidates: list[str]) -> str:
+    """Disambiguates resolve_dependency()'s bare-stem match when more than
+    one collected file shares that stem. A single candidate returns
+    immediately -- the overwhelmingly common case, and the only case that
+    existed at all before same-stem collisions were even distinguished
+    from an unambiguous match. Several candidates prefer a header
+    extension (see _HEADER_EXTENSIONS); failing that, the first one in
+    collection order, same as build_stem_map()'s old last-write-wins
+    behavior would have picked anyway for two same-kind files (e.g. two
+    unrelated "config" stems that aren't a header/impl pair at all).
+    """
+    if len(candidates) == 1:
+        return candidates[0]
+    for name in candidates:
+        if Path(name).suffix in _HEADER_EXTENSIONS:
+            return name
+    return candidates[0]
 
 
 def resolve_dependency(dep: str, stem_map: dict) -> str | None:
@@ -31,12 +80,15 @@ def resolve_dependency(dep: str, stem_map: dict) -> str | None:
     truncated to "controller", matching nothing.
 
     Returns the file name on a match, or None for an external dependency.
+    An exact-filename dep (the first check below) always matches its own
+    name regardless of how many other files share its stem -- only a
+    bare-stem match (the second and third checks) needs _pick_candidate()
+    to disambiguate multiple same-stem files.
     """
-    if dep in stem_map.values():
+    if any(dep in names for names in stem_map.values()):
         return dep
-    if dep in stem_map:
-        return stem_map[dep]
-    return stem_map.get(dep.split(".")[-1])
+    candidates = stem_map.get(dep) or stem_map.get(dep.split(".")[-1])
+    return _pick_candidate(candidates) if candidates else None
 
 
 class CycleError(Exception):

@@ -13,6 +13,29 @@ def test_extract_signatures_from_python_file(tmp_path):
     assert "sub(a, b)" in sigs
 
 
+def test_extract_signatures_from_java_file(tmp_path):
+    # Java's method_declaration names its return-type field "type" -- the
+    # same field name C++'s function_definition happens to use too. A
+    # naive unconditional "type" fallback (added generically for C++)
+    # would silently start appending " -> int" to every Java signature,
+    # since Java's node is never run through the C-family declarator
+    # unwrap -- caught by code review before merge, guarded here so it
+    # can't silently regress again.
+    file_path = tmp_path / "Mod.java"
+    file_path.write_text(
+        "public class Mod {\n"
+        "    public int add(int a, int b) {\n"
+        "        return a + b;\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert "add(int a, int b)" in sigs
+    assert not any("->" in s for s in sigs)
+
+
 def test_extract_dependencies_from_python_file(tmp_path):
     file_path = tmp_path / "mod.py"
     file_path.write_text("import os\nfrom pathlib import Path\n\nx = 1\n", encoding="utf-8")
@@ -158,6 +181,62 @@ def test_extract_dependencies_from_go_file(tmp_path):
     assert "strings" in deps
     assert "path/filepath" in deps
     assert "encoding/json" in deps
+
+
+def test_extract_signatures_from_cpp_file(tmp_path):
+    # C++'s grammar nests a function's actual name+parameters one level
+    # inside a "declarator" sub-node (function_declarator), rather than
+    # exposing them directly on function_definition the way every other
+    # supported language does -- extractor.py's _unwrap_declarator()
+    # handles this. function_definition covers every shape uniformly: a
+    # free function, an in-class method, and an out-of-class
+    # `Class::method` definition.
+    file_path = tmp_path / "server.cpp"
+    file_path.write_text(
+        "int Add(int a, int b) {\n    return a + b;\n}\n\n"
+        "class Server {\npublic:\n    void Start() {}\n};\n\n"
+        "void Server::Stop() {\n}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert "Add(int a, int b) -> int" in sigs
+    assert "Start() -> void" in sigs
+    # qualified_identifier -- the class-qualifier is part of the readable
+    # name, same as Lua's "Tbl:method" qualified text.
+    assert "Server::Stop() -> void" in sigs
+
+
+def test_extract_signatures_from_cpp_constructor_and_destructor(tmp_path):
+    # Neither has a "type" field at all (there's no return type to have) --
+    # must not append a dangling " -> " with nothing after it.
+    file_path = tmp_path / "widget.cpp"
+    file_path.write_text(
+        "class Widget {\npublic:\n    Widget() {}\n    virtual ~Widget() {}\n};\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert "Widget()" in sigs
+    assert "~Widget()" in sigs
+
+
+def test_extract_dependencies_from_cpp_file(tmp_path):
+    # Both #include shapes: a system header (angle-bracket-delimited, no
+    # nested string content node) and a local header (quoted, with the
+    # usual nested string_content) -- both normalized to their bare stem,
+    # same restraint _gdscript_dependency_handler already takes for its
+    # own path-based imports.
+    file_path = tmp_path / "main.cpp"
+    file_path.write_text(
+        '#include <iostream>\n'
+        '#include "utils.h"\n',
+        encoding="utf-8",
+    )
+
+    deps = extract_dependencies(str(file_path))
+    assert "iostream" in deps
+    assert "utils" in deps
 
 
 def test_extract_signatures_from_typescript_arrow_functions(tmp_path):
