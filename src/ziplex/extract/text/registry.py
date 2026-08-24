@@ -11,11 +11,14 @@ from typing import Callable
 from .json import compress_json
 from .markdown import compress_markdown
 from .txt import compress_txt
+from .yaml import compress_yaml
 
 TEXT_COMPRESSORS: dict[str, Callable[[str], str]] = {
     ".json": compress_json,
     ".md": compress_markdown,
     ".txt": compress_txt,
+    ".yaml": compress_yaml,
+    ".yml": compress_yaml,
 }
 
 

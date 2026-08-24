@@ -18,3 +18,4 @@ mcp
 flask
 pywebview
 watchdog
+ruamel.yaml
