@@ -215,7 +215,7 @@ Ziplex packs one person's local snapshot — there's no shared server or live sy
 
 - Whoever runs `pack` after a meaningful change commits the refreshed output alongside their code change.
 - Everyone else's copy is only as current as the last commit that touched it — `check_freshness` (or `get_overview`/`list_files` with `project_path` passed, see above) tells them whether their working copy has drifted from what's committed, without re-`pack`ing just to find out.
-- This is a convention, not a feature Ziplex enforces or coordinates: no merge/conflict resolution, and no defined "who wins" if two people repack independently before either commits.
+- This is a convention, not a feature Ziplex enforces or coordinates: no merge/conflict resolution, and no defined "who wins" if two people repack independently before either commits. If it does conflict, don't hand-resolve the JSON — see [merge-conflicts.md](docs/team/merge-conflicts.md) for the recommended fix (clear the conflict, re-`pack`, review); [`gitattributes`](docs/team/gitattributes) keeps these files collapsed in GitHub's PR diff view.
 
 **CI gate (optional):** `ziplex freshness <project> <name>.cache.json` exits non-zero when the committed output has drifted — no LLM calls, no `GEMINI_API_KEY`, just a hash comparison. Wire it into a PR check ([template](docs/ci/freshness-gate.yml)) to catch a stale, un-re-reviewed `aif.json` before it merges, without automating `pack` itself (which costs real LLM calls and skips human review — left as a manual step on purpose).
 

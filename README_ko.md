@@ -214,7 +214,7 @@ Ziplex는 한 사람의 로컬 스냅샷을 패킹합니다 — 공유 서버나
 
 - 의미 있는 변경 뒤에 `pack`을 돌린 사람이 코드 변경과 함께 새로 생성된 결과물을 커밋합니다.
 - 다른 사람들의 `aif.json`은 마지막으로 커밋된 시점만큼만 최신입니다 — `check_freshness`(또는 위에서 설명한, `project_path`를 넘긴 `get_overview`/`list_files`)로 자기 작업 사본이 커밋된 것과 얼마나 어긋났는지 다시 `pack`하지 않고도 확인할 수 있습니다.
-- 이건 실시간 동기화가 아니라 권장 컨벤션입니다 — Ziplex가 강제하거나 조율하지 않습니다. 병합/충돌 해결도 없고, 두 사람이 각자 커밋하기 전에 따로 `pack`을 돌리면 "누구 결과가 맞는지"도 정해져 있지 않습니다.
+- 이건 실시간 동기화가 아니라 권장 컨벤션입니다 — Ziplex가 강제하거나 조율하지 않습니다. 병합/충돌 해결도 없고, 두 사람이 각자 커밋하기 전에 따로 `pack`을 돌리면 "누구 결과가 맞는지"도 정해져 있지 않습니다. 실제로 충돌이 나면 JSON을 손으로 병합하지 마세요 — [merge-conflicts.md](docs/team/merge-conflicts.md)에 권장 해결법(충돌 해소 → 재`pack` → 검토)이 있고, [`gitattributes`](docs/team/gitattributes)를 적용해두면 GitHub PR diff에서 이 파일들이 접힌 채로 표시됩니다.
 
 **CI 게이트 (선택):** `ziplex freshness <project> <name>.cache.json`은 커밋된 결과물이 코드와 어긋났을 때 0이 아닌 코드로 종료됩니다 — LLM 호출도, `GEMINI_API_KEY`도 필요 없이 해시 비교만 합니다. PR 체크로 연결해두면([템플릿](docs/ci/freshness-gate.yml)) 오래된 `aif.json`이 재검토 없이 병합되는 걸 막을 수 있습니다. `pack` 자체를 자동화하는 건 아닙니다 — 실제 LLM 비용이 들고 사람의 검토 단계를 건너뛰게 되므로, 의도적으로 수동 단계로 남겨뒀습니다.
 

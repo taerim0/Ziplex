@@ -1,0 +1,14 @@
+# Copy into the *target* project's own .gitattributes (not this repo --
+# Ziplex's own aif.json is gitignored, never committed).
+#
+# aif.json/detail.json/cache.json are generated, reproducible artifacts
+# (see README's "Team use" section) -- nobody should be reading their diff
+# line by line the way they'd read a real code diff. `linguist-generated=true`
+# collapses them in GitHub's PR view by default (still viewable via
+# "Load diff" when actually needed).
+#
+# Adjust the filenames below to whatever this project actually committed
+# (e.g. result/MyProject.json / result/MyProject.detail.json / result/MyProject.cache.json).
+aif.json linguist-generated=true
+*.detail.json linguist-generated=true
+*.cache.json linguist-generated=true

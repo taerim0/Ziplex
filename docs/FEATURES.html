@@ -666,7 +666,7 @@
         <span class="caret">▸</span>
         <span class="branch-kicker">TEAM / CI</span>
         <span class="branch-title">팀 작업 · 자동화</span>
-        <span class="chip warn">얇음</span>
+        <span class="chip warn">부분 구현</span>
       </summary>
       <div class="twigs">
         <div class="twig">
@@ -686,16 +686,16 @@
         <div class="twig">
           <div class="twig-head">
             <span class="twig-name">머지 충돌 대응</span>
-            <span class="chip gap">공백</span>
+            <span class="chip warn">부분 구현</span>
           </div>
-          <p class="twig-desc">두 사람이 각자 pack하고 커밋하면 "누구 게 맞는지" 미정의. .gitattributes도, 충돌 가이드도 없음 — 팀 시나리오에서 제일 먼저 부딪힐 지점.</p>
+          <p class="twig-desc">여전히 "누구 게 맞는지" Ziplex가 정하진 않지만, 문서화된 해결법(충돌 해소 → 재pack → 검토)과 GitHub PR diff를 접어주는 <code>.gitattributes</code> 템플릿이 생김 (docs/team/).</p>
         </div>
         <div class="twig">
           <div class="twig-head">
             <span class="twig-name">push 시 자동 재pack</span>
-            <span class="chip gap">공백</span>
+            <span class="chip ok">안정</span>
           </div>
-          <p class="twig-desc">GitHub Actions 레시피 없음 — 지금은 사람이 pack을 깜빡하면 커밋된 aif.json이 조용히 stale해짐.</p>
+          <p class="twig-desc">자동 재pack 대신 detection-only 게이트로 방향 전환 — <code>ziplex freshness</code>가 drift 시 exit 1, GitHub Actions 템플릿(docs/ci/freshness-gate.yml) 제공. 재pack 자체는 LLM 비용·리뷰 생략 리스크 때문에 의도적으로 자동화하지 않음.</p>
         </div>
       </div>
     </details>
