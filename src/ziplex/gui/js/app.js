@@ -181,13 +181,49 @@ export function confidenceLevel(conf) {
   return conf >= 0.67 ? "high" : conf >= 0.34 ? "medium" : "low";
 }
 
+// Caps how many filenames one category (changed/added/removed) lists in a
+// staleTooltip() before folding the rest into a "+N more" line -- a project
+// with hundreds of changed files would otherwise turn the tooltip into an
+// unreadable wall of text. Mirrors this codebase's other capped-list
+// conventions (e.g. tech_stack.py's MAX_DEPENDENCIES, the relationship
+// editor's REL_GRAPH_MAX_NEIGHBORS).
+const STALE_DETAIL_CAP = 15;
+
+function _staleFileListLines(label, files) {
+  if (!files?.length) return [];
+  const shown = files.slice(0, STALE_DETAIL_CAP);
+  const lines = [`${label}:`, ...shown.map((f) => `  ${f}`)];
+  const rest = files.length - shown.length;
+  if (rest > 0) lines.push(t("core.stale.more", { n: rest }));
+  return lines;
+}
+
+// Builds the full multi-line tooltip text for a {is_stale, changed, added,
+// removed} freshness report -- a one-line count ("N changed, M added") on
+// top, then the actual filenames per category underneath. Shared by the
+// top-of-page staleBadge (setStale(), below) and the recent-projects
+// freshness badge (landing.js) so both surface *which* files changed, not
+// just how many.
+export function staleTooltip(stale) {
+  if (!stale || !stale.is_stale) return "";
+  const counts = [];
+  if (stale.changed?.length) counts.push(t("core.stale.changed", { n: stale.changed.length }));
+  if (stale.added?.length) counts.push(t("core.stale.added", { n: stale.added.length }));
+  if (stale.removed?.length) counts.push(t("core.stale.removed", { n: stale.removed.length }));
+  const summary = counts.join(", ") || t("core.stale.detected");
+
+  const detailLines = [
+    ..._staleFileListLines(t("core.stale.changedLabel"), stale.changed),
+    ..._staleFileListLines(t("core.stale.addedLabel"), stale.added),
+    ..._staleFileListLines(t("core.stale.removedLabel"), stale.removed),
+  ];
+
+  return detailLines.length ? `${summary}\n\n${detailLines.join("\n")}` : summary;
+}
+
 export function setStale(stale) {
   if (stale && stale.is_stale) {
-    const parts = [];
-    if (stale.changed?.length) parts.push(t("core.stale.changed", { n: stale.changed.length }));
-    if (stale.added?.length) parts.push(t("core.stale.added", { n: stale.added.length }));
-    if (stale.removed?.length) parts.push(t("core.stale.removed", { n: stale.removed.length }));
-    staleBadge.title = parts.join(", ") || t("core.stale.detected");
+    staleBadge.title = staleTooltip(stale);
     staleBadge.classList.remove("hidden");
   } else {
     staleBadge.classList.add("hidden");

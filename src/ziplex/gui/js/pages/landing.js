@@ -12,6 +12,7 @@
 import {
   app, nav, el, api, apiPost, getAif, getProject, getRecent, removeRecent,
   openProject, relativeTime, browseButton, browseAifButton, browseSaveButton,
+  staleTooltip,
 } from "../app.js";
 import { t } from "../i18n.js";
 
@@ -246,6 +247,10 @@ export function renderCheck() {
             const changedCount = (report.changed?.length || 0) + (report.added?.length || 0) + (report.removed?.length || 0);
             badge.textContent = report.is_stale ? t("check.freshness.stale", { n: changedCount }) : t("check.freshness.fresh");
             badge.classList.toggle("stale", !!report.is_stale);
+            // Hover for exactly which files changed, not just the count --
+            // same tooltip the top-of-page staleBadge uses once a project's
+            // actually open.
+            if (report.is_stale) badge.title = staleTooltip(report);
           })
           .catch(() => {}); // typo'd/moved path, missing cache.json, ... -- leave the badge blank
       }

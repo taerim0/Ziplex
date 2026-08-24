@@ -57,6 +57,10 @@ const I18N = {
     "core.stale.removed": (v) => `삭제 ${v.n}`,
     "core.stale.detected": "변경 감지됨",
     "core.stale.badge": "⚠️ 변경됨",
+    "core.stale.changedLabel": "변경됨",
+    "core.stale.addedLabel": "추가됨",
+    "core.stale.removedLabel": "삭제됨",
+    "core.stale.more": (v) => `  ... 외 ${v.n}개 더`,
 
     "graph.more": (v) => `+${v.n}개 더`,
     "graph.tree.cycleSkipped": "(순환 참조 → 생략)",
@@ -188,6 +192,10 @@ const I18N = {
     "core.stale.removed": (v) => `${v.n} removed`,
     "core.stale.detected": "Changes detected",
     "core.stale.badge": "⚠️ Changed",
+    "core.stale.changedLabel": "Changed",
+    "core.stale.addedLabel": "Added",
+    "core.stale.removedLabel": "Removed",
+    "core.stale.more": (v) => `  ... +${v.n} more`,
 
     "graph.more": (v) => `+${v.n} more`,
     "graph.tree.cycleSkipped": "(circular reference → omitted)",
