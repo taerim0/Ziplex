@@ -62,16 +62,35 @@ class GeminiProvider:
     DEFAULT_MODEL = "gemini-flash-latest"
 
     def __init__(self, api_key: str | None = None, model: str | None = None):
-        # Not resolved to a final key here -- see _resolve_api_key() below
-        # for why the key specifically (unlike the model) has to stay
-        # re-resolved on every call instead of being baked in once at
-        # construction time.
+        # Neither the key nor the model is resolved to a final value here
+        # anymore -- both stay re-resolved on every call (_resolve_api_key()/
+        # the url property below), not baked in once at construction time.
+        # The model used to be construction-time-only (a GUI Options-page
+        # override for it didn't exist yet), which meant the module-level
+        # `_provider` singleton (built once at import, living for the whole
+        # GUI server process) could never pick up a model saved after that
+        # -- confirmed as a real bug (2026-08-24): an external user who only
+        # entered an API key via the GUI stayed stuck on DEFAULT_MODEL
+        # (a floating "-latest" alias with a documented history of 503s,
+        # see that constant's own comment) with no way to switch away from
+        # it short of an env var on their own machine, which a GUI-only
+        # user has no reason to know exists.
         self._explicit_api_key = api_key
-        # Precedence: an explicit constructor arg (programmatic/test callers)
+        self._explicit_model = model
+
+    @property
+    def url(self) -> str:
+        # Precedence: an explicit constructor arg (programmatic/test
+        # callers) wins over settings.py's stored model (the Options page)
         # wins over GEMINI_MODEL (a user's own .env override) wins over
         # DEFAULT_MODEL.
-        resolved_model = model or os.getenv("GEMINI_MODEL") or self.DEFAULT_MODEL
-        self.url = (
+        resolved_model = (
+            self._explicit_model
+            or app_settings.resolve_gemini_model()
+            or os.getenv("GEMINI_MODEL")
+            or self.DEFAULT_MODEL
+        )
+        return (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
             f"{resolved_model}:generateContent"
         )
@@ -139,6 +158,160 @@ class GeminiProvider:
         return "{}"
 
 
+class OpenAIProvider:
+    """OpenAI's Chat Completions request/response shape -- and, since that
+    shape is the de facto standard almost every other provider also speaks
+    (Ollama, LM Studio, vLLM, llama.cpp's own server, OpenRouter, Groq, and
+    real OpenAI itself), this one class covers all of them via a
+    configurable base_url rather than needing a dedicated class per vendor.
+    A local model (Gemma, Llama, Mistral, ...) served through any of those
+    tools works the same way: point base_url at wherever it's listening
+    (e.g. http://localhost:11434/v1 for Ollama) and set model to whatever
+    name that server expects -- no code change, just config.
+    """
+
+    DEFAULT_BASE_URL = "https://api.openai.com/v1"
+    DEFAULT_MODEL = "gpt-4o-mini"
+
+    def __init__(self, api_key: str | None = None, base_url: str | None = None, model: str | None = None):
+        # api_key stays unresolved here, same reasoning as GeminiProvider's
+        # own _explicit_api_key -- see _resolve_api_key() below. base_url/
+        # model aren't expected to change mid-session the way a credential
+        # might, so (like GeminiProvider's model) they're resolved once here.
+        self._explicit_api_key = api_key
+        self.base_url = (
+            base_url or app_settings.resolve_openai_base_url() or os.getenv("OPENAI_BASE_URL") or self.DEFAULT_BASE_URL
+        ).rstrip("/")
+        self.model = model or app_settings.resolve_openai_model() or os.getenv("OPENAI_MODEL") or self.DEFAULT_MODEL
+
+    def _resolve_api_key(self) -> str | None:
+        # Same three-tier precedence as GeminiProvider._resolve_api_key():
+        # explicit constructor arg > settings.py's stored key > env var.
+        # Unlike Gemini, a missing key isn't necessarily a dead end -- most
+        # local servers (Ollama, LM Studio) don't check it at all, so
+        # generate() below sends no Authorization header rather than one
+        # with a literal "None" in it.
+        if self._explicit_api_key:
+            return self._explicit_api_key
+        stored = app_settings.resolve_openai_api_key()
+        if stored:
+            return stored
+        return os.getenv("OPENAI_API_KEY")
+
+    def generate(self, prompt: str, retry: int = 5) -> str:
+        api_key = self._resolve_api_key()
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        body = {"model": self.model, "messages": [{"role": "user", "content": prompt}]}
+
+        for attempt in range(retry):
+            try:
+                response = requests.post(f"{self.base_url}/chat/completions", headers=headers, json=body)
+                data = response.json()
+            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+                # Same transient-failure treatment as GeminiProvider's own
+                # generate() -- see that method's comment for why.
+                wait = 5 * (attempt + 1)
+                print(f"  ⚠️  네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도 ({attempt+1}/{retry})")
+                time.sleep(wait)
+                continue
+
+            if response.status_code == 200 and "choices" in data:
+                text = data["choices"][0]["message"]["content"]
+                return _clean_json(text)
+
+            # Checked on the HTTP status, not a response body field, unlike
+            # GeminiProvider's error.code -- an OpenAI-compatible error body
+            # commonly carries a string error.type ("rate_limit_exceeded"),
+            # not a numeric code, so the status line is the reliable signal
+            # across every backend this class might be pointed at.
+            if response.status_code in (429, 500, 502, 503, 504):
+                wait = 5 * (attempt + 1)
+                print(f"  ⚠️  서버 과부하, {wait}초 후 재시도 ({attempt+1}/{retry})")
+                time.sleep(wait)
+                continue
+
+            error_msg = data.get("error", {}).get("message", "unknown") if isinstance(data, dict) else "unknown"
+            print(f"  ❌ API 에러: {error_msg}")
+            break
+
+        return "{}"
+
+
+class ClaudeProvider:
+    """Anthropic's Messages API -- a different shape from both Gemini and
+    the OpenAI-compatible family above (an x-api-key header instead of a
+    Bearer token or a ?key= query param, a required max_tokens, and
+    response text at content[0].text rather than candidates[0]... or
+    choices[0]...), so it gets its own class rather than reusing
+    OpenAIProvider with a different base_url.
+    """
+
+    DEFAULT_MODEL = "claude-sonnet-4-5"
+    MAX_TOKENS = 4096
+    API_URL = "https://api.anthropic.com/v1/messages"
+
+    def __init__(self, api_key: str | None = None, model: str | None = None):
+        self._explicit_api_key = api_key
+        self.model = model or app_settings.resolve_claude_model() or os.getenv("CLAUDE_MODEL") or self.DEFAULT_MODEL
+
+    def _resolve_api_key(self) -> str | None:
+        # Same three-tier precedence as the other two providers'
+        # _resolve_api_key(). Two env var names checked (ANTHROPIC_API_KEY
+        # first) since that's the name Anthropic's own SDK/docs use --
+        # CLAUDE_API_KEY stays as a fallback for anyone who already set
+        # that instead, consistent with this project's own GEMINI_API_KEY
+        # naming for its other providers.
+        if self._explicit_api_key:
+            return self._explicit_api_key
+        stored = app_settings.resolve_claude_api_key()
+        if stored:
+            return stored
+        return os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
+
+    def generate(self, prompt: str, retry: int = 5) -> str:
+        api_key = self._resolve_api_key()
+        headers = {
+            "x-api-key": api_key or "",
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        body = {
+            "model": self.model,
+            "max_tokens": self.MAX_TOKENS,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+
+        for attempt in range(retry):
+            try:
+                response = requests.post(self.API_URL, headers=headers, json=body)
+                data = response.json()
+            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+                wait = 5 * (attempt + 1)
+                print(f"  ⚠️  네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도 ({attempt+1}/{retry})")
+                time.sleep(wait)
+                continue
+
+            if response.status_code == 200 and "content" in data:
+                text = data["content"][0]["text"]
+                return _clean_json(text)
+
+            # 529 is Anthropic's own overloaded_error status, alongside the
+            # usual 429/5xx set every other provider here also retries on.
+            if response.status_code in (429, 500, 502, 503, 504, 529):
+                wait = 5 * (attempt + 1)
+                print(f"  ⚠️  서버 과부하, {wait}초 후 재시도 ({attempt+1}/{retry})")
+                time.sleep(wait)
+                continue
+
+            error_msg = data.get("error", {}).get("message", "unknown") if isinstance(data, dict) else "unknown"
+            print(f"  ❌ API 에러: {error_msg}")
+            break
+
+        return "{}"
+
+
 class MockProvider:
     """Deterministic, network-free provider for fast local iteration and
     integration tests -- a live worked example of the "implement generate()
@@ -184,15 +357,41 @@ class MockProvider:
 # imported (and _provider constructed) by an earlier test file.
 PROVIDERS: dict[str, type[LLMProvider]] = {
     "gemini": GeminiProvider,
+    "openai": OpenAIProvider,
+    "claude": ClaudeProvider,
     "mock": MockProvider,
 }
 
 _provider: LLMProvider = PROVIDERS[os.getenv("LLM_PROVIDER", "gemini")]()
 
 
+def _active_provider() -> LLMProvider:
+    """Which provider actually handles the next generate() call -- settings.py's
+    stored choice (the GUI Options page's provider selector) if one's been
+    made, else `_provider` above (the process-lifetime default selected via
+    LLM_PROVIDER at import time -- what LLM_PROVIDER=mock and every existing
+    test that does `monkeypatch.setattr(llm, "_provider", ...)` already
+    relies on, so both keep working unchanged when settings.py has no
+    provider choice stored, which is every environment except a real GUI
+    session that used the selector).
+
+    Re-resolved on every call rather than cached, same reasoning as
+    GeminiProvider._resolve_api_key(): a provider switched in the GUI needs
+    to take effect on the very next pack, not after a restart. Constructing
+    a fresh instance per call is cheap -- each provider's own __init__ just
+    resolves config strings, no network -- and each provider's generate()
+    still re-resolves its own key fresh underneath regardless, so this adds
+    no new staleness of its own.
+    """
+    name = app_settings.resolve_llm_provider_name()
+    if name and name in PROVIDERS:
+        return PROVIDERS[name]()
+    return _provider
+
+
 def generate(prompt: str, retry: int = 5) -> str:
     """Delegates to the currently active LLM provider. Thread-safe (provider state is read-only)."""
-    return _provider.generate(prompt, retry=retry)
+    return _active_provider().generate(prompt, retry=retry)
 
 
 def analyze_file_summary(file_path: str, signatures: list[str], dependencies: list[str]) -> str:

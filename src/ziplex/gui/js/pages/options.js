@@ -34,12 +34,70 @@ export function renderOptions() {
   const savedNote = el("span", { class: "muted hidden", text: t("options.saved") });
   const errorBox = el("div", { class: "error hidden" });
 
-  // type="password" only masks the field visually (shoulder-surfing) --
-  // GET /api/settings still echoes the real key back in plain JSON so
-  // this field can be prefilled, same trust model as everything else this
-  // GUI already assumes (single-user, 127.0.0.1-only -- see gui_server.py's
+  // --- AI provider selector -------------------------------------------
+  // Three providers today (llm.py's PROVIDERS registry, minus "mock" which
+  // is a test-only seam never exposed here): Gemini, an OpenAI-compatible
+  // family (covers real OpenAI and anything speaking its API -- Ollama, LM
+  // Studio, vLLM, OpenRouter, a local Gemma/Llama served through any of
+  // those), and Claude direct. The dropdown only ever changes which of the
+  // three field groups below is visible; nothing is saved until the shared
+  // save button below fires, and that save always sends llm_provider
+  // alongside whichever group's fields are currently showing -- so
+  // "switched provider, typed a key, saved" can never land in a state
+  // where the key is stored but llm_provider still points at the old one.
+  const providerSelect = el("select", {}, [
+    el("option", { value: "gemini", text: t("options.providerGemini") }),
+    el("option", { value: "openai", text: t("options.providerOpenai") }),
+    el("option", { value: "claude", text: t("options.providerClaude") }),
+  ]);
+
+  // type="password" only masks these fields visually (shoulder-surfing) --
+  // GET /api/settings still echoes the real values back in plain JSON so
+  // they can be prefilled, same trust model as everything else this GUI
+  // already assumes (single-user, 127.0.0.1-only -- see gui_server.py's
   // own docstring on why that binding choice is load-bearing here).
   const apiKeyInput = el("input", { type: "password", placeholder: t("options.apiKeyPlaceholder") });
+  const geminiModelInput = el("input", { type: "text", placeholder: t("options.geminiModelPlaceholder") });
+  const geminiFields = el("div", {}, [
+    el("div", { class: "input-row" }, [apiKeyInput]),
+    el("div", { class: "input-row" }, [geminiModelInput]),
+  ]);
+
+  const openaiApiKeyInput = el("input", { type: "password", placeholder: t("options.openaiApiKeyPlaceholder") });
+  const openaiBaseUrlInput = el("input", { type: "text", placeholder: t("options.openaiBaseUrlPlaceholder") });
+  const openaiModelInput = el("input", { type: "text", placeholder: t("options.openaiModelPlaceholder") });
+  const openaiFields = el("div", { class: "hidden" }, [
+    el("div", { class: "input-row" }, [openaiApiKeyInput]),
+    el("div", { class: "input-row" }, [openaiBaseUrlInput]),
+    el("div", { class: "input-row" }, [openaiModelInput]),
+  ]);
+
+  const claudeApiKeyInput = el("input", { type: "password", placeholder: t("options.claudeApiKeyPlaceholder") });
+  const claudeModelInput = el("input", { type: "text", placeholder: t("options.claudeModelPlaceholder") });
+  const claudeFields = el("div", { class: "hidden" }, [
+    el("div", { class: "input-row" }, [claudeApiKeyInput]),
+    el("div", { class: "input-row" }, [claudeModelInput]),
+  ]);
+
+  const providerDescription = el("p", { class: "muted", text: t("options.openaiDescription") });
+  // Only Gemini's own description is the shared apiKeyDescription already
+  // defined above the selector; OpenAI/Claude get their own paragraph,
+  // swapped by showProvider() below the same way the field groups are.
+  const geminiDescription = el("p", { class: "muted", text: t("options.apiKeyDescription") });
+  const claudeDescription = el("p", { class: "muted hidden", text: t("options.claudeDescription") });
+  providerDescription.classList.add("hidden");
+
+  function showProvider(name) {
+    geminiFields.classList.toggle("hidden", name !== "gemini");
+    geminiDescription.classList.toggle("hidden", name !== "gemini");
+    openaiFields.classList.toggle("hidden", name !== "openai");
+    providerDescription.classList.toggle("hidden", name !== "openai");
+    claudeFields.classList.toggle("hidden", name !== "claude");
+    claudeDescription.classList.toggle("hidden", name !== "claude");
+  }
+
+  providerSelect.addEventListener("change", () => showProvider(providerSelect.value));
+
   const apiKeySaveButton = el("button", { text: t("options.save") });
   const apiKeySavedNote = el("span", { class: "muted hidden", text: t("options.saved") });
   const apiKeyErrorBox = el("div", { class: "error hidden" });
@@ -81,7 +139,23 @@ export function renderOptions() {
     apiKeyErrorBox.classList.add("hidden");
     apiKeySaveButton.disabled = true;
     try {
-      await apiPost("/api/settings", { gemini_api_key: apiKeyInput.value.trim() });
+      // Always sends llm_provider alongside whichever group's own fields
+      // are currently visible -- see showProvider()'s own comment on why
+      // that has to be one request, not two.
+      const provider = providerSelect.value;
+      const body = { llm_provider: provider };
+      if (provider === "gemini") {
+        body.gemini_api_key = apiKeyInput.value.trim();
+        body.gemini_model = geminiModelInput.value.trim();
+      } else if (provider === "openai") {
+        body.openai_api_key = openaiApiKeyInput.value.trim();
+        body.openai_base_url = openaiBaseUrlInput.value.trim();
+        body.openai_model = openaiModelInput.value.trim();
+      } else if (provider === "claude") {
+        body.claude_api_key = claudeApiKeyInput.value.trim();
+        body.claude_model = claudeModelInput.value.trim();
+      }
+      await apiPost("/api/settings", body);
       apiKeySavedNote.classList.remove("hidden");
     } catch (e) {
       apiKeyErrorBox.textContent = e.message;
@@ -100,9 +174,15 @@ export function renderOptions() {
       el("div", { class: "input-row" }, [langSelect]),
     ]),
     el("div", { class: "card" }, [
-      el("h2", { text: t("options.apiKeyTitle") }),
-      el("p", { class: "muted", text: t("options.apiKeyDescription") }),
-      el("div", { class: "input-row" }, [apiKeyInput]),
+      el("h2", { text: t("options.providerTitle") }),
+      el("p", { class: "muted", text: t("options.providerDescription") }),
+      el("div", { class: "input-row" }, [providerSelect]),
+      geminiDescription,
+      geminiFields,
+      providerDescription,
+      openaiFields,
+      claudeDescription,
+      claudeFields,
       el("div", { class: "copy-row" }, [apiKeySaveButton, apiKeySavedNote]),
       apiKeyErrorBox,
     ]),
@@ -118,5 +198,15 @@ export function renderOptions() {
   api("/api/settings").then(data => {
     outputDirInput.value = data.output_dir || "";
     apiKeyInput.value = data.gemini_api_key || "";
+    geminiModelInput.value = data.gemini_model || "";
+    openaiApiKeyInput.value = data.openai_api_key || "";
+    openaiBaseUrlInput.value = data.openai_base_url || "";
+    openaiModelInput.value = data.openai_model || "";
+    claudeApiKeyInput.value = data.claude_api_key || "";
+    claudeModelInput.value = data.claude_model || "";
+
+    const provider = data.llm_provider || "gemini";
+    providerSelect.value = provider;
+    showProvider(provider);
   }).catch(() => {});
 }

@@ -102,30 +102,46 @@ def api_config():
     return jsonify(_default_config)
 
 
+
+# Every settings.py field the Options page is allowed to write through
+# POST /api/settings, besides project_output_dirs (never sent by any
+# caller -- see the route's own docstring). One flat whitelist rather than
+# a per-provider shape, since the frontend already only ever sends the one
+# section (provider selector + whichever provider's own fields) a human
+# actually touched in a single save action -- see js/pages/options.js.
+_SETTINGS_TEXT_FIELDS = (
+    "output_dir",
+    "gemini_api_key",
+    "gemini_model",
+    "llm_provider",
+    "openai_api_key",
+    "openai_base_url",
+    "openai_model",
+    "claude_api_key",
+    "claude_model",
+)
+
+
 @app.route("/api/settings", methods=["GET", "POST"])
 def api_settings():
-    """GET returns settings.py's whole persisted shape (`output_dir`,
-    `project_output_dirs` -- the per-project pins -- and `gemini_api_key`;
-    see that module's own docstring); the Options page only ever edits
-    `output_dir` and `gemini_api_key` through here, since a folder pin is
-    set implicitly by packing with an explicit output path
-    (pack_service.start_pack_job()), not through this route. POST accepts
-    a partial body -- {"output_dir": "..."} or {"gemini_api_key": "..."}
-    alone are the only shapes the Options page ever actually sends --
-    merged onto whatever was already saved rather than requiring the whole
-    shape back, so a caller that only knows about one field can't
-    accidentally wipe another out (`project_output_dirs` in particular,
-    which no request body ever includes at all).
+    """GET returns settings.py's whole persisted shape (see that module's
+    own docstring for what each field means). POST accepts a partial body
+    -- whichever of _SETTINGS_TEXT_FIELDS the caller actually sends -- merged
+    onto whatever was already saved rather than requiring the whole shape
+    back, so a caller that only knows about one field (or one provider's
+    fields) can't accidentally wipe another out. `project_output_dirs` is
+    deliberately not in that whitelist: no request body here ever includes
+    it at all -- a folder pin is set implicitly by packing with an explicit
+    output path (pack_service.start_pack_job()), never through this route.
     """
     if request.method == "GET":
         return jsonify(app_settings.load_settings())
 
     data = request.get_json(silent=True) or {}
     current = app_settings.load_settings()
-    if "output_dir" in data:
-        current["output_dir"] = (data.get("output_dir") or "").strip()
-    if "gemini_api_key" in data:
-        current["gemini_api_key"] = (data.get("gemini_api_key") or "").strip()
+    for field in _SETTINGS_TEXT_FIELDS:
+        if field in data:
+            current[field] = (data.get(field) or "").strip()
     app_settings.save_settings(current)
     return jsonify(current)
 

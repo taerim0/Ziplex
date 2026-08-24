@@ -85,7 +85,7 @@ def test_config_reflects_startup_defaults(client):
 def test_settings_get_returns_defaults_when_unconfigured(client, tmp_path, monkeypatch):
     monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
     res = client.get("/api/settings")
-    assert res.get_json() == {"output_dir": "", "project_output_dirs": {}, "gemini_api_key": ""}
+    assert res.get_json() == app_settings.DEFAULT_SETTINGS
 
 
 def test_settings_post_sets_the_global_output_dir(client, tmp_path, monkeypatch):
@@ -122,6 +122,49 @@ def test_settings_post_api_key_does_not_clobber_output_dir(client, tmp_path, mon
     loaded = app_settings.load_settings()
     assert loaded["output_dir"] == "D:/out"
     assert loaded["gemini_api_key"] == "my-secret-key"
+
+
+def test_settings_post_sets_the_gemini_model(client, tmp_path, monkeypatch):
+    # The Options-page field added specifically so a GUI-only user (no .env
+    # access) can move off GeminiProvider.DEFAULT_MODEL -- see that
+    # constant's own comment for the real external-tester report this
+    # fixed.
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    res = client.post("/api/settings", json={"gemini_model": "gemini-3.5-flash"})
+    assert res.get_json()["gemini_model"] == "gemini-3.5-flash"
+    assert app_settings.load_settings()["gemini_model"] == "gemini-3.5-flash"
+
+
+def test_settings_post_sets_the_llm_provider_and_openai_fields_together(client, tmp_path, monkeypatch):
+    # The provider selector saves its choice alongside that provider's own
+    # fields in one request -- see js/pages/options.js -- so switching to
+    # OpenAI and saving a key can never land in a state where the key is
+    # stored but llm_provider still says "gemini" (or vice versa).
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    res = client.post("/api/settings", json={
+        "llm_provider": "openai",
+        "openai_api_key": "sk-abc",
+        "openai_base_url": "http://localhost:11434/v1",
+        "openai_model": "gemma2",
+    })
+    body = res.get_json()
+    assert body["llm_provider"] == "openai"
+    assert body["openai_api_key"] == "sk-abc"
+    assert body["openai_base_url"] == "http://localhost:11434/v1"
+    assert body["openai_model"] == "gemma2"
+
+
+def test_settings_post_sets_the_claude_fields(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    res = client.post("/api/settings", json={
+        "llm_provider": "claude",
+        "claude_api_key": "claude-key",
+        "claude_model": "claude-sonnet-4-5",
+    })
+    body = res.get_json()
+    assert body["llm_provider"] == "claude"
+    assert body["claude_api_key"] == "claude-key"
+    assert body["claude_model"] == "claude-sonnet-4-5"
 
 
 def _wait_for_job(client, job_id, timeout=10):
