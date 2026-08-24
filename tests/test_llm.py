@@ -89,7 +89,7 @@ def test_generate_retries_past_a_transport_level_exception(monkeypatch):
     monkeypatch.setattr(llm.time, "sleep", lambda s: None)
     calls = {"n": 0}
 
-    def fake_post(url, json):
+    def fake_post(url, json, timeout=None):
         calls["n"] += 1
         if calls["n"] == 1:
             raise requests.exceptions.ConnectionError("simulated network blip")
@@ -115,7 +115,7 @@ def test_generate_retries_past_a_non_json_response(monkeypatch):
         def json(self):
             raise json.JSONDecodeError("bad", "not json", 0)
 
-    def fake_post(url, json):
+    def fake_post(url, json, timeout=None):
         calls["n"] += 1
         if calls["n"] == 1:
             return _BadJsonResponse()
@@ -137,7 +137,7 @@ def test_generate_gives_up_gracefully_after_repeated_transport_failures(monkeypa
     # propagate the underlying exception to the caller.
     monkeypatch.setattr(llm.time, "sleep", lambda s: None)
 
-    def always_fails(url, json):
+    def always_fails(url, json, timeout=None):
         raise requests.exceptions.Timeout("simulated timeout")
 
     monkeypatch.setattr(llm.requests, "post", always_fails)

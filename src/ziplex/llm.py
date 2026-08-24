@@ -11,6 +11,20 @@ from . import settings as app_settings
 
 load_dotenv()
 
+# Applied to every provider's requests.post() call below. Without this,
+# requests has no default timeout at all -- a network path that's blocked
+# or filtered (a corporate firewall/proxy silently dropping the connection,
+# a captive network) leaves the call hanging on the socket read forever,
+# with no exception ever raised. That skips the retry-with-backoff path
+# entirely (nothing to catch), so a stuck request looks identical to a
+# process that's simply frozen: no retry log, no completion log, nothing --
+# a real case reported from an external user's environment where "LLM
+# analysis" started and never printed a single per-file completion line
+# afterward, not even a warning. requests.exceptions.Timeout is already a
+# RequestException subclass, so raising it here needs no new except clause
+# -- it flows straight into the existing transient-failure retry below.
+REQUEST_TIMEOUT = 60
+
 
 def _clean_json(text: str) -> str:
     # strip markdown code fences
@@ -121,7 +135,7 @@ class GeminiProvider:
             try:
                 response = requests.post(f"{self.url}?key={api_key}", json={
                     "contents": [{"parts": [{"text": prompt}]}]
-                })
+                }, timeout=REQUEST_TIMEOUT)
                 data = response.json()
             except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
                 # A transport-level failure (DNS, connection reset, read
@@ -207,7 +221,9 @@ class OpenAIProvider:
 
         for attempt in range(retry):
             try:
-                response = requests.post(f"{self.base_url}/chat/completions", headers=headers, json=body)
+                response = requests.post(
+                    f"{self.base_url}/chat/completions", headers=headers, json=body, timeout=REQUEST_TIMEOUT
+                )
                 data = response.json()
             except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
                 # Same transient-failure treatment as GeminiProvider's own
@@ -285,7 +301,7 @@ class ClaudeProvider:
 
         for attempt in range(retry):
             try:
-                response = requests.post(self.API_URL, headers=headers, json=body)
+                response = requests.post(self.API_URL, headers=headers, json=body, timeout=REQUEST_TIMEOUT)
                 data = response.json()
             except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
                 wait = 5 * (attempt + 1)

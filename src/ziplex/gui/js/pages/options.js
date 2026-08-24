@@ -66,9 +66,32 @@ export function renderOptions() {
   const openaiApiKeyInput = el("input", { type: "password", placeholder: t("options.openaiApiKeyPlaceholder") });
   const openaiBaseUrlInput = el("input", { type: "text", placeholder: t("options.openaiBaseUrlPlaceholder") });
   const openaiModelInput = el("input", { type: "text", placeholder: t("options.openaiModelPlaceholder") });
+  // One-click fill for the two local OpenAI-compatible servers people
+  // actually run Gemma/Llama/etc. through -- OpenAIProvider already covers
+  // both via base_url alone (llm.py has no per-tool special-casing), but a
+  // human still has to know each tool's default port off the top of their
+  // head to type it correctly. These just fill openaiBaseUrlInput with the
+  // well-known default and hand focus to the model field, since the model
+  // name is the one part that still varies by what's actually loaded there
+  // (Ollama's own naming, e.g. "gemma2", vs. whatever LM Studio shows).
+  // Never touch openaiApiKeyInput -- both servers usually run keyless, but
+  // clearing a value someone deliberately typed (a reverse-proxied setup
+  // with its own auth) would be a surprising side effect of a convenience
+  // button.
+  const ollamaPresetButton = el("button", { type: "button", class: "secondary", text: t("options.ollamaPreset") });
+  const lmstudioPresetButton = el("button", { type: "button", class: "secondary", text: t("options.lmstudioPreset") });
+  ollamaPresetButton.addEventListener("click", () => {
+    openaiBaseUrlInput.value = "http://localhost:11434/v1";
+    openaiModelInput.focus();
+  });
+  lmstudioPresetButton.addEventListener("click", () => {
+    openaiBaseUrlInput.value = "http://localhost:1234/v1";
+    openaiModelInput.focus();
+  });
   const openaiFields = el("div", { class: "hidden" }, [
     el("div", { class: "input-row" }, [openaiApiKeyInput]),
     el("div", { class: "input-row" }, [openaiBaseUrlInput]),
+    el("div", { class: "input-row" }, [ollamaPresetButton, lmstudioPresetButton]),
     el("div", { class: "input-row" }, [openaiModelInput]),
   ]);
 
