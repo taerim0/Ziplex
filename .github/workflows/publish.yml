@@ -1,0 +1,49 @@
+# Publishes ziplex to PyPI via Trusted Publishing (OIDC) -- no stored PyPI
+# token anywhere. Triggered by pushing a version tag (e.g. `git tag v0.1.0 &&
+# git push --tags`). The tag itself isn't checked against pyproject.toml's
+# version -- keep them in sync by hand: bump src/ziplex/__init__.py's
+# __version__ (the single source pyproject.toml reads via
+# [tool.setuptools.dynamic]), commit, then tag with a matching `vX.Y.Z`.
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install build
+
+      - run: python -m build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Must match the "Environment name" field exactly when registering the
+    # pending publisher on PyPI (Account settings -> Publishing). Using a
+    # named environment also lets required-reviewer protection be added
+    # later in GitHub's own repo settings without touching this file.
+    environment: pypi
+    permissions:
+      id-token: write  # the OIDC token trusted publishing signs with
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
