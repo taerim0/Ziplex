@@ -12,42 +12,16 @@ Ziplex walks a project, compresses and structures it with Tree-sitter, summarize
 
 ## How it works
 
-```
-project/  ──►  collect  ──►  security scan  ──►  select  ──►  parse & extract
-                                                                     │
-              aif.json  ◄──  human correction  ◄──  LLM summarize  ◄┘
-             + detail.json
-```
-
-1. **Collect** — walk the project, skipping `node_modules/`, build caches (`.gradle/`, `target/`, `.pytest_cache/`, …), and anything the project's own `.gitignore` excludes. Any file that can't be decoded as text (images, binaries, compiled artifacts) is dropped too — no fixed ignore list can name every binary format, so this is checked directly rather than guessed from the filename.
-2. **Security scan** — every remaining file is checked for secrets (API keys, passwords, tokens) via `secretlint`, with a regex-based fallback if it isn't installed. Flagged files never enter the pipeline.
-3. **Select** — interactively choose which files to include, or skip straight to everything safe with `--auto`.
-4. **Parse & extract** — Tree-sitter parses each supported source file to pull out function signatures, imports, and (for decorator-based routes) API endpoints.
-5. **Compress** — function bodies are replaced with a single marker, keeping structure while cutting tokens. Non-code text (JSON, Markdown, plain text) gets its own compression pass — Markdown code blocks even reuse the code compressor by detected language.
-6. **Summarize** — Gemini generates a one-line summary per file, plus project-wide coding rules inferred from the collected signatures and an AI-facing guide describing the project.
-7. **Correct** — a human reviews and edits the project name, guide, rules, and every summary, then can manually reparent files in the dependency tree (with cycle detection) before the final relationship graph is built.
-8. **Package** — the lean `aif.json` (summary + relationships) is written for immediate loading; the heavier compressed code goes into a sibling `detail.json`, kept on disk for on-demand use rather than shipped on every file by default.
+Ziplex collects a project's files (skipping build artifacts and anything `.gitignore`d), security-scans them for secrets, and parses the safe ones with Tree-sitter to pull out signatures, imports, and API routes. Function bodies get compressed down to a single marker; an LLM then writes a one-line summary per file plus project-wide coding rules and an AI-facing guide. A human reviews and edits all of that — only low-confidence summaries get flagged, not every file — before the final `aif.json` (small, loaded up front) and its heavier sibling `detail.json` (full compressed body, fetched on demand) are saved.
 
 ## Features
 
-- **Multi-language code compression** — Python, Java, TypeScript, JavaScript, Lua, GDScript, Go, C++, Rust, and C# today, via a per-language config table (`LanguageConfig`) so adding a new grammar is a single entry, not a rewrite.
-- **Text-aware compression beyond code** — dedicated compressors for JSON and Markdown (including embedded code fences) and plain text, using the same body-preserving philosophy as the code compressor.
-- **Relationships past code files, for free** — a Godot scene's `[ext_resource path="res://player.gd"]`, a Markdown doc mentioning `player.gd`, a README documenting the project layout by filename: matched against the real collected-file list (no LLM call, no generic "looks like a path" guessing) so files with no Tree-sitter grammar stop showing up as disconnected leaves in `relationships` when they obviously reference other project files.
-- **Security scanning built in** — `secretlint` first, regex fallback second; sensitive files never make it past collection.
-- **Human-in-the-loop correction, opt-in** — every LLM output (summaries, rules, project guide, dependency tree) is reviewable and editable before anything is saved, or skippable entirely with `--auto-correct`. File selection (`--auto`) and correction (`--auto-correct`) are independent flags, so `pack` can run fully headless for CI or scripted use.
-- **Review that scales with project size, not file count** — reviewing every summary by hand stops being realistic well before a project hits a few hundred files. Each summary gets a free, no-LLM-call confidence score (0.0-1.0, how much its wording actually overlaps with the file's real signatures) — only the ones that look questionable get prompted during correction; the rest are auto-kept and just listed. The score itself ships in `aif.json` too, so an agent reading it knows which summaries are worth double-checking with `get_detail` before trusting them.
-- **Honest token accounting** — `tiktoken`-based before/after comparison across GPT-4o, GPT-3.5, and GPT-4 encodings, measured against what actually ships in `aif.json`, not just the raw compression ratio.
-- **Lean output, detail on request** — `aif.json` stays small (summaries + relationships); the full compressed body per file lives in `detail.json`, fetched on demand by the MCP server's `get_detail` tool (see below) rather than shipped on every file up front.
-- **Resilient to LLM flakiness** — retries with backoff on rate limits, and a checkpoint system that lets a failed run resume later instead of restarting from scratch.
-- **Incremental re-pack** — a content-hash manifest (`<name>.cache.json`) lets a later `pack` on the same project reuse an unchanged file's summary instead of paying for another LLM call, so keeping a project's `aif.json` current stays cheap enough to actually do routinely. Detecting *whether* it's gone stale is also exposed standalone via `check_freshness`, without triggering a re-pack (see MCP server below).
-- **Provider-agnostic LLM layer** — swapping Gemini for another model is implementing one `generate()` method and registering it, not touching the rest of the pipeline.
-- **Not just for git repos** — works on any collection of local files with relationships across extensions: game mods, asset projects, whatever isn't a typical software repo.
-- **Scope a pack with `include`/`ignore` glob patterns** — one-off via `--include`/`--ignore`, or persisted per-project in a `.ziplex.json` (`init` scaffolds one) so a large repo doesn't mean either clicking through every file or an all-or-nothing `--auto`.
-- **Local GUI, no CLI required** — pack a project, review its summaries, and edit relationships all from a native window (or a plain browser tab) instead of the terminal; the same GUI doubles as a read-only browse/search companion over an already-packed project for anyone without Claude Code or MCP access (see [GUI](#gui) below).
-- **Claude Agent Skill export** — turn an already-packed project into a `.claude/skills/` directory Claude Code discovers and progressively loads on its own, no MCP server required (see [Claude Agent Skill export](#claude-agent-skill-export) below).
-- **Tech stack detection, for free** — `package.json`/`requirements.txt`/`pyproject.toml`/`Cargo.toml`/`go.mod`/`Gemfile`/`composer.json`/`pom.xml` at the project root are read directly (no LLM call) for declared dependencies, shipped as `aif.json`'s `project.tech_stack` — a direct fact alongside `rules`' LLM-inferred conventions, not a replacement for them.
-- **CI token-budget guard** — `pack --max-tokens N` fails with a non-zero exit code if the packed payload exceeds `N` tokens for a chosen model, so a context budget regression fails a build instead of shipping silently.
-- **Structural-only mode, no API key needed** — `pack --no-llm` skips every LLM call entirely (no `GEMINI_API_KEY`, no network): each file's summary becomes a deterministic listing of its own extracted signatures/dependencies instead of an LLM-written description, and `rules`/the AI guide are skipped rather than faked. Every Tree-sitter/regex-based step (extraction, compression, the dependency graph, tech stack detection) still runs exactly as normal.
+- **Multi-language, structure-aware compression** — Python, Java, TypeScript, JavaScript, Lua, GDScript, Go, C++, Rust, C# via Tree-sitter, plus dedicated JSON/Markdown/plain-text compressors, all preserving structure while cutting tokens. Works on any collection of local files with cross-file relationships, not just git repos — game mods and asset projects included.
+- **Security scanning built in** — every file is checked for secrets (`secretlint`, regex fallback) before it ever enters the pipeline.
+- **Human-in-the-loop, but it scales** — every LLM output (summaries, rules, project guide, dependency tree) is reviewable and editable, or skippable entirely with `--auto-correct`. Only low-confidence summaries get flagged for review — review time doesn't grow with project size.
+- **Three ways to consume the result** — an [MCP server](#mcp-server) for Claude Code/Cursor/etc., a local [GUI](#gui) for packing and browsing without a terminal, or a [Claude Agent Skill export](#claude-agent-skill-export) that needs no server at all.
+- **Cheap to keep current** — incremental re-pack only re-summarizes files that actually changed (content hash), retries with backoff on LLM flakiness, and checkpoints a failed run instead of restarting from scratch.
+- **No API key required, if you want** — `pack --no-llm` skips every LLM call and still produces structural summaries, dependency graphs, and tech-stack detection. Scope any pack with `.ziplex.json`/`--include`/`--ignore`, and guard CI budgets with `--max-tokens`.
 
 ## Quick start
 
@@ -220,14 +194,6 @@ Ziplex packs one person's local snapshot — there's no shared server or live sy
 ## Tech stack
 
 Python 3.11 · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C# grammars, GDScript via `tree-sitter-language-pack`) · [tiktoken](https://github.com/openai/tiktoken) · Gemini API (`gemini-flash-latest` by default, overridable via `GEMINI_MODEL`; plain REST via `requests`) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
-
-## Roadmap
-
-**Selective file delivery to AI** — pick specific files in Ziplex and send them straight into a chat with full context attached (dependencies, signature, summary) — no copy-pasting. *(The read-only "browse and copy by hand" half of this ships via the [GUI](#gui); [Skill export](#claude-agent-skill-export) removes the copy-paste step entirely for Claude Code specifically, though it's a static snapshot, not a live per-file pick. What's still open: the same no-copy-paste experience for a plain web chat with no local agent at all.)*
-
-**Relationship analysis across all file types** — extend the dependency graph past code files. The free, syntactic half shipped (see [Relationships past code files, for free](#features) above -- matching literal path/filename mentions in non-code text, no LLM call). What's still open: true *semantic* connections no literal string match could find (a handler that implements an API a doc merely describes in prose) via LLM inference over already-generated summaries -- lower-confidence, review-gated the way low-confidence summaries already are, and deliberately not started until that confidence/review design gets its own pass.
-
-**Expanded language support** — broader Tree-sitter coverage for game-specific languages and additional frameworks. Lua, GDScript, Go, C++, Rust, and C# shipped (GDScript's grammar has no dedicated PyPI package of its own -- sourced from `tree-sitter-language-pack`'s bundled copy instead). ZenScript (a niche Minecraft modding DSL) is still open; it doesn't appear to have a maintained Tree-sitter grammar at all as of this check. PHP/Ruby remain candidates from the same shortlist Go/C++/Rust/C# were picked off of, both confirmed to have dedicated, well-maintained PyPI `tree-sitter-*` packages.
 
 ## License
 
