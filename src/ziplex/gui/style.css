@@ -123,6 +123,11 @@ body {
 }
 .sidebar.hidden { display: none; }
 
+/* A <button>, not a <span> -- clicking it (or Enter/Space once focused)
+   toggles #stale-detail-panel just below, so the actual changed/added/
+   removed filenames (renderStaleDetail(), app.js) are reachable by
+   keyboard and touch too, not only by hovering for the .title tooltip
+   (a real accessibility gap, reported directly and fixed 2026-08-24). */
 .stale-badge {
   display: block;
   width: fit-content;
@@ -130,10 +135,55 @@ body {
   background: var(--danger);
   color: #241a0a;
   padding: 2px 8px;
+  border: none;
   border-radius: 10px;
   font-size: 0.85em;
+  font-family: inherit;
+  cursor: pointer;
 }
+.stale-badge:hover { filter: brightness(1.08); }
+.stale-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .stale-badge.hidden { display: none; }
+
+/* The expandable breakdown behind .stale-badge, and the equivalent one
+   toggled from a recent-project row's own freshness badge (landing.js) --
+   same markup shape either way (renderStaleDetail()), so one set of rules
+   styles both. */
+.stale-detail {
+  margin: 0 20px 10px;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.82em;
+}
+.stale-detail.hidden { display: none; }
+.stale-detail-summary { color: var(--muted); margin-bottom: 6px; }
+.stale-detail-category { margin-top: 8px; }
+.stale-detail-category:first-of-type { margin-top: 0; }
+.stale-detail-label { opacity: 0.85; margin-bottom: 2px; }
+.stale-detail ul { margin: 0; padding-left: 18px; }
+.stale-detail li { font-family: var(--mono); word-break: break-all; }
+.stale-detail-more { color: var(--muted); margin-top: 2px; }
+
+/* landing.js's per-row freshness badge, upgraded from plain text to a
+   <button> the same way -- reset default button chrome so it still reads
+   as inline text, not a boxy control, and stays disabled (no pointer
+   cursor, no click target) until a stale report actually gives it
+   something to expand. */
+.recent-freshness {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: default;
+}
+.recent-freshness:not(:disabled) { cursor: pointer; text-decoration: underline dotted; }
+.recent-freshness:not(:disabled):hover { color: var(--danger); }
+.recent-freshness:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.recent-detail { margin-top: 6px; }
+.recent-detail.hidden { display: none; }
 
 main { padding: 24px 32px; max-width: 1000px; flex: 1; min-width: 0; }
 /* Sidebar hidden (landing page, the pack job/review flow) -- main is the

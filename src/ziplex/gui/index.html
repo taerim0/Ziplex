@@ -18,7 +18,8 @@
   <a href="#/files" data-route="files" data-i18n="nav.files">📄 Files</a>
   <a href="#/relationships" data-route="relationships" data-i18n="nav.relationships">🔗 Relationships</a>
   <a href="#/search" data-route="search" data-i18n="nav.search">🔍 Search</a>
-  <span id="stale-badge" class="stale-badge hidden" data-i18n="core.stale.badge">⚠️ 변경됨</span>
+  <button id="stale-badge" type="button" class="stale-badge hidden" aria-expanded="false" aria-controls="stale-detail-panel" data-i18n="core.stale.badge">⚠️ 변경됨</button>
+  <div id="stale-detail-panel" class="stale-detail hidden"></div>
   <a href="#/check" class="change-project" data-i18n="nav.changeProject">📂 프로젝트 변경</a>
 </nav>
 <main id="app"></main>

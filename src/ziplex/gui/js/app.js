@@ -200,10 +200,11 @@ function _staleFileListLines(label, files) {
 
 // Builds the full multi-line tooltip text for a {is_stale, changed, added,
 // removed} freshness report -- a one-line count ("N changed, M added") on
-// top, then the actual filenames per category underneath. Shared by the
-// top-of-page staleBadge (setStale(), below) and the recent-projects
-// freshness badge (landing.js) so both surface *which* files changed, not
-// just how many.
+// top, then the actual filenames per category underneath. A hover-only
+// bonus for mouse users now (see renderStaleDetail() below for the actual
+// keyboard/touch-accessible version) -- shared by the top-of-page
+// staleBadge (setStale(), below) and the recent-projects freshness badge
+// (landing.js).
 export function staleTooltip(stale) {
   if (!stale || !stale.is_stale) return "";
   const counts = [];
@@ -221,12 +222,63 @@ export function staleTooltip(stale) {
   return detailLines.length ? `${summary}\n\n${detailLines.join("\n")}` : summary;
 }
 
+// The click/keyboard-accessible counterpart to staleTooltip() -- a hover
+// title is invisible to keyboard and touch users (a real accessibility
+// gap, reported directly), so this renders the same breakdown as real DOM
+// (a summary line + one <ul> per category, same STALE_DETAIL_CAP) for a
+// caller to show behind a <button>'s click/Enter, not just a hover.
+export function renderStaleDetail(stale) {
+  const box = el("div", { class: "stale-detail-inner" });
+  const counts = [];
+  if (stale.changed?.length) counts.push(t("core.stale.changed", { n: stale.changed.length }));
+  if (stale.added?.length) counts.push(t("core.stale.added", { n: stale.added.length }));
+  if (stale.removed?.length) counts.push(t("core.stale.removed", { n: stale.removed.length }));
+  box.appendChild(el("div", { class: "stale-detail-summary", text: counts.join(", ") || t("core.stale.detected") }));
+
+  for (const [label, files] of [
+    [t("core.stale.changedLabel"), stale.changed],
+    [t("core.stale.addedLabel"), stale.added],
+    [t("core.stale.removedLabel"), stale.removed],
+  ]) {
+    if (!files?.length) continue;
+    const shown = files.slice(0, STALE_DETAIL_CAP);
+    const cat = el("div", { class: "stale-detail-category" }, [
+      el("div", { class: "stale-detail-label", text: `${label} (${files.length})` }),
+      el("ul", {}, shown.map((f) => el("li", { text: f }))),
+    ]);
+    const rest = files.length - shown.length;
+    if (rest > 0) cat.appendChild(el("div", { class: "stale-detail-more", text: t("core.stale.more", { n: rest }) }));
+    box.appendChild(cat);
+  }
+  return box;
+}
+
+export const staleDetailPanel = document.getElementById("stale-detail-panel");
+let _currentStale = null;
+
+function _setStaleExpanded(open) {
+  staleDetailPanel.classList.toggle("hidden", !open);
+  staleBadge.setAttribute("aria-expanded", open ? "true" : "false");
+  if (open && _currentStale) staleDetailPanel.replaceChildren(renderStaleDetail(_currentStale));
+}
+
+staleBadge.addEventListener("click", () => {
+  if (!_currentStale) return;
+  _setStaleExpanded(staleDetailPanel.classList.contains("hidden"));
+});
+
 export function setStale(stale) {
-  if (stale && stale.is_stale) {
-    staleBadge.title = staleTooltip(stale);
+  _currentStale = stale && stale.is_stale ? stale : null;
+  if (_currentStale) {
+    staleBadge.title = staleTooltip(_currentStale);
     staleBadge.classList.remove("hidden");
+    // If the panel was already open (e.g. the live watcher pushed a fresher
+    // report while a human had it expanded), keep it open with up-to-date
+    // content instead of leaving stale filenames on screen.
+    if (!staleDetailPanel.classList.contains("hidden")) _setStaleExpanded(true);
   } else {
     staleBadge.classList.add("hidden");
+    _setStaleExpanded(false);
   }
 }
 

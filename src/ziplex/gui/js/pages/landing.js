@@ -12,7 +12,7 @@
 import {
   app, nav, el, api, apiPost, getAif, getProject, getRecent, removeRecent,
   openProject, relativeTime, browseButton, browseAifButton, browseSaveButton,
-  staleTooltip,
+  staleTooltip, renderStaleDetail,
 } from "../app.js";
 import { t } from "../i18n.js";
 
@@ -240,17 +240,37 @@ export function renderCheck() {
       // every visit to this page without asking first, unlike a full
       // re-pack. Best-effort: a moved/deleted project folder or a missing
       // cache.json just leaves the badge blank instead of breaking the row.
-      const badge = el("span", { class: "recent-freshness muted" });
+      //
+      // Disabled by default (nothing to expand yet) -- a <button>, not a
+      // <span>, so which files changed is reachable by click/keyboard too,
+      // not only a hover .title (same accessibility fix as the top-of-page
+      // staleBadge, see app.js's renderStaleDetail()).
+      const badge = el("button", { type: "button", class: "recent-freshness muted", disabled: "" });
+      // Stops its own clicks from bubbling to .recent-main's openProject()
+      // below -- selecting a filename in the expanded list shouldn't also
+      // open the project.
+      const detail = el("div", { class: "recent-detail hidden", onclick: (e) => e.stopPropagation() });
+      badge.addEventListener("click", (e) => {
+        e.stopPropagation(); // don't also trigger .recent-main's openProject()
+        const open = detail.classList.contains("hidden");
+        detail.classList.toggle("hidden", !open);
+        badge.setAttribute("aria-expanded", open ? "true" : "false");
+      });
       if (r.project) {
         api("/api/freshness", { project_path: r.project, aif_path: r.aif })
           .then(report => {
             const changedCount = (report.changed?.length || 0) + (report.added?.length || 0) + (report.removed?.length || 0);
             badge.textContent = report.is_stale ? t("check.freshness.stale", { n: changedCount }) : t("check.freshness.fresh");
             badge.classList.toggle("stale", !!report.is_stale);
-            // Hover for exactly which files changed, not just the count --
-            // same tooltip the top-of-page staleBadge uses once a project's
-            // actually open.
-            if (report.is_stale) badge.title = staleTooltip(report);
+            // Hover for a quick count breakdown; click/Enter for the actual
+            // filenames (below) -- same tooltip the top-of-page staleBadge
+            // uses once a project's actually open.
+            if (report.is_stale) {
+              badge.title = staleTooltip(report);
+              badge.removeAttribute("disabled");
+              badge.setAttribute("aria-expanded", "false");
+              detail.appendChild(renderStaleDetail(report));
+            }
           })
           .catch(() => {}); // typo'd/moved path, missing cache.json, ... -- leave the badge blank
       }
@@ -262,6 +282,7 @@ export function renderCheck() {
             el("span", { text: `${r.project ? r.project + " · " : ""}${relativeTime(r.openedAt)}` }),
             badge,
           ]),
+          detail,
         ]),
         el("button", { class: "secondary recent-remove", text: "✕", onclick: (e) => {
           e.stopPropagation();
