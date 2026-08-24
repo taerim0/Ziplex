@@ -4,33 +4,36 @@
 
 **Turn any local project into a context file an AI can load instantly — instead of reading through hundreds of raw files.**
 
-Ziplex walks a project, compresses and structures it with Tree-sitter, summarizes it with an LLM, and lets a human correct the result before it ships. The output is `aif.json`: a small, structured "AI context format" file.
+Ziplex walks a project, compresses and structures it with Tree-sitter, summarizes it with an LLM (optional — see [Quick start](#quick-start) for the no-API-key path), and lets a human correct the result before it ships. The output is `aif.json`: a small, structured "AI context format" file.
 
 > ⚠️ Under active development. Interfaces and output format may still change.
 
 ---
 
-## How it works
+## Where it helps
 
-Ziplex collects a project's files (skipping build artifacts and anything `.gitignore`d), security-scans them for secrets, and parses the safe ones with Tree-sitter to pull out signatures, imports, and API routes. Function bodies get compressed down to a single marker; an LLM then writes a one-line summary per file plus project-wide coding rules and an AI-facing guide. A human reviews and edits all of that — only low-confidence summaries get flagged, not every file — before the final `aif.json` (small, loaded up front) and its heavier sibling `detail.json` (full compressed body, fetched on demand) are saved.
-
-## Features
-
-- **Multi-language, structure-aware compression** — Python, Java, TypeScript, JavaScript, Lua, GDScript, Go, C++, Rust, C# via Tree-sitter, plus dedicated JSON/Markdown/plain-text compressors, all preserving structure while cutting tokens. Works on any collection of local files with cross-file relationships, not just git repos — game mods and asset projects included.
-- **Security scanning built in** — every file is checked for secrets (`secretlint`, regex fallback) before it ever enters the pipeline.
-- **Human-in-the-loop, but it scales** — every LLM output (summaries, rules, project guide, dependency tree) is reviewable and editable, or skippable entirely with `--auto-correct`. Only low-confidence summaries get flagged for review — review time doesn't grow with project size.
-- **Three ways to consume the result** — an [MCP server](#mcp-server) for Claude Code/Cursor/etc., a local [GUI](#gui) for packing and browsing without a terminal, or a [Claude Agent Skill export](#claude-agent-skill-export) that needs no server at all.
-- **Cheap to keep current** — incremental re-pack only re-summarizes files that actually changed (content hash), retries with backoff on LLM flakiness, and checkpoints a failed run instead of restarting from scratch.
-- **No API key required, if you want** — `pack --no-llm` skips every LLM call and still produces structural summaries, dependency graphs, and tech-stack detection. Scope any pack with `.ziplex.json`/`--include`/`--ignore`, and guard CI budgets with `--max-tokens`.
+- **Giving an AI assistant your project's shape once, not every session** — paste `aif.json` into a chat, point an MCP client at it, or open it in the [GUI](#gui), instead of re-explaining file layout and conventions every time.
+- **Multi-language projects** — a TypeScript frontend, a Python or Java backend, config and docs in between: one pack covers all of it, with cross-file relationships intact.
+- **Game modding and asset projects that aren't git repos** — a Godot scene referencing a GDScript/Lua script by path, a Lua mod with loose asset files: Ziplex tracks those relationships even for files with no Tree-sitter grammar of their own (see [Features](#features)).
+- **Onboarding an AI onto a codebase you didn't write** — summaries are human-reviewed before they ship, so you're not trusting a raw LLM guess about unfamiliar code.
+- **Keeping a CI context budget honest** — `--max-tokens` fails a build if the packed payload grows past what a target model can hold.
+- **Sharing one AI context across a team** — `aif.json`/`detail.json` are just files; commit them like any other generated artifact (see [Team use](#team-use)).
 
 ## Quick start
 
 ```bash
-venv\Scripts\activate
-pip install -e .        # installs Ziplex + registers the ziplex/ziplex-gui/ziplex-mcp commands
+pip install ziplex        # or: venv\Scripts\activate && pip install -e . from a clone
 ```
 
-Add a `.env` with `GEMINI_API_KEY=...` (optionally `GEMINI_MODEL=...` too, if `gemini-flash-latest` is having a rough day — see [Tech stack](#tech-stack)), then:
+**Try it right now — no API key, no signup, no network call:**
+
+```bash
+ziplex pack ./your-project/ --auto --no-llm
+```
+
+This runs the full pipeline (Tree-sitter compression, dependency graph, tech-stack detection) and writes a real `aif.json` — summaries are just a structural listing of each file's own signatures instead of an LLM-written description. See what that looks like on your own project before deciding whether the AI-written version is worth an API key.
+
+Liked it? Add a `.env` with `GEMINI_API_KEY=...` (optionally `GEMINI_MODEL=...` too — see [Tech stack](#tech-stack)), drop `--no-llm`, and get real AI-written summaries plus inferred coding rules and a project guide:
 
 ```bash
 ziplex pack ./your-project/                        # full pipeline, interactive
@@ -89,18 +92,19 @@ ziplex pack ./your-project/ --auto --auto-correct  # fully non-interactive (CI, 
 
 </details>
 
-## Testing
+## How it works
 
-```bash
-pip install -e ".[dev]"   # adds pytest on top of the base install
-pytest
-```
-
-Covers the deterministic core — compressors, the Tree-sitter extractor, the collector's ignore/binary-file filtering, the dependency-graph operations (`build_tree`/`has_cycle`/`move_file`), and the pure `aif`-editing API — plus a full `pack()` run against a network-free `MockProvider` instead of Gemini, exercising checkpointing, parallel summaries, and token counting end to end without the cost or latency of a real LLM call.
-
-Want to smoke-test `pack` against a real project without waiting on Gemini? `LLM_PROVIDER=mock ziplex pack <project> --auto --auto-correct` runs the whole pipeline network-free in under a second.
+Ziplex collects a project's files (skipping build artifacts and anything `.gitignore`d), security-scans them for secrets, and parses the safe ones with Tree-sitter to pull out signatures, imports, and API routes. Function bodies get compressed down to a single marker; an LLM then writes a one-line summary per file plus project-wide coding rules and an AI-facing guide. A human reviews and edits all of that — only low-confidence summaries get flagged, not every file — before the final `aif.json` (small, loaded up front) and its heavier sibling `detail.json` (full compressed body, fetched on demand) are saved.
 
 ## Output format
+
+A pack produces three files, each read differently:
+
+| File | Contains | Read when |
+|---|---|---|
+| `aif.json` | Project guide, coding rules, token stats, one summary + confidence score per file, the full dependency graph | Every time — small enough to load up front |
+| `<name>.detail.json` | The full compressed source, per file | On demand, when a summary alone isn't enough (`get_detail`, the GUI's detail view) |
+| `<name>.cache.json` | A content-hash of every packed file | Never by a human — internal bookkeeping for `check_freshness` and incremental re-pack |
 
 ```jsonc
 // aif.json — small, loaded up front
@@ -131,6 +135,26 @@ Want to smoke-test `pack` against a real project without waiting on Gemini? `LLM
   "src/App.tsx": "3b1c2e...(sha256)"
 }
 ```
+
+## Features
+
+- **Multi-language, structure-aware compression** — Python, Java, TypeScript, JavaScript, Lua, GDScript, Go, C++, Rust, C# via Tree-sitter, plus dedicated JSON/Markdown/plain-text compressors, all preserving structure while cutting tokens. Works on any collection of local files with cross-file relationships, not just git repos — game mods and asset projects included.
+- **Security scanning built in** — every file is checked for secrets (`secretlint`, regex fallback) before it ever enters the pipeline.
+- **Human-in-the-loop, but it scales** — every LLM output (summaries, rules, project guide, dependency tree) is reviewable and editable, or skippable entirely with `--auto-correct`. Only low-confidence summaries get flagged for review — review time doesn't grow with project size.
+- **Three ways to consume the result** — an [MCP server](#mcp-server) for Claude Code/Cursor/etc., a local [GUI](#gui) for packing and browsing without a terminal, or a [Claude Agent Skill export](#claude-agent-skill-export) that needs no server at all.
+- **Cheap to keep current** — incremental re-pack only re-summarizes files that actually changed (content hash), retries with backoff on LLM flakiness, and checkpoints a failed run instead of restarting from scratch.
+- **No API key required, if you want** — `pack --no-llm` skips every LLM call and still produces structural summaries, dependency graphs, and tech-stack detection. Scope any pack with `.ziplex.json`/`--include`/`--ignore`, and guard CI budgets with `--max-tokens`.
+
+## Testing
+
+```bash
+pip install -e ".[dev]"   # adds pytest on top of the base install
+pytest
+```
+
+Covers the deterministic core — compressors, the Tree-sitter extractor, the collector's ignore/binary-file filtering, the dependency-graph operations (`build_tree`/`has_cycle`/`move_file`), and the pure `aif`-editing API — plus a full `pack()` run against a network-free `MockProvider` instead of Gemini, exercising checkpointing, parallel summaries, and token counting end to end without the cost or latency of a real LLM call.
+
+Want to smoke-test `pack` against a real project without waiting on Gemini? `LLM_PROVIDER=mock ziplex pack <project> --auto --auto-correct` runs the whole pipeline network-free in under a second.
 
 ## MCP server
 

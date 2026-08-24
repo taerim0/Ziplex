@@ -4,33 +4,36 @@
 
 **로컬 프로젝트를 AI가 곧바로 읽을 수 있는 컨텍스트 파일 하나로 압축합니다.** 수백 개 파일을 일일이 넘겨줄 필요가 없습니다.
 
-Ziplex는 프로젝트 전체를 훑으면서 Tree-sitter로 압축·구조화하고, LLM으로 요약을 붙인 다음, 사람이 한 번 검토하고 나서야 결과물을 내보냅니다. 그 결과물이 `aif.json`입니다 — 작고 구조화된 "AI 컨텍스트 포맷" 파일입니다.
+Ziplex는 프로젝트 전체를 훑으면서 Tree-sitter로 압축·구조화하고, LLM으로 요약을 붙인 다음(선택 사항 — API 키 없이 쓰는 방법은 [빠른 시작](#빠른-시작) 참고), 사람이 한 번 검토하고 나서야 결과물을 내보냅니다. 그 결과물이 `aif.json`입니다 — 작고 구조화된 "AI 컨텍스트 포맷" 파일입니다.
 
 > ⚠️ 활발히 개발 중입니다. 인터페이스와 출력 포맷은 아직 바뀔 수 있습니다.
 
 ---
 
-## 동작 방식
+## 이럴 때 도움이 됩니다
 
-Ziplex는 프로젝트 파일을 수집하고(빌드 산출물과 `.gitignore`에 걸리는 건 건너뜀), 민감 정보를 보안 스캔한 뒤, 안전한 파일만 Tree-sitter로 파싱해서 시그니처·import·API 라우트를 뽑아냅니다. 함수 본문은 마커 하나로 압축되고, 이어서 LLM이 파일별 한 줄 요약과 프로젝트 전체 코딩 룰, AI용 가이드를 작성합니다. 이 모든 걸 사람이 검토·수정할 수 있는데 — 신뢰도가 낮은 요약만 검토 대상으로 표시되고 전체를 다 보진 않아도 됩니다 — 그런 다음 가벼운 `aif.json`(바로 로드용)과 무거운 `detail.json`(필요할 때만 불러오는 압축 본문)이 저장됩니다.
-
-## 주요 기능
-
-- **다국어 구조 인식 압축** — Python, Java, TypeScript, JavaScript, Lua, GDScript, Go, C++, Rust, C#을 Tree-sitter로, JSON/Markdown/일반 텍스트는 전용 압축기로 처리합니다. 구조는 남기고 토큰만 줄입니다. git 저장소가 아니어도, 여러 확장자 파일이 서로 얽혀 있는 로컬 파일 모음이면 뭐든 동작합니다 — 게임 모드, 에셋 프로젝트 포함.
-- **내장 보안 스캔** — 모든 파일이 파이프라인에 들어오기 전에 `secretlint`(정규식 폴백)로 민감 정보를 검사합니다.
-- **검토는 선택 사항, 규모에 안 밀림** — LLM 결과물(요약, 룰, 가이드, 의존성 트리)은 저장 전에 검토·수정할 수 있고, `--auto-correct`로 통째로 건너뛸 수도 있습니다. 신뢰도 낮은 요약만 검토 대상으로 표시되니, 프로젝트가 커져도 검토 시간이 그만큼 늘진 않습니다.
-- **결과물을 쓰는 세 가지 방법** — Claude Code/Cursor 등을 위한 [MCP 서버](#mcp-서버), 터미널 없이 패킹/탐색하는 로컬 [GUI](#gui), 서버 없이도 되는 [Claude Agent Skill 내보내기](#claude-agent-skill-내보내기).
-- **최신 상태 유지가 저렴함** — Incremental re-pack은 실제로 바뀐 파일만 다시 요약하고, LLM이 불안정하면 백오프 후 재시도하며, 실행이 실패해도 체크포인트로 이어서 진행합니다.
-- **원하면 API 키 없이도** — `pack --no-llm`은 LLM 호출 없이도 구조 요약, 의존성 그래프, 기술 스택 감지를 만들어냅니다. `.ziplex.json`/`--include`/`--ignore`로 범위를 좁히고, `--max-tokens`로 CI 예산을 가드할 수 있습니다.
+- **AI 어시스턴트에게 프로젝트 구조를 매번 다시 설명하지 않아도 됨** — `aif.json`을 채팅에 붙여넣거나, MCP 클라이언트로 열거나, [GUI](#gui)에서 열면 됩니다. 세션마다 파일 구조와 컨벤션을 처음부터 다시 설명할 필요가 없습니다.
+- **여러 언어가 섞인 프로젝트** — TypeScript 프론트엔드, Python/Java 백엔드, 그 사이의 설정 파일과 문서까지 — 한 번 패킹으로 파일 간 관계까지 그대로 담깁니다.
+- **git 저장소가 아닌 게임 모드/에셋 프로젝트** — Godot 씬이 경로로 GDScript/Lua 스크립트를 참조하거나, Lua 모드가 느슨한 에셋 파일들로 이루어진 경우에도, Tree-sitter 문법이 없는 파일끼리의 관계까지 잡아냅니다 (자세한 내용은 [주요 기능](#주요-기능) 참고).
+- **직접 작성하지 않은 코드베이스를 AI에게 맡길 때** — 요약은 저장되기 전에 사람이 검토하므로, 낯선 코드에 대한 LLM의 날것의 추측을 그대로 믿을 필요가 없습니다.
+- **CI에서 컨텍스트 예산을 지켜야 할 때** — `--max-tokens`로 패킹 결과가 목표 모델이 감당할 수 있는 토큰 수를 넘으면 빌드를 실패시킵니다.
+- **팀이 하나의 AI 컨텍스트를 공유할 때** — `aif.json`/`detail.json`은 그냥 파일이라, 다른 생성 산출물처럼 커밋하면 됩니다 (아래 [팀에서 사용하기](#팀에서-사용하기) 참고).
 
 ## 빠른 시작
 
 ```bash
-venv\Scripts\activate
-pip install -e .        # Ziplex 설치 + ziplex/ziplex-gui/ziplex-mcp 명령 등록
+pip install ziplex        # 또는 클론한 저장소에서: venv\Scripts\activate && pip install -e .
 ```
 
-`.env`에 `GEMINI_API_KEY=...`를 추가한 뒤 (`gemini-flash-latest`가 불안정할 때는 `GEMINI_MODEL=...`도 선택적으로 추가 -- [기술 스택](#기술-스택) 참고):
+**API 키도, 가입도, 네트워크 호출도 없이 지금 바로 써볼 수 있습니다:**
+
+```bash
+ziplex pack ./your-project/ --auto --no-llm
+```
+
+전체 파이프라인(Tree-sitter 압축, 의존성 그래프, 기술 스택 감지)이 그대로 돌아가고 진짜 `aif.json`이 나옵니다 — 요약만 LLM이 쓴 설명 대신 각 파일의 시그니처를 그대로 나열한 구조적인 문장일 뿐입니다. AI가 쓴 버전이 API 키를 쓸 만한 가치가 있는지, 자기 프로젝트에 직접 돌려보고 먼저 판단해보세요.
+
+마음에 드셨다면 `.env`에 `GEMINI_API_KEY=...`를 추가하고(`gemini-flash-latest`가 불안정할 때는 `GEMINI_MODEL=...`도 선택적으로 추가 -- [기술 스택](#기술-스택) 참고) `--no-llm`을 빼면, 진짜 AI가 쓴 요약과 추론된 코딩 룰, 프로젝트 가이드까지 받을 수 있습니다:
 
 ```bash
 ziplex pack ./your-project/                        # 전체 파이프라인, 대화형
@@ -89,18 +92,19 @@ ziplex pack ./your-project/ --auto --auto-correct  # 완전 비대화형 (CI, �
 
 </details>
 
-## 테스트
+## 동작 방식
 
-```bash
-pip install -e ".[dev]"   # 기본 설치에 pytest만 추가됨
-pytest
-```
-
-압축기, Tree-sitter 추출기, collector의 ignore/바이너리 필터링, 의존성 그래프 연산(`build_tree`/`has_cycle`/`move_file`), 순수 `aif` 편집 API까지 — 네트워크나 `GEMINI_API_KEY` 없이 결정적으로 동작하는 핵심 로직을 커버합니다. 여기에 더해 Gemini 대신 네트워크 없는 `MockProvider`로 `pack()` 전체를 실제로 한 번 돌려서, 체크포인트·병렬 요약·토큰 계산까지 실제 LLM 호출의 비용·대기시간 없이 검증합니다.
-
-실제 프로젝트로 `pack`을 빠르게 스모크테스트하고 싶다면: `LLM_PROVIDER=mock ziplex pack <project> --auto --auto-correct`로 1초 안에 네트워크 없이 전체 파이프라인을 돌릴 수 있습니다.
+Ziplex는 프로젝트 파일을 수집하고(빌드 산출물과 `.gitignore`에 걸리는 건 건너뜀), 민감 정보를 보안 스캔한 뒤, 안전한 파일만 Tree-sitter로 파싱해서 시그니처·import·API 라우트를 뽑아냅니다. 함수 본문은 마커 하나로 압축되고, 이어서 LLM이 파일별 한 줄 요약과 프로젝트 전체 코딩 룰, AI용 가이드를 작성합니다. 이 모든 걸 사람이 검토·수정할 수 있는데 — 신뢰도가 낮은 요약만 검토 대상으로 표시되고 전체를 다 보진 않아도 됩니다 — 그런 다음 가벼운 `aif.json`(바로 로드용)과 무거운 `detail.json`(필요할 때만 불러오는 압축 본문)이 저장됩니다.
 
 ## 출력 포맷
+
+pack 한 번에 파일 세 개가 나오고, 각각 읽히는 방식이 다릅니다:
+
+| 파일 | 담고 있는 내용 | 언제 읽히나 |
+|---|---|---|
+| `aif.json` | 프로젝트 가이드, 코딩 룰, 토큰 통계, 파일별 요약 + 신뢰도 점수, 전체 의존성 그래프 | 매번 — 처음부터 통째로 로드해도 될 만큼 작음 |
+| `<name>.detail.json` | 파일별 압축된 원본 소스 | 요약만으로 부족할 때 필요한 파일만 (`get_detail`, GUI의 detail 뷰) |
+| `<name>.cache.json` | 패킹된 모든 파일의 콘텐츠 해시 | 사람이 직접 볼 일 없음 — `check_freshness`와 incremental re-pack용 내부 관리 데이터 |
 
 ```jsonc
 // aif.json — 작고 가벼워서 바로 로드되는 파일
@@ -130,6 +134,26 @@ pytest
   "src/App.tsx": "3b1c2e...(sha256)"
 }
 ```
+
+## 주요 기능
+
+- **다국어 구조 인식 압축** — Python, Java, TypeScript, JavaScript, Lua, GDScript, Go, C++, Rust, C#을 Tree-sitter로, JSON/Markdown/일반 텍스트는 전용 압축기로 처리합니다. 구조는 남기고 토큰만 줄입니다. git 저장소가 아니어도, 여러 확장자 파일이 서로 얽혀 있는 로컬 파일 모음이면 뭐든 동작합니다 — 게임 모드, 에셋 프로젝트 포함.
+- **내장 보안 스캔** — 모든 파일이 파이프라인에 들어오기 전에 `secretlint`(정규식 폴백)로 민감 정보를 검사합니다.
+- **검토는 선택 사항, 규모에 안 밀림** — LLM 결과물(요약, 룰, 가이드, 의존성 트리)은 저장 전에 검토·수정할 수 있고, `--auto-correct`로 통째로 건너뛸 수도 있습니다. 신뢰도 낮은 요약만 검토 대상으로 표시되니, 프로젝트가 커져도 검토 시간이 그만큼 늘진 않습니다.
+- **결과물을 쓰는 세 가지 방법** — Claude Code/Cursor 등을 위한 [MCP 서버](#mcp-서버), 터미널 없이 패킹/탐색하는 로컬 [GUI](#gui), 서버 없이도 되는 [Claude Agent Skill 내보내기](#claude-agent-skill-내보내기).
+- **최신 상태 유지가 저렴함** — Incremental re-pack은 실제로 바뀐 파일만 다시 요약하고, LLM이 불안정하면 백오프 후 재시도하며, 실행이 실패해도 체크포인트로 이어서 진행합니다.
+- **원하면 API 키 없이도** — `pack --no-llm`은 LLM 호출 없이도 구조 요약, 의존성 그래프, 기술 스택 감지를 만들어냅니다. `.ziplex.json`/`--include`/`--ignore`로 범위를 좁히고, `--max-tokens`로 CI 예산을 가드할 수 있습니다.
+
+## 테스트
+
+```bash
+pip install -e ".[dev]"   # 기본 설치에 pytest만 추가됨
+pytest
+```
+
+압축기, Tree-sitter 추출기, collector의 ignore/바이너리 필터링, 의존성 그래프 연산(`build_tree`/`has_cycle`/`move_file`), 순수 `aif` 편집 API까지 — 네트워크나 `GEMINI_API_KEY` 없이 결정적으로 동작하는 핵심 로직을 커버합니다. 여기에 더해 Gemini 대신 네트워크 없는 `MockProvider`로 `pack()` 전체를 실제로 한 번 돌려서, 체크포인트·병렬 요약·토큰 계산까지 실제 LLM 호출의 비용·대기시간 없이 검증합니다.
+
+실제 프로젝트로 `pack`을 빠르게 스모크테스트하고 싶다면: `LLM_PROVIDER=mock ziplex pack <project> --auto --auto-correct`로 1초 안에 네트워크 없이 전체 파이프라인을 돌릴 수 있습니다.
 
 ## MCP 서버
 
