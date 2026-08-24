@@ -18,6 +18,8 @@ import tree_sitter_go as tsgo
 import tree_sitter_cpp as tscpp
 import tree_sitter_rust as tsrust
 import tree_sitter_c_sharp as tscsharp
+import tree_sitter_php as tsphp
+import tree_sitter_ruby as tsruby
 
 # GDScript has no dedicated tree-sitter-gdscript PyPI package (as of this
 # writing) the way the languages above do -- only a community grammar
@@ -542,6 +544,132 @@ def _csharp_dependency_handler(node: Node, results: list) -> bool:
     return True
 
 
+def _append_php_use_clause(clause: Node, prefix: str | None, results: list) -> None:
+    """A single namespace_use_clause's real path, with an optional group
+    prefix prepended (see _php_dependency_handler below for the two shapes
+    this is called from). The clause's own children are either
+    [qualified_name|name] for a plain `use Foo\Bar;`, or
+    [name, "as", name(field="alias")] for an aliased `use Foo\Bar as B;" --
+    either way the *first* qualified_name/name child is always the real
+    path (the alias, when present, is always the second one), so taking
+    the first match and returning immediately already skips the alias with
+    no need to check its field name.
+
+    "\\" is PHP's namespace separator, normalized to "." throughout so the
+    result matches every other handler's dotted-path convention --
+    resolve_dependency()'s existing split-on-"."-take-last-segment fallback
+    then applies unchanged, the same normalization C#'s "::"-free
+    qualified_name already gets for free and Rust's "::" needs explicitly.
+    """
+    for child in clause.children:
+        if child.type in ("qualified_name", "name"):
+            path = child.text.decode()
+            if prefix:
+                path = f"{prefix}\\{path}"
+            results.append(path.replace("\\", "."))
+            return
+
+
+def _php_dependency_handler(node: Node, results: list) -> bool:
+    """Two distinct dependency shapes in PHP, both handled here.
+
+    `use Foo\Bar;` / `use Foo\Bar as B;` / a grouped `use Foo\{Bar, Baz as
+    B};` all parse as one namespace_use_declaration node type, but with two
+    different internal shapes: a plain or aliased use has its
+    namespace_use_clause as a direct child (or several, comma-separated,
+    for `use Foo\A, Foo\B;`); a grouped use instead has a namespace_name
+    prefix sibling plus a namespace_use_group (field "body") wrapping one
+    namespace_use_clause per sibling -- each needs the prefix re-attached
+    since the group's own clauses only carry their own suffix
+    ("Bar"/"Baz", not "Foo\Bar"/"Foo\Baz"). Handled by walking node's
+    direct children once, tracking any namespace_name prefix seen along
+    the way and dispatching each namespace_use_clause (direct or nested
+    inside the group) through _append_php_use_clause with the right
+    prefix.
+
+    `require`/`require_once`/`include`/`include_once` are their own
+    dedicated *_expression node types (not ordinary calls the way Lua's
+    require() or Ruby's require/require_relative are) with a literal
+    string argument that's an actual relative file *path*, not a dotted
+    module name -- normalized to its bare stem (Path(path).stem) the same
+    way GDScript's preload()/load() and C++'s #include are, so
+    resolve_dependency()'s exact-stem-match branch is what actually
+    resolves it rather than its dotted-path fallback. A non-literal
+    argument (a variable, string concatenation) is left uncaptured, the
+    same "only capture what's statically resolvable" restraint every other
+    handler here already takes for its own language's dynamically
+    computed import path.
+    """
+    if node.type == "namespace_use_declaration":
+        prefix = None
+        for child in node.children:
+            if child.type == "namespace_name":
+                prefix = child.text.decode()
+            elif child.type == "namespace_use_clause":
+                _append_php_use_clause(child, None, results)
+            elif child.type == "namespace_use_group":
+                for clause in child.children:
+                    if clause.type == "namespace_use_clause":
+                        _append_php_use_clause(clause, prefix, results)
+        return True
+
+    if node.type in ("require_once_expression", "require_expression",
+                      "include_once_expression", "include_expression"):
+        for child in node.children:
+            if child.type == "string":
+                for grandchild in child.children:
+                    if grandchild.type == "string_content":
+                        results.append(Path(grandchild.text.decode()).stem)
+                        break
+        return True
+
+    return False
+
+
+_RUBY_REQUIRE_CALLS = {"require", "require_relative"}
+
+
+def _ruby_dependency_handler(node: Node, results: list) -> bool:
+    """`require "json"` / `require_relative "helpers/formatter"` are
+    ordinary method calls (a `call` node with no receiver), not a
+    dedicated import-statement node -- the same shape Lua's require() is,
+    matched by callee name rather than a distinct node type. Ruby's grammar
+    names the callee field "method" (not "name" the way Lua's
+    function_call does), and a call *with* a receiver (`Foo.require(...)`,
+    vanishingly unlikely to be a real dependency but still a different
+    call shape) is explicitly excluded rather than matched.
+
+    A require_relative path is a real relative file path with the ".rb"
+    extension conventionally omitted ("helpers/formatter", not
+    "helpers/formatter.rb"); a plain require's argument is usually a
+    gem/stdlib name instead ("json"), external either way. Both are
+    normalized to their bare Path stem the same restrained way GDScript's
+    preload()/load() and C++'s #include already are -- harmless for a
+    slash-free gem name (its stem is itself), and what actually lets a
+    relative path's *directory* component be dropped so
+    resolve_dependency()'s exact-stem-match branch can find the file by
+    name alone, the same reasoning C++'s #include normalization spells out
+    for why a literal include path can't be trusted to match the
+    project's own collected relative-key path.
+    """
+    if node.type != "call":
+        return False
+    if node.child_by_field_name("receiver") is not None:
+        return False
+    method = node.child_by_field_name("method")
+    if method is None or method.text.decode() not in _RUBY_REQUIRE_CALLS:
+        return False
+    args = node.child_by_field_name("arguments")
+    if args is not None:
+        for child in args.children:
+            if child.type == "string":
+                for grandchild in child.children:
+                    if grandchild.type == "string_content":
+                        results.append(Path(grandchild.text.decode()).stem)
+                        break
+    return True
+
+
 @dataclass(frozen=True)
 class LanguageConfig:
     language: Language
@@ -567,6 +695,20 @@ class LanguageConfig:
     # rather than being part of the field -- without this, a class defining
     # both would produce two identical "Widget()" signatures.
     name_prefixes: dict[str, str] = field(default_factory=dict)
+    # function_types node types whose grammar omits the "parameters" field
+    # entirely for a real zero-argument function/method (unlike most
+    # grammars here, which always emit an empty parameter-list node even
+    # for zero args) -- Ruby's `method`/`singleton_method` for a bare `def
+    # foo` / `def self.foo` with no parens and no params at all. Deliberately
+    # opt-in per node type rather than a blanket "missing params means zero
+    # args" default: TS/JS's bare single-identifier arrow (`x => x * 2`)
+    # also has no "parameters" field, but DOES take one argument Ziplex
+    # just doesn't capture -- defaulting that case to "()" would misreport
+    # its arity, which is worse than the documented no-signature gap it has
+    # today. A node.type listed here is instead a case where "no parameters
+    # field" is structurally guaranteed to mean real zero arity, not an
+    # unresolved one.
+    zero_arg_types: frozenset[str] = frozenset()
 
 
 # `.cpp`/`.cc`/`.cxx` all parse with the same grammar, so all three
@@ -736,6 +878,57 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # "name" field is the bare identifier with no "~", which would
         # otherwise render identically to the class's own constructor.
         name_prefixes={"destructor_declaration": "~"},
+    ),
+    ".php": LanguageConfig(
+        # language_php (not language_php_only) -- this grammar ships two
+        # variants, and language_php is the one that actually parses a real
+        # .php file's usual HTML-plus-<?php-tags shape; language_php_only
+        # is for an already-isolated PHP fragment with no surrounding
+        # markup, not what a collected project file looks like.
+        language=Language(tsphp.language_php()),
+        # function_definition (a free function) and method_declaration (a
+        # class/interface/trait method) both expose "name"/"parameters"/
+        # "return_type"/"body" as direct fields -- the same convention
+        # Python/TS/GDScript already use, so no extractor.py changes were
+        # needed at all. An interface's own method_declaration (no body,
+        # just a signature + ";") is handled for free the same way Rust's
+        # function_signature_item/C#'s interface method already are.
+        # Deliberately excludes anonymous_function/arrow_function
+        # (PHP's own closure and `fn() => ...` short-closure syntax) --
+        # neither has a "name" field, and the wrapping assignment_expression
+        # names its own target under a "left" field, not "name"/"key" the
+        # way extract_signatures()'s existing wrapper-fallback checks for
+        # TS/JS's own anonymous functions -- left as a documented, deferred
+        # gap rather than broadening that fallback for one language's sake,
+        # the same restraint TS/JS's own bare single-param arrow gap takes.
+        function_types=["function_definition", "method_declaration"],
+        dependency_handler=_php_dependency_handler,
+    ),
+    ".rb": LanguageConfig(
+        language=Language(tsruby.language()),
+        # method (a plain def, at module level or inside a class -- Ruby's
+        # grammar doesn't distinguish the two the way Java/C# separate a
+        # method from a free function) and singleton_method (`def
+        # self.foo`/`def SomeClass.foo`, a "class method") both expose
+        # "name"/"parameters"/"body" as direct fields -- no return_type
+        # field at all (vanilla Ruby has no return-type syntax), which
+        # extract_signatures() already handles for free (no "-> ..."
+        # suffix when none of its four known return-type field names are
+        # present). Neither node type's own "name" distinguishes a
+        # singleton_method's receiver ("self" vs. a named class/module) --
+        # deliberately left unprefixed, the same restraint Go's own
+        # method_declaration takes for its receiver type.
+        function_types=["method", "singleton_method"],
+        dependency_handler=_ruby_dependency_handler,
+        # Idiomatic Ruby very commonly omits parens for a zero-argument
+        # method (`def initialize` / `def self.create`) -- unlike every
+        # other language configured above, this grammar then has no
+        # "parameters" field at all rather than an empty parameter-list
+        # node, so without this a large, ordinary fraction of real Ruby
+        # methods would silently produce no signature at all. See
+        # LanguageConfig.zero_arg_types' own docstring for why this is
+        # safe here specifically (real zero arity, not an unresolved one).
+        zero_arg_types=frozenset({"method", "singleton_method"}),
     ),
 }
 

@@ -16,10 +16,11 @@ def extract_signatures(file_path: str) -> list[str]:
     node_types = config.function_types if config else []
     implicit_names = config.implicit_names if config else {}
     name_prefixes = config.name_prefixes if config else {}
+    zero_arg_types = config.zero_arg_types if config else frozenset()
 
     tree = parser.parse(bytes(code, "utf8"))
     results = []
-    _traverse_signatures(tree.root_node, results, node_types, implicit_names, name_prefixes, None)
+    _traverse_signatures(tree.root_node, results, node_types, implicit_names, name_prefixes, zero_arg_types, None)
     return results
 
 
@@ -130,7 +131,7 @@ def _unwrap_declarator(node):
     return node
 
 
-def _traverse_signatures(node, results: list, node_types: list, implicit_names: dict, name_prefixes: dict, parent):
+def _traverse_signatures(node, results: list, node_types: list, implicit_names: dict, name_prefixes: dict, zero_arg_types: frozenset, parent):
     if node.type in node_types:
         sig_node = _unwrap_declarator(node)
         name   = _resolve_signature_name(sig_node, parent, implicit_names)
@@ -172,15 +173,23 @@ def _traverse_signatures(node, results: list, node_types: list, implicit_names: 
             # scopes "type" to the grammar that actually needs it.
             ret = ret or node.child_by_field_name("type")
 
-        if name and params:
-            sig = f"{name}{params.text.decode()}"
+        # params being None normally means "nothing readable was found"
+        # (TS/JS's bare single-param arrow, a genuinely unresolved case --
+        # see zero_arg_types' own docstring). zero_arg_types is the
+        # opt-in exception: for a node type listed there, a missing
+        # "parameters" field is structurally guaranteed to mean a real
+        # zero-argument function (Ruby's parens-less `def foo`), so an
+        # empty "()" is substituted rather than dropping the signature.
+        if name and (params or node.type in zero_arg_types):
+            param_text = params.text.decode() if params else "()"
+            sig = f"{name}{param_text}"
             if ret:
                 sig += f" -> {ret.text.decode()}"
             results.append(sig)
         return
 
     for child in node.children:
-        _traverse_signatures(child, results, node_types, implicit_names, name_prefixes, node)
+        _traverse_signatures(child, results, node_types, implicit_names, name_prefixes, zero_arg_types, node)
 
 
 def _traverse_dependencies(node, results: list, handler):

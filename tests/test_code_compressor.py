@@ -222,6 +222,94 @@ def test_csharp_interface_method_with_no_body_is_left_alone():
     assert result == code.rstrip("\n")
 
 
+def test_php_function_and_method_bodies_are_stripped():
+    # A brace language -- covers a free function and a class method via
+    # the two function_types node types this grammar uses.
+    code = (
+        "<?php\n\n"
+        "class Server\n"
+        "{\n"
+        "    public function start(): void\n"
+        "    {\n"
+        "        run();\n"
+        "    }\n"
+        "}\n\n"
+        "function add($a, $b)\n"
+        "{\n"
+        "    return $a + $b;\n"
+        "}\n"
+    )
+    result = compress_code(code, ".php")
+
+    assert "public function start(): void" in result
+    assert "function add($a, $b)" in result
+    assert MARKER.strip() in result
+    assert "run();" not in result
+    assert "return $a + $b;" not in result
+    assert "class Server" in result
+
+
+def test_php_interface_method_with_no_body_is_left_alone():
+    # An interface's own method_declaration (no body, just a signature +
+    # ";") -- _collect_bodies' `if body:` guard must find nothing to
+    # strip here, leaving the one-line declaration untouched.
+    code = "<?php\n\ninterface Greetable {\n    public function greet(): string;\n}\n"
+    result = compress_code(code, ".php")
+
+    assert result == code.rstrip("\n")
+
+
+def test_php_one_liner_body_is_left_alone():
+    # A body that opens and closes on the same line as the signature
+    # (constructor-property-promotion's common `{}` shape, or any other
+    # brace-language one-liner) has nothing meaningful to strip -- the
+    # same-line guard must leave it untouched rather than blanking the
+    # signature's own line.
+    code = "<?php\n\nclass Foo {\n    public function __construct(private int $x) {}\n}\n"
+    result = compress_code(code, ".php")
+
+    assert result == code.rstrip("\n")
+
+
+def test_ruby_method_body_is_stripped_but_end_kept():
+    # Ruby's "end" isn't part of the body node at all (unlike a brace
+    # language's "}") -- a sibling of the body, not a child of it -- so
+    # there's nothing to specially exclude, the same shape Lua's own "end"
+    # already has.
+    code = "def add(a, b)\n  total = a + b\n  total\nend\n"
+    result = compress_code(code, ".rb")
+
+    assert "def add(a, b)" in result
+    assert MARKER.strip() in result
+    assert "total = a + b" not in result
+    assert "end" in result
+
+
+def test_ruby_method_with_no_parens_body_is_stripped():
+    # A parens-less zero-arg method -- has no "parameters" field at all,
+    # but still has a real multi-line "body" field, so compression works
+    # exactly the same as every other method here regardless of
+    # zero_arg_types (a signature-extraction-only concern).
+    code = "def get_name\n  format(@first, @last)\nend\n"
+    result = compress_code(code, ".rb")
+
+    assert "def get_name" in result
+    assert MARKER.strip() in result
+    assert "format(@first, @last)" not in result
+    assert "end" in result
+
+
+def test_ruby_endless_method_is_left_alone():
+    # Ruby 3.0+'s `def name(...) = expr` form has no "end" at all and its
+    # body sits on the same line as the signature -- the existing
+    # same-line guard already leaves a one-liner like this untouched, no
+    # special-casing needed.
+    code = "def square(x) = x * x\n"
+    result = compress_code(code, ".rb")
+
+    assert result == code.rstrip("\n")
+
+
 def test_unsupported_extension_returns_none():
     assert compress_code("whatever content", ".xyz") is None
 

@@ -438,6 +438,162 @@ def test_extract_dependencies_ignores_csharp_non_path_type_aliases(tmp_path):
     assert "Nullable" not in deps
 
 
+def test_extract_signatures_from_php_file(tmp_path):
+    # function_definition/method_declaration expose "name"/"parameters"/
+    # "return_type"/"body" as direct fields -- the same convention Python/
+    # TS/GDScript already use, so no extractor.py changes were needed.
+    file_path = tmp_path / "UserService.php"
+    file_path.write_text(
+        "<?php\n\n"
+        "class UserService\n"
+        "{\n"
+        "    public function getName(): string\n"
+        "    {\n"
+        "        return $this->name;\n"
+        "    }\n"
+        "}\n\n"
+        "function standaloneHelper($x, $y = 10): int\n"
+        "{\n"
+        "    return $x + $y;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert "getName() -> string" in sigs
+    assert "standaloneHelper($x, $y = 10) -> int" in sigs
+
+
+def test_extract_signatures_from_php_interface_method(tmp_path):
+    # An interface's own method_declaration (no body, just a signature +
+    # ";") is the same node type as a class method -- still has "name"/
+    # "parameters"/"return_type", so it should still produce a real
+    # signature (compression is separately verified to leave it alone).
+    file_path = tmp_path / "Greetable.php"
+    file_path.write_text(
+        "<?php\n\ninterface Greetable {\n    public function greet(): string;\n}\n",
+        encoding="utf-8",
+    )
+
+    assert "greet() -> string" in extract_signatures(str(file_path))
+
+
+def test_extract_dependencies_from_php_file(tmp_path):
+    # namespace_use_declaration: a plain use, an aliased use (the real
+    # path, not the alias, must be captured), and a grouped use (the outer
+    # namespace_name prefix re-attached to each of the group's own
+    # siblings). Plus require_once/include -- real relative file paths,
+    # normalized to their bare stem the same way GDScript's preload()/
+    # load() already is.
+    file_path = tmp_path / "UserService.php"
+    file_path.write_text(
+        "<?php\n\n"
+        "use App\\Models\\User;\n"
+        "use App\\Helpers\\{Formatter, Validator as V};\n"
+        "require_once 'config.php';\n"
+        "include 'helpers/legacy.php';\n",
+        encoding="utf-8",
+    )
+
+    deps = extract_dependencies(str(file_path))
+    assert "App.Models.User" in deps
+    assert "App.Helpers.Formatter" in deps
+    assert "App.Helpers.Validator" in deps
+    assert "V" not in deps
+    assert "config" in deps
+    assert "legacy" in deps
+
+
+def test_extract_dependencies_from_php_multiple_non_grouped_uses(tmp_path):
+    # `use A, B as BB;` -- several direct namespace_use_clause siblings
+    # under one namespace_use_declaration, no group/prefix involved.
+    file_path = tmp_path / "mod.php"
+    file_path.write_text("<?php\n\nuse App\\A, App\\B as BB;\n", encoding="utf-8")
+
+    deps = extract_dependencies(str(file_path))
+    assert "App.A" in deps
+    assert "App.B" in deps
+    assert "BB" not in deps
+
+
+def test_extract_signatures_from_ruby_file(tmp_path):
+    # method/singleton_method expose "name"/"parameters"/"body" as direct
+    # fields -- no return_type field at all (vanilla Ruby has no
+    # return-type syntax), which extract_signatures() already handles for
+    # free (no dangling " -> " suffix).
+    file_path = tmp_path / "user_service.rb"
+    file_path.write_text(
+        "class UserService\n"
+        "  def initialize(user)\n"
+        "    @user = user\n"
+        "  end\n\n"
+        "  def self.create(data)\n"
+        "    new(data)\n"
+        "  end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert "initialize(user)" in sigs
+    assert "create(data)" in sigs
+
+
+def test_extract_signatures_from_ruby_method_with_no_parens(tmp_path):
+    # Idiomatic Ruby very commonly omits parens for a zero-argument method
+    # -- this grammar then has no "parameters" field at all (unlike most
+    # grammars here, which always emit an empty parameter-list node even
+    # for zero args). zero_arg_types is what makes this still produce a
+    # real "()" signature instead of silently producing none.
+    file_path = tmp_path / "mod.rb"
+    file_path.write_text(
+        "def get_name\n  @name\nend\n\n"
+        "class Foo\n  def self.bar\n    42\n  end\nend\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert "get_name()" in sigs
+    assert "bar()" in sigs
+
+
+def test_extract_signatures_skips_ruby_bare_single_param_arrow_equivalent(tmp_path):
+    # Sanity check that zero_arg_types is opt-in per node type, not a
+    # blanket "missing params means zero args" default -- a TS bare arrow
+    # (a genuinely different language/config) must still produce no
+    # signature, exactly as before this feature existed.
+    file_path = tmp_path / "mod.ts"
+    file_path.write_text("const double = x => x * 2;\n", encoding="utf-8")
+
+    assert extract_signatures(str(file_path)) == []
+
+
+def test_extract_dependencies_from_ruby_file(tmp_path):
+    # require (an external gem/stdlib name) and require_relative (a real
+    # relative file path, ".rb" conventionally omitted) are both ordinary
+    # method calls, not a dedicated import-statement node -- matched by
+    # callee name the same way Lua's require() is, and normalized to their
+    # bare Path stem so a directory component doesn't block a match.
+    file_path = tmp_path / "mod.rb"
+    file_path.write_text(
+        "require 'json'\nrequire_relative 'helpers/formatter'\n",
+        encoding="utf-8",
+    )
+
+    deps = extract_dependencies(str(file_path))
+    assert "json" in deps
+    assert "formatter" in deps
+
+
+def test_extract_dependencies_ignores_ruby_call_with_receiver(tmp_path):
+    # A call with a receiver (Foo.require(...)) isn't a real require/
+    # require_relative statement -- only a bare, receiver-less call counts.
+    file_path = tmp_path / "mod.rb"
+    file_path.write_text("Foo.require('json')\n", encoding="utf-8")
+
+    assert extract_dependencies(str(file_path)) == []
+
+
 def test_extract_signatures_from_typescript_arrow_functions(tmp_path):
     # arrow_function/function_expression have no "name" field of their own
     # when anonymous -- extract_signatures() has to recover a readable name
@@ -549,10 +705,19 @@ def test_extract_api_ignores_template_literal_paths(tmp_path):
 
 
 def test_extract_api_returns_empty_for_languages_with_no_routing_convention(tmp_path):
-    file_path = tmp_path / "mod.lua"
-    file_path.write_text("local function greet(name)\n    return name\nend\n", encoding="utf-8")
-
-    assert extract_api(str(file_path)) == []
+    # PHP and Ruby are here too, alongside Lua: both have real web
+    # frameworks (Laravel/Symfony/Slim; Rails/Sinatra) whose route
+    # registration conventions don't share one dominant shape the way
+    # Flask's decorator or Express's .get() call do -- same "no
+    # established convention" default as Java/Lua/GDScript/Rust/C#.
+    for suffix, code in (
+        (".lua", "local function greet(name)\n    return name\nend\n"),
+        (".php", "<?php\nfunction greet($name) {\n    return $name;\n}\n"),
+        (".rb", "def greet(name)\n  name\nend\n"),
+    ):
+        file_path = tmp_path / f"mod{suffix}"
+        file_path.write_text(code, encoding="utf-8")
+        assert extract_api(str(file_path)) == []
 
 
 def test_extract_signatures_from_gdscript_constructor(tmp_path):
