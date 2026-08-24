@@ -60,6 +60,7 @@ const I18N = {
 
     "graph.more": (v) => `+${v.n}개 더`,
     "graph.tree.cycleSkipped": "(순환 참조 → 생략)",
+    "graph.tree.alreadyShown": "(다른 곳에 이미 표시됨 → 생략)",
     "graph.tree.empty": "표시할 파일이 없습니다.",
     "graph.editor.searchPlaceholder": "🔍 파일 검색...",
     "graph.editor.noMatch": "일치하는 파일 없음",
@@ -190,6 +191,7 @@ const I18N = {
 
     "graph.more": (v) => `+${v.n} more`,
     "graph.tree.cycleSkipped": "(circular reference → omitted)",
+    "graph.tree.alreadyShown": "(already shown elsewhere → omitted)",
     "graph.tree.empty": "No files to show.",
     "graph.editor.searchPlaceholder": "🔍 Search files...",
     "graph.editor.noMatch": "No matching files",

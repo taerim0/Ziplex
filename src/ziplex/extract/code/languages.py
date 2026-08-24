@@ -5,6 +5,7 @@ dependency handler if needed) — nothing else. extractor.py / compressor.py onl
 ever reference this config; they don't hardcode per-language node types themselves.
 """
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -172,17 +173,70 @@ def _js_api_handler(node: Node, results: list) -> bool:
     return False
 
 
+# The running interpreter's own authoritative module list (Python 3.10+,
+# well under Ziplex's own requires-python = ">=3.11") -- always accurate for
+# whatever Python version actually runs Ziplex, no hardcoded/maintained list
+# to fall out of date across releases. Used by _is_stdlib_import() below to
+# keep a plain `import json` from ever being handed to resolve_dependency()
+# as a raw dependency string in the first place -- see that function's own
+# docstring/comment for why this has to happen here, at extraction time, not
+# by trying to teach the shared, cross-language resolve_dependency() to be
+# more careful about a bare-stem match.
+_PYTHON_STDLIB_MODULES = sys.stdlib_module_names
+
+
+def _is_stdlib_import(text: str) -> bool:
+    """True if text's first dotted segment names a real Python standard-
+    library module -- e.g. "json" (bare) or "xml.etree.ElementTree" (whose
+    first segment "xml" is what actually matters; resolve_dependency()'s own
+    fallback would otherwise re-split this on "." and try to match its last
+    segment, "ElementTree", against a project file). A relative import
+    (".file.collector") always has an empty first segment (nothing precedes
+    its leading dot), which never matches anything here -- this only ever
+    filters *absolute* imports, the only shape that could plausibly name an
+    external package rather than a project file.
+
+    Found via a real bug, not written defensively in the abstract: packing
+    Ziplex's own repo, a plain `import json` in dozens of files kept
+    resolving as an internal dependency on `extract/text/json.py` purely
+    because that local file's stem happens to also be "json" --
+    resolve_dependency()'s bare-stem fallback (the same mechanism GDScript's
+    preload()/C++'s #include correctly rely on for their own path-reduced-
+    to-stem dependencies) has no way to tell "a genuinely local single-file
+    reference" apart from "an absolute import of a same-named standard-
+    library module" once both have been reduced to the same bare string.
+    Scoped to the standard library specifically (not third-party packages
+    too) because sys.stdlib_module_names is accurate regardless of which
+    project Ziplex happens to be packing right now -- unlike a third-party
+    package name, whose "is this actually installed" answer depends on the
+    *target* project's own environment, which Ziplex never runs inside of
+    (see tech_stack.py's own similarly deliberate scope limit).
+    """
+    return text.split(".")[0] in _PYTHON_STDLIB_MODULES
+
+
+def _append_if_not_stdlib(text: str, results: list) -> None:
+    """Shared by both import shapes _py_dependency_handler recognizes below
+    -- factored out so the "decode, check stdlib, append" pattern lives in
+    exactly one place, not duplicated identically in both branches (a
+    future change to the filtering condition would otherwise risk the two
+    copies drifting apart from each other).
+    """
+    if not _is_stdlib_import(text):
+        results.append(text)
+
+
 def _py_dependency_handler(node: Node, results: list) -> bool:
     if node.type == "import_from_statement":
         module = node.child_by_field_name("module_name")
         if module:
-            results.append(module.text.decode())
+            _append_if_not_stdlib(module.text.decode(), results)
         return True
 
     if node.type == "import_statement":
         for child in node.children:
             if child.type == "dotted_name":
-                results.append(child.text.decode())
+                _append_if_not_stdlib(child.text.decode(), results)
         return True
 
     return False

@@ -37,12 +37,65 @@ def test_extract_signatures_from_java_file(tmp_path):
 
 
 def test_extract_dependencies_from_python_file(tmp_path):
+    # Not stdlib names -- see test_extract_dependencies_excludes_stdlib_
+    # imports() below for the "os"/"pathlib" case this used to (wrongly)
+    # assert on.
     file_path = tmp_path / "mod.py"
-    file_path.write_text("import os\nfrom pathlib import Path\n\nx = 1\n", encoding="utf-8")
+    file_path.write_text("import requests\nfrom mypackage.utils import helper\n\nx = 1\n", encoding="utf-8")
 
     deps = extract_dependencies(str(file_path))
-    assert "os" in deps
-    assert "pathlib" in deps
+    assert "requests" in deps
+    assert "mypackage.utils" in deps
+
+
+def test_extract_dependencies_excludes_stdlib_imports(tmp_path):
+    # A plain `import json` used to resolve as an internal dependency on
+    # any local project file that happened to share that stem (a real bug,
+    # not hypothetical: found packing Ziplex's own repo, where dozens of
+    # files' `import json` all wrongly resolved onto
+    # extract/text/json.py) -- resolve_dependency()'s bare-stem fallback
+    # can't tell "a genuine local file reference" apart from "an absolute
+    # import of a same-named standard-library module" once both have been
+    # reduced to the same bare string. sys.stdlib_module_names filters
+    # these out before they're ever appended as a raw dependency string,
+    # for both the bare (import_statement) and from-import
+    # (import_from_statement) shapes, and for a multi-segment dotted
+    # absolute import too (checked by its *first* segment, "os" in
+    # "os.path" -- resolve_dependency()'s own fallback would otherwise
+    # re-split a survivor on "." and try to match "path"/"ElementTree").
+    file_path = tmp_path / "mod.py"
+    file_path.write_text(
+        "import json\n"
+        "import os\n"
+        "import xml.etree.ElementTree\n"
+        "from pathlib import Path\n"
+        "from os.path import join\n"
+        "import requests\n",
+        encoding="utf-8",
+    )
+
+    deps = extract_dependencies(str(file_path))
+    assert "json" not in deps
+    assert "os" not in deps
+    assert "xml.etree.ElementTree" not in deps
+    assert "pathlib" not in deps
+    assert "os.path" not in deps
+    assert "requests" in deps  # not stdlib -- kept
+
+
+def test_extract_dependencies_keeps_relative_imports_named_like_stdlib(tmp_path):
+    # A relative import's module text always starts with "." -- its first
+    # dotted segment (the text before that leading dot) is an empty
+    # string, which never matches a real stdlib module name, so this is
+    # never filtered regardless of what the referenced module is actually
+    # named. Ziplex's own extract/text/registry.py has exactly this shape
+    # for real (a relative import of its own json.py compressor module),
+    # which is what motivated checking this case explicitly rather than
+    # assuming it.
+    file_path = tmp_path / "mod.py"
+    file_path.write_text("from .json import compress_json\n", encoding="utf-8")
+
+    assert ".json" in extract_dependencies(str(file_path))
 
 
 def test_extract_signatures_from_lua_file(tmp_path):

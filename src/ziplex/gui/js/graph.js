@@ -192,7 +192,29 @@ export function renderDependencyTreeOverview(tree, allFiles, flaggedFiles, onSel
     return row;
   }
 
-  function buildNode(name, ancestors) {
+  // `ancestors` guards against a true cycle -- the same file reappearing
+  // on the *current* root-to-here path (a -> b -> a). `seen` is a second,
+  // separate guard: a flat set shared across every root's own call to
+  // buildNode(), marking a file as fully expanded the *first* time it's
+  // rendered anywhere in the whole overview. Without it, a file genuinely
+  // shared by many dependents (a common utils module, say) has its own
+  // full subtree re-expanded once per dependent -- and if *that* subtree
+  // also shares files with siblings, the duplication compounds at every
+  // level. This isn't hypothetical: packing Ziplex's own repo (a real,
+  // richly cross-referenced ~90-file project, not a toy fixture) hung the
+  // GUI's review screen outright, the browser tab unresponsive to even a
+  // screenshot for 50+ seconds -- traced to exactly this, a file
+  // (`extract/text/json.py`) whose in-degree got additionally inflated by
+  // a real resolve_dependency() bug (see file/relationship.py) that let
+  // it fan out into dozens of "dependents." `seen` bounds total rendered
+  // nodes to the size of the graph (files + edges) regardless of how
+  // shared any one file is, the same way a real dependency-tree UI
+  // (`npm ls`, VS Code's explorer) dedupes a shared subtree rather than
+  // reprinting it in full at every reference. A file caught by `seen`
+  // still gets its own row (so "what does X depend on" is still
+  // answerable by clicking into it via the editor view) -- only the
+  // recursive re-expansion of its *own* children is skipped.
+  function buildNode(name, ancestors, seen) {
     const deps = tree[name] || { internal: [], external: [] };
     const children = [];
     for (const dep of deps.internal) {
@@ -200,7 +222,12 @@ export function renderDependencyTreeOverview(tree, allFiles, flaggedFiles, onSel
         children.push(fileRow(dep, t("graph.tree.cycleSkipped")));
         continue;
       }
-      children.push(buildNode(dep, new Set([...ancestors, dep])));
+      if (seen.has(dep)) {
+        children.push(fileRow(dep, t("graph.tree.alreadyShown")));
+        continue;
+      }
+      seen.add(dep);
+      children.push(buildNode(dep, new Set([...ancestors, dep]), seen));
     }
     for (const ext of deps.external) {
       children.push(el("div", { class: "tree-row muted" }, [el("span", { text: "📦 " }), el("span", { text: ext })]));
@@ -227,7 +254,27 @@ export function renderDependencyTreeOverview(tree, allFiles, flaggedFiles, onSel
   // "what files exist" still has an obvious answer.
   if (!roots.length && allFiles.length) roots = allFiles;
 
-  for (const name of roots) box.appendChild(buildNode(name, new Set([name])));
+  // One `seen` set for the whole overview, not one per root -- a file
+  // shared *across* two different roots' subtrees (not just within one)
+  // needs deduping too. The `seen.has(name)` check right here (not just
+  // inside buildNode()'s own loop over a node's dependencies) matters for
+  // the "no roots" fallback just above: a fully-cyclic component with
+  // nothing else (A <-> B, no third file) makes *both* A and B into
+  // "roots" with nothing to distinguish them. Without this check, root A
+  // fully expands (marking B seen along the way, since B is A's own
+  // dependency), and then root B's own top-level loop iteration would
+  // still render B's *entire* subtree a second time from scratch -- the
+  // exact duplicate rendering this whole seen-set fix exists to prevent,
+  // just bounded (linear) instead of unbounded like the original bug.
+  const seen = new Set();
+  for (const name of roots) {
+    if (seen.has(name)) {
+      box.appendChild(fileRow(name, t("graph.tree.alreadyShown")));
+      continue;
+    }
+    seen.add(name);
+    box.appendChild(buildNode(name, new Set([name]), seen));
+  }
   if (!roots.length) box.appendChild(el("p", { class: "muted", text: t("graph.tree.empty") }));
   return box;
 }
