@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ziplex 기능 지도</title>
+<!--
+  저장소 문서 버전 -- claude.ai 아티팩트로 먼저 만들었던 걸 그대로 커밋.
+  더블클릭으로 로컬 브라우저에서 열어보는 용도 (GitHub 저장소 페이지에서는
+  렌더링 안 되고 원본 코드로 보임). 기능이 바뀌면 이 파일도 같이 갱신하고
+  커밋 -- git 히스토리 자체가 "언제 뭐가 안정/부분구현/공백/보류로 바뀌었나"
+  기록이 되도록.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap">
+
+<style>
+  :root {
+    --paper: #f7f7fb;
+    --panel: #ffffff;
+    --panel-2: #fbfbfe;
+    --line: #e2e4ec;
+    --ink: #1c1e26;
+    --muted: #6b6f80;
+    --accent: #3b6fd1;
+    --accent-soft: #e8effc;
+    --ok: #21874e;
+    --ok-soft: #e4f5eb;
+    --warn: #a4610f;
+    --warn-soft: #fbeee0;
+    --hold: #6f7280;
+    --hold-soft: #edeef2;
+    --mono: 'JetBrains Mono', 'Consolas', 'SFMono-Regular', Menlo, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+    --radius: 10px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #1e1f24;
+      --panel: #26282f;
+      --panel-2: #2b2d35;
+      --line: #383a44;
+      --ink: #e4e5ea;
+      --muted: #9a9ca8;
+      --accent: #6ea8fe;
+      --accent-soft: rgba(110, 168, 254, 0.14);
+      --ok: #7fd08a;
+      --ok-soft: rgba(127, 208, 138, 0.14);
+      --warn: #f2a154;
+      --warn-soft: rgba(242, 161, 84, 0.14);
+      --hold: #9a9ca8;
+      --hold-soft: rgba(154, 156, 168, 0.12);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #1e1f24;
+    --panel: #26282f;
+    --panel-2: #2b2d35;
+    --line: #383a44;
+    --ink: #e4e5ea;
+    --muted: #9a9ca8;
+    --accent: #6ea8fe;
+    --accent-soft: rgba(110, 168, 254, 0.14);
+    --ok: #7fd08a;
+    --ok-soft: rgba(127, 208, 138, 0.14);
+    --warn: #f2a154;
+    --warn-soft: rgba(242, 161, 84, 0.14);
+    --hold: #9a9ca8;
+    --hold-soft: rgba(154, 156, 168, 0.12);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    line-height: 1.55;
+  }
+
+  .page {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 56px 24px 96px;
+  }
+
+  header.intro {
+    margin-bottom: 40px;
+  }
+
+  .kicker {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  h1 {
+    font-size: 30px;
+    font-weight: 700;
+    margin: 10px 0 14px;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+
+  .lede {
+    color: var(--muted);
+    font-size: 15.5px;
+    max-width: 62ch;
+    margin: 0 0 28px;
+  }
+
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 18px;
+    padding: 16px 18px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 3px 8px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .chip.ok    { background: var(--ok-soft);   color: var(--ok); }
+  .chip.warn  { background: var(--warn-soft); color: var(--warn); }
+  .chip.hold  { background: var(--hold-soft); color: var(--hold); }
+  .chip.gap   { background: var(--warn-soft); color: var(--warn); border: 1px dashed var(--warn); }
+
+  /* --- the trunk: a vertical rail down the branch list --- */
+  .trunk {
+    position: relative;
+    margin-top: 36px;
+    padding-left: 22px;
+  }
+  .trunk::before {
+    content: "";
+    position: absolute;
+    left: 5px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: var(--line);
+  }
+
+  details.branch {
+    position: relative;
+    margin-bottom: 10px;
+  }
+  details.branch::before {
+    content: "";
+    position: absolute;
+    left: -22px;
+    top: 14px;
+    width: 12px;
+    height: 2px;
+    background: var(--line);
+  }
+  details.branch::after {
+    content: "";
+    position: absolute;
+    left: -26px;
+    top: 9px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--paper);
+    border: 2px solid var(--accent);
+  }
+
+  summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    user-select: none;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary:hover { border-color: var(--accent); }
+  summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  summary .caret {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    transition: transform 0.15s ease;
+    flex-shrink: 0;
+  }
+  details[open] > summary .caret { transform: rotate(90deg); }
+
+  .branch-kicker {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    flex-shrink: 0;
+    width: 92px;
+  }
+
+  .branch-title {
+    font-weight: 600;
+    font-size: 15px;
+    flex: 1;
+  }
+
+  .branch-count {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+
+  .twigs {
+    margin: 10px 0 4px 8px;
+    padding-left: 22px;
+    border-left: 1px dashed var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .twig {
+    padding: 11px 14px;
+    border-radius: 8px;
+  }
+  .twig:hover { background: var(--panel-2); }
+
+  .twig-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .twig-name {
+    font-weight: 600;
+    font-size: 14px;
+  }
+
+  .twig-mod {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent);
+  }
+
+  .twig-desc {
+    margin: 4px 0 0;
+    color: var(--muted);
+    font-size: 13.5px;
+    max-width: 66ch;
+  }
+
+  .branch-note {
+    margin: 2px 0 12px 30px;
+    color: var(--muted);
+    font-size: 13px;
+    max-width: 62ch;
+  }
+
+  footer {
+    margin-top: 48px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    font-size: 12.5px;
+    color: var(--muted);
+    font-family: var(--mono);
+  }
+
+  @media (max-width: 560px) {
+    .branch-kicker { display: none; }
+    .trunk { padding-left: 14px; }
+    details.branch::before { left: -14px; width: 6px; }
+    details.branch::after { left: -17px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <header class="intro">
+    <div class="kicker">Ziplex · internal reference</div>
+    <h1>지금 Ziplex에 뭐가 있나</h1>
+    <p class="lede">
+      9개 갈래로 나눈 전체 기능 지도. 각 가지를 펼치면 그 안의 개별 기능과
+      상태 태그가 나옵니다 — 뭐가 단단한 땅이고 뭐가 아직 무른 땅인지
+      한눈에 보려고 만든 문서예요.
+    </p>
+
+    <div class="legend">
+      <div class="legend-item"><span class="chip ok">안정</span> 충분히 테스트됨, 실사용 검증됨</div>
+      <div class="legend-item"><span class="chip warn">부분 구현</span> 동작은 하지만 알려진 한계가 있음</div>
+      <div class="legend-item"><span class="chip gap">공백</span> 아직 손 안 댐, 필요성만 확인된 상태</div>
+      <div class="legend-item"><span class="chip hold">보류</span> 검토 후 의도적으로 안 만들기로 함</div>
+    </div>
+  </header>
+
+  <div class="trunk">
+
+    <!-- 1. PIPELINE -->
+    <details class="branch" open>
+      <summary>
+        <span class="caret">▸</span>
+        <span class="branch-kicker">PIPELINE</span>
+        <span class="branch-title">핵심 파이프라인 — <code class="twig-mod">pack</code></span>
+        <span class="chip ok">안정</span>
+      </summary>
+      <div class="twigs">
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">1. 파일 수집</span>
+            <span class="twig-mod">file/collector.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">DEFAULT_IGNORE + 프로젝트의 .gitignore + .ziplex.json의 include/ignore를 합쳐서 스캔 대상을 정함. 바이너리 파일은 내용 기반으로 자동 제외.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">2. 보안 스캔</span>
+            <span class="twig-mod">file/scanner.py</span>
+            <span class="chip warn">부분 구현</span>
+          </div>
+          <p class="twig-desc">secretlint 우선, 실패 시 정규식 폴백. 위험 파일은 사유·매칭 라인과 함께 보여주고 개별 승인 가능. Windows에서 secretlint 자체가 잘 안 붙는 알려진 이슈 있음 — 정규식 폴백이 사실상 기본 경로.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">3. 파일 선택</span>
+            <span class="twig-mod">file/selector.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">대화형 / --auto(전체) / GUI 체크박스 / preselected(외부 지정) 네 경로가 전부 동일한 후보 목록을 공유.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">4. 구조 추출 + 압축</span>
+            <span class="twig-mod">extract/code/*</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">Tree-sitter로 시그니처·의존성·API 라우트 추출, 함수 본문은 마커 하나로 압축. 12개 언어 지원 (아래 LANGUAGES 참고).</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">5. 비-코드 텍스트 압축</span>
+            <span class="twig-mod">extract/text/*</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">JSON/Markdown/일반 텍스트 전용 압축기. Markdown 안의 코드 블록은 언어 태그로 위 코드 압축기를 재사용.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">6. LLM 요약</span>
+            <span class="twig-mod">llm.py · summarizer.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">Gemini REST 호출, 파일 여러 개를 한 프롬프트로 묶는 배치 처리로 429/503 부담을 줄임. --no-llm이면 시그니처만으로 만든 구조적 요약으로 완전 대체.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">7. 사람 검토</span>
+            <span class="twig-mod">corrector.py · edits.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">confidence 낮은 요약만 검토 프롬프트에 올라옴 — 나머지는 자동 유지, 그래도 손으로 고칠 순 있음.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">8. 저장</span>
+            <span class="twig-mod">packager.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">aif.json(요약+관계, 항상 로드) / detail.json(압축 본문, 필요시) / cache.json(해시, 내부용) 세 파일로 분리 저장.</p>
+        </div>
+      </div>
+    </details>
+
+    <!-- 2. RESILIENCE -->
+    <details class="branch">
+      <summary>
+        <span class="caret">▸</span>
+        <span class="branch-kicker">RESILIENCE</span>
+        <span class="branch-title">신뢰성 · 복원력</span>
+        <span class="chip ok">안정</span>
+      </summary>
+      <div class="twigs">
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">체크포인트 저장/재개</span>
+            <span class="twig-mod">checkpoint.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">LLM 호출이 반복 실패하면 그 시점까지 결과를 저장하고 중단. 다음 pack에서 자동 발견해 이어서 진행. 경로 해시로 이름 같은 다른 프로젝트끼리 안 섞임.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">Incremental re-pack</span>
+            <span class="twig-mod">freshness.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">내용 해시가 그대로인 파일은 이전 요약을 그대로 재사용 — 바뀐 파일만 LLM 호출.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">Freshness 감지</span>
+            <span class="twig-mod">freshness.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">해시 비교만으로 "이 pack이 디스크 상태랑 얼마나 어긋났나" 확인. LLM 호출 없음, CLI/MCP/GUI 배지 전부 이걸 공유.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">GUI 작업 취소/재개</span>
+            <span class="twig-mod">gui/pack_service.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">백그라운드로 도는 pack 작업을 "저장 후 취소"하면 위 체크포인트와 같은 방식으로 다음 실행에 자동 이어짐.</p>
+        </div>
+      </div>
+    </details>
+
+    <!-- 3. SIGNALS -->
+    <details class="branch">
+      <summary>
+        <span class="caret">▸</span>
+        <span class="branch-kicker">SIGNALS</span>
+        <span class="branch-title">품질 · 투명성 신호</span>
+        <span class="chip ok">안정</span>
+      </summary>
+      <div class="twigs">
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">confidence 점수</span>
+            <span class="twig-mod">confidence.py</span>
+            <span class="chip warn">부분 구현</span>
+          </div>
+          <p class="twig-desc">요약 단어와 실제 시그니처의 겹침을 보는 휴리스틱. 0.34 미만이면 검토 대상. 시그니처가 적은 파일(필드 초기화가 로직인 클래스 등)은 구조적으로 낮게 나올 수 있음 — 정답 검증기는 아님.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">tech_stack 감지</span>
+            <span class="twig-mod">tech_stack.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">package.json/requirements.txt 등 매니페스트 8종을 직접 파싱. LLM 호출 없이 "실제로 뭘 의존한다고 선언했나"만 뽑음.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">security_scan</span>
+            <span class="twig-mod">project.security_scan</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">이번 pack에서 몇 개가 걸렸고, 몇 개가 승인됐고, 몇 개가 빠졌는지 project에 기록. aif.json만 따로 봐도 "이거 스캔은 됐나"를 알 수 있게.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">format_notes</span>
+            <span class="twig-mod">project.format_notes</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">aif.json이 이 프로젝트 문서 하나 없이 단독으로 다른 사람/AI에게 넘어가도, 마커·confidence 의미를 스스로 설명하는 고정 문구.</p>
+        </div>
+      </div>
+    </details>
+
+    <!-- 4. GRAPH -->
+    <details class="branch">
+      <summary>
+        <span class="caret">▸</span>
+        <span class="branch-kicker">GRAPH</span>
+        <span class="branch-title">관계 그래프</span>
+        <span class="chip ok">안정</span>
+      </summary>
+      <div class="twigs">
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">의존성 그래프 연산</span>
+            <span class="twig-mod">file/relationship.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">internal/external 분리, build_tree · move_file · has_cycle · get_dependents · get_blast_radius. GUI 편집기와 corrector.py가 같이 씀.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">텍스트 참조 매칭</span>
+            <span class="twig-mod">text_references.py</span>
+            <span class="chip warn">부분 구현</span>
+          </div>
+          <p class="twig-desc">Tree-sitter 문법이 없는 파일(Godot 씬, README)도 실제 파일명 언급을 찾아 관계에 편입 — 무료, LLM 없음. 산문 언급과 구조적 참조를 구분 못 함(둘 다 그냥 dependencies에 섞임).</p>
+        </div>
+      </div>
+    </details>
+
+    <!-- 5. CHANNELS -->
+    <details class="branch">
+      <summary>
+        <span class="caret">▸</span>
+        <span class="branch-kicker">CHANNELS</span>
+        <span class="branch-title">결과물 소비 경로 — 3가지</span>
+        <span class="chip ok">안정</span>
+      </summary>
+      <div class="twigs">
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">MCP 서버</span>
+            <span class="twig-mod">mcp_server.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">읽기 전용 툴 8개. Claude Code/Cursor 등에서 aif.json을 복붙 없이 바로 질의. get_dependents/get_blast_radius는 사람이 보정한 그래프 위에서 동작.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">로컬 GUI</span>
+            <span class="twig-mod">gui/</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">pack부터 browse까지. 127.0.0.1 전용, 서버·계정·외부 전송 없음. Claude Code를 못 쓰는 환경(폐쇄망 등)을 위한 경로.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">Claude Agent Skill export</span>
+            <span class="twig-mod">skill_export.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">.claude/skills/ 아래에 정적으로 놓아두면 서버 없이 Claude Code가 알아서 인식. 원본 소스는 절대 안 실음.</p>
+        </div>
+      </div>
+    </details>
+
+    <!-- 6. CONFIG -->
+    <details class="branch">
+      <summary>
+        <span class="caret">▸</span>
+        <span class="branch-kicker">CONFIG</span>
+        <span class="branch-title">설정 계층 — 2단</span>
+        <span class="chip ok">안정</span>
+      </summary>
+      <div class="twigs">
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">.ziplex.json</span>
+            <span class="twig-mod">config.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">대상 프로젝트별 include/ignore. 그 프로젝트 저장소에 커밋하는 용도 — Ziplex 자체 저장소가 아님.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">~/.ziplex/settings.json</span>
+            <span class="twig-mod">settings.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">사용자별 — 기본 출력 폴더(전역+프로젝트별 고정), Gemini API 키(GUI Options에서 입력).</p>
+        </div>
+      </div>
+    </details>
+
+    <!-- 7. LANGUAGES -->
+    <details class="branch">
+      <summary>
+        <span class="caret">▸</span>
+        <span class="branch-kicker">LANGUAGES</span>
+        <span class="branch-title">언어 지원 — 12개</span>
+        <span class="chip ok">안정</span>
+      </summary>
+      <div class="twigs">
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">Python · Java · TypeScript · JavaScript</span>
+            <span class="chip ok">안정</span>
+          </div>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">Lua · GDScript</span>
+            <span class="chip ok">안정</span>
+          </div>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">Go · C++ · Rust · C#</span>
+            <span class="chip ok">안정</span>
+          </div>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">PHP · Ruby</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">가장 최근에 추가됨 (오늘). 둘 다 실제 mock pack으로 끝까지 검증됨.</p>
+        </div>
+      </div>
+      <p class="branch-note">languages.py에 LanguageConfig 엔트리 하나 추가하는 게 새 언어를 붙이는 방법 — extractor.py/compressor.py는 언어를 하드코딩하지 않음.</p>
+    </details>
+
+    <!-- 8. CLI -->
+    <details class="branch">
+      <summary>
+        <span class="caret">▸</span>
+        <span class="branch-kicker">CLI</span>
+        <span class="branch-title">명령어 전체</span>
+        <span class="chip ok">안정</span>
+      </summary>
+      <div class="twigs">
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name"><code class="twig-mod">pack</code> · <code class="twig-mod">init</code></span>
+          </div>
+          <p class="twig-desc">전체 파이프라인 / .ziplex.json 스캐폴딩.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name"><code class="twig-mod">collect</code> · <code class="twig-mod">tokens</code> · <code class="twig-mod">tree</code> · <code class="twig-mod">search</code></span>
+          </div>
+          <p class="twig-desc">pack 없이 미리보기 — 수집만 / 토큰 카운트만 / 의존성 트리만 / 정규식 검색.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name"><code class="twig-mod">detail</code> · <code class="twig-mod">freshness</code> · <code class="twig-mod">skill</code></span>
+          </div>
+          <p class="twig-desc">detail.json 부분 읽기 / stale 여부 확인 / Claude Skill로 내보내기.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name"><code class="twig-mod">select</code> · <code class="twig-mod">analyze</code></span>
+          </div>
+          <p class="twig-desc">대화형 파일 선택만 / LLM 분석만 (요약+룰+가이드, 압축·저장 없음).</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name"><code class="twig-mod">signatures</code> · <code class="twig-mod">dependencies</code> · <code class="twig-mod">api</code> · <code class="twig-mod">compress</code> · <code class="twig-mod">debug</code></span>
+          </div>
+          <p class="twig-desc">단일 파일에 대해 추출 단계 하나만 실행 — 디버깅용.</p>
+        </div>
+      </div>
+    </details>
+
+    <!-- 9. TEAM / CI -->
+    <details class="branch" open>
+      <summary>
+        <span class="caret">▸</span>
+        <span class="branch-kicker">TEAM / CI</span>
+        <span class="branch-title">팀 작업 · 자동화</span>
+        <span class="chip warn">얇음</span>
+      </summary>
+      <div class="twigs">
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">git 커밋 컨벤션</span>
+            <span class="chip warn">부분 구현</span>
+          </div>
+          <p class="twig-desc">aif.json/detail.json/cache.json을 프로젝트 저장소에 커밋해서 팀이 공유 — README에 문서화된 권장 방식.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">--max-tokens CI 가드</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">패킹 결과가 정해둔 토큰 예산을 넘으면 빌드 실패 처리.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">머지 충돌 대응</span>
+            <span class="chip gap">공백</span>
+          </div>
+          <p class="twig-desc">두 사람이 각자 pack하고 커밋하면 "누구 게 맞는지" 미정의. .gitattributes도, 충돌 가이드도 없음 — 팀 시나리오에서 제일 먼저 부딪힐 지점.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">push 시 자동 재pack</span>
+            <span class="chip gap">공백</span>
+          </div>
+          <p class="twig-desc">GitHub Actions 레시피 없음 — 지금은 사람이 pack을 깜빡하면 커밋된 aif.json이 조용히 stale해짐.</p>
+        </div>
+      </div>
+    </details>
+
+  </div>
+
+  <footer>
+    2026-08-24 세션 기준 스냅샷 · 코드가 계속 바뀌니 자동 동기화되는 문서는 아닙니다
+  </footer>
+
+</div>
+</body>
+</html>
