@@ -48,9 +48,15 @@ def _checkpoint_path(root_path: str) -> Path:
     checkpoint only ever holds re-derivable extraction state, never a
     project's actual source.
     """
-    resolved = str(Path(root_path).resolve())
-    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:8]
-    return CHECKPOINT_DIR / f"{Path(root_path).name}-{digest}.json"
+    resolved_path = Path(root_path).resolve()
+    digest = hashlib.sha256(str(resolved_path).encode("utf-8")).hexdigest()[:8]
+    # resolved_path.name, not Path(root_path).name -- the latter is "" for a
+    # relative root_path of "." (no name component at all), which used to
+    # produce a checkpoint filename of just "-<hash>.json" for the common
+    # "pack from inside the project's own folder" case. The hash alone is
+    # what actually keeps this collision-proof (see docstring above); the
+    # name is just a human-readable prefix, but it should still be one.
+    return CHECKPOINT_DIR / f"{resolved_path.name}-{digest}.json"
 
 
 def save_checkpoint(root_path: str, data: dict) -> None:
@@ -82,7 +88,10 @@ def build_snapshot(root: Path, files_data: dict, rules: list = None, prompt: str
     skip straight past whatever already succeeded.
     """
     return {
-        "project": {"name": root.name, "prompt": prompt},
+        # root.resolve().name, not root.name -- root itself stays unresolved
+        # (needed as-is for _rel_key(fp, root) below), but resolving just for
+        # the name avoids the same "" result Path(".").name gives.
+        "project": {"name": root.resolve().name, "prompt": prompt},
         "rules": rules or [],
         "files_data": {
             _rel_key(fp, root): d

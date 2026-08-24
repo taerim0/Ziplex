@@ -112,7 +112,11 @@ def collect_files(root_path: str, include: list[str] | None = None, ignore: list
 
 def print_tree(files: list[str], root_path: str):
     root = Path(root_path)
-    print(f"\n{root.name}/")
+    # .resolve() just for display -- Path(".").name is "" (no name component
+    # at all), which used to print a bare "\n/" instead of the actual folder
+    # name when root_path is ".". root itself stays unresolved below, to
+    # match the also-unresolved paths in `files`.
+    print(f"\n{root.resolve().name}/")
     for file_path in files:
         relative = Path(file_path).relative_to(root)
         depth = len(relative.parts) - 1

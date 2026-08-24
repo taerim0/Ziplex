@@ -25,14 +25,23 @@ real-world manifest can legally have, e.g. TOML's `project = "foo"` instead
 of a `[project]` table) degrades to an empty dependency list for that
 manifest's entry rather than aborting the caller. This is a convenience
 fact block, not something pack() should abort over just because one
-manifest is broken -- consistent even for a Python < 3.11 environment where
-`tomllib` isn't available at all: a pyproject.toml/Cargo.toml still gets an
-entry (we know its ecosystem from the filename alone), just with an empty
-dependency list, the same as a manifest that failed to parse for any other
-reason. Known, accepted limitation: that's indistinguishable in the output
-from a project that genuinely declares no dependencies -- not fixed here
-since it would mean a new per-entry "could not read" flag for a gap that
-only affects environments without the standard-library TOML parser.
+manifest is broken -- and, since ziplex's own floor moved from 3.11 to 3.10
+(2026-08-24, verified against a real Python 3.10.11 install, not just
+inferred -- pip's own metadata showed every runtime dependency, tree-sitter
+itself included, already supports 3.10; nothing older is reachable since
+tree-sitter is the one dependency with no lower floor at all), TOML parsing
+now falls back to `tomli` (declared as a conditional dependency below for
+`python_version < "3.11"`) rather than going straight to the empty-list
+degrade the moment stdlib `tomllib` (3.11+ only) is missing. That degrade
+path still exists as a last-resort safety net -- a dev environment that
+skipped dependency resolution somehow, say -- and stays exactly as
+documented: a pyproject.toml/Cargo.toml still gets an entry (its ecosystem
+is known from the filename alone), just with an empty dependency list, the
+same as a manifest that failed to parse for any other reason. Indistinguishable
+in the output from a project that genuinely declares no dependencies --
+not fixed with a separate "could not read" flag, since with `tomli` declared
+as a real dependency this path is no longer the normal case for any
+supported Python version, just a fallback for a broken install.
 """
 
 import json
@@ -44,8 +53,16 @@ from .file.textutil import read_text as _safe_read_text
 
 try:
     import tomllib
-except ImportError:  # Python < 3.11 -- see module docstring's last paragraph
-    tomllib = None
+except ImportError:  # Python < 3.11: no stdlib tomllib -- fall back to the
+    # actively-maintained pure-Python backport (identical loads()/
+    # TOMLDecodeError API), declared as a conditional dependency in
+    # pyproject.toml so this is the normal path on 3.10, not a degrade.
+    try:
+        import tomli as tomllib
+    except ImportError:  # backport missing too (a broken/incomplete
+        # install) -- degrade to the empty-dependency-list fallback
+        # documented above rather than raising.
+        tomllib = None
 
 # Caps dependency list length per manifest so a project with hundreds of npm
 # packages doesn't blow up aif.json's project section for a field that's

@@ -220,7 +220,7 @@ Ziplex는 한 사람의 로컬 스냅샷을 패킹합니다 — 공유 서버나
 
 ## 기술 스택
 
-Python 3.11 · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby 문법, GDScript는 `tree-sitter-language-pack` 경유) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · Gemini API (기본값 `gemini-flash-latest`, `GEMINI_MODEL`로 재정의 가능; `requests`를 통한 순수 REST 호출) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
+Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby 문법, GDScript는 `tree-sitter-language-pack` 경유) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · Gemini API (기본값 `gemini-flash-latest`, `GEMINI_MODEL`로 재정의 가능; `requests`를 통한 순수 REST 호출) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
 
 ## 라이선스
 

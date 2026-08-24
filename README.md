@@ -221,7 +221,7 @@ Ziplex packs one person's local snapshot — there's no shared server or live sy
 
 ## Tech stack
 
-Python 3.11 · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby grammars, GDScript via `tree-sitter-language-pack`) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · Gemini API (`gemini-flash-latest` by default, overridable via `GEMINI_MODEL`; plain REST via `requests`) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
+Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby grammars, GDScript via `tree-sitter-language-pack`) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · Gemini API (`gemini-flash-latest` by default, overridable via `GEMINI_MODEL`; plain REST via `requests`) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
 
 ## License
 

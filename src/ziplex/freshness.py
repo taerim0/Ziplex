@@ -124,7 +124,11 @@ def load_previous_summaries(root_path: str, selected: list[str], result_dir: Pat
     teammate re-packing the *same* project from a different absolute path
     must still get cache hits.
     """
-    name = Path(root_path).name
+    # .resolve() so root_path == "." (packing from inside the project's own
+    # folder) doesn't collapse to "" -- Path(".").name has no name component
+    # at all, which used to make this look up result/.json instead of the
+    # real result/<project name>.json, silently missing every cache hit.
+    name = Path(root_path).resolve().name
     aif_path = result_dir / f"{name}.json"
     cache_path = result_dir / f"{name}.cache.json"
     if not aif_path.exists() or not cache_path.exists():

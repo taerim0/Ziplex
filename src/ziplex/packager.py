@@ -227,6 +227,15 @@ def pack(
     unconditionally.
     """
     root = Path(root_path)
+    # .resolve() specifically for the display/save name -- root itself stays
+    # unresolved so _rel_key(fp, root) below stays consistent with
+    # collector.py's own separately-unresolved root (both relative when
+    # root_path is relative, both absolute when it's absolute). Path(".").name
+    # is "" (no name component at all), so an unresolved root_path of "."
+    # (packing a project from inside its own folder, a common real pattern)
+    # used to silently save an empty project name -- result/.json, an aif.json
+    # with project.name == "", etc.
+    project_name = Path(root_path).resolve().name
     effective_result_dir = Path(result_dir) if result_dir else RESULT_DIR
 
     # auto-detect a checkpoint -- use_cache=False means "ignore anything
@@ -492,7 +501,7 @@ def pack(
         print("  ✍️  AI 가이드 생성 중...")
         while not prompt:
             prompt_response = analyze_prompt(
-                project_name=root.name,
+                project_name=project_name,
                 architecture=[],
                 rules=rules
             )
@@ -556,7 +565,7 @@ def pack(
     # 7. Assemble AIF.json
     aif = {
         "project": {
-            "name": root.name,
+            "name": project_name,
             "prompt": prompt,
             # Free (no LLM call), manifest-based fact block -- see
             # tech_stack.py's own docstring for why this exists alongside
