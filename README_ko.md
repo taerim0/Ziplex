@@ -58,6 +58,21 @@ ziplex pack ./your-project/ --auto --auto-correct  # 완전 비대화형 (CI, �
 
 </details>
 
+<details>
+<summary>다른 AI 프로바이더 (OpenAI 호환, Ollama, LM Studio, Claude)</summary>
+
+기본값은 Gemini지만, LLM을 호출하는 모든 단계(요약, 코딩 룰, 프로젝트 가이드)는 다른 프로바이더로도 돌릴 수 있습니다 — `LLM_PROVIDER`(환경변수, CLI/CI용)를 설정하거나 GUI [Options 페이지](#gui)에서 고르면 됩니다(재시작 없이 바로 다음 pack부터 적용됩니다):
+
+| 프로바이더 | `LLM_PROVIDER` | 설정 |
+|---|---|---|
+| Gemini (기본값) | `gemini` | `GEMINI_API_KEY`, 선택적으로 `GEMINI_MODEL` |
+| OpenAI 호환 — 실제 OpenAI, Ollama, LM Studio, vLLM, OpenRouter, Groq, llama.cpp 서버 등 | `openai` | `OPENAI_API_KEY`(로컬 서버는 대부분 불필요), `OPENAI_BASE_URL`, `OPENAI_MODEL` |
+| Claude (Anthropic) | `claude` | `ANTHROPIC_API_KEY`(또는 `CLAUDE_API_KEY`), 선택적으로 `CLAUDE_MODEL` |
+
+로컬 모델(Gemma, Llama, Mistral 등)을 Ollama나 LM Studio로 서빙한다면 그냥 `openai` 프로바이더를 그 서버로 향하게 하면 됩니다 — `OPENAI_BASE_URL=http://localhost:11434/v1`(Ollama) 또는 `http://localhost:1234/v1`(LM Studio), `OPENAI_MODEL`은 해당 서버가 인식하는 이름으로. 둘 다 API 키는 필요 없습니다. GUI의 Options 페이지에는 두 서버 모두 한 번 클릭으로 채워주는 프리셋 버튼이 있습니다.
+
+</details>
+
 ### 설정 파일
 
 `ziplex init ./your-project/`를 실행하면 대상 프로젝트(Ziplex 저장소 자체가 아니라) 안에 `.ziplex.json`이 생겨서, `pack`을 돌릴 때마다 `include`/`ignore` 패턴을 다시 타이핑할 필요가 없습니다:
@@ -144,6 +159,7 @@ pack 한 번에 파일 세 개가 나오고, 각각 읽히는 방식이 다릅�
 - **검토는 선택 사항, 규모에 안 밀림** — LLM 결과물(요약, 룰, 가이드, 의존성 트리)은 저장 전에 검토·수정할 수 있고, `--auto-correct`로 통째로 건너뛸 수도 있습니다. 신뢰도 낮은 요약만 검토 대상으로 표시되니, 프로젝트가 커져도 검토 시간이 그만큼 늘진 않습니다.
 - **결과물을 쓰는 세 가지 방법** — Claude Code/Cursor 등을 위한 [MCP 서버](#mcp-서버), 터미널 없이 패킹/탐색하는 로컬 [GUI](#gui), 서버 없이도 되는 [Claude Agent Skill 내보내기](#claude-agent-skill-내보내기).
 - **최신 상태 유지가 저렴함** — Incremental re-pack은 실제로 바뀐 파일만 다시 요약하고, LLM이 불안정하면 백오프 후 재시도하며, 실행이 실패해도 체크포인트로 이어서 진행합니다.
+- **원하는 LLM을 골라 쓸 수 있음** — 기본은 Gemini지만, `LLM_PROVIDER`나 GUI Options 페이지로 OpenAI 호환 엔드포인트(실제 OpenAI, Ollama, LM Studio, vLLM, OpenRouter 등)나 Claude로 바로 바꿀 수 있습니다 — API 키도 네트워크도 필요 없는 완전 로컬 구성까지 포함해서요(자세한 내용은 [다른 AI 프로바이더](#빠른-시작) 참고).
 - **원하면 API 키 없이도** — `pack --no-llm`은 LLM 호출 없이도 구조 요약, 의존성 그래프, 기술 스택 감지를 만들어냅니다. `.ziplex.json`/`--include`/`--ignore`로 범위를 좁히고, `--max-tokens`로 CI 예산을 가드할 수 있습니다.
 
 ## 테스트
@@ -195,6 +211,8 @@ ziplex-gui --no-window                                # 창 대신 일반 브라
 
 **기존 pack 둘러보기** — MCP 서버가 노출하는 overview/files/relationships/detail/search 뷰를 MCP 툴 호출 대신 웹 페이지로 그대로 씁니다. Relationships 페이지는 패킹 때와 같은 "전체 트리 먼저, 파일 하나 편집은 그다음" 흐름을 그대로 써서, 패킹이 끝난 뒤에 발견한 관계 문제도 파이프라인을 다시 돌리지 않고 고칠 수 있습니다. 각 페이지엔 복사 버튼이 있고, 의도된 흐름은 여기서 둘러본 다음 필요한 내용을 별도의 AI 챗에 직접 붙여넣는 것입니다 — GUI가 그 챗과 직접 통신하지는 않습니다.
 
+**Options 페이지** — 표시 언어, 새로 패킹할 때 기본으로 저장되는 출력 폴더, 그리고 패킹 전체에 쓸 AI 프로바이더(Gemini / OpenAI 호환 / Claude — [다른 AI 프로바이더](#빠른-시작) 참고)를 고릅니다. Ollama와 LM Studio의 기본 로컬 포트를 한 번 클릭으로 채워주는 프리셋 버튼도 있어서, 완전 로컬 구성도 URL을 직접 타이핑할 필요가 없습니다.
+
 `127.0.0.1`에만 바인딩됩니다 — `--host` 옵션이 없고, 네트워크에 노출할 방법도 없습니다.
 
 ## Claude Agent Skill 내보내기
@@ -220,7 +238,7 @@ Ziplex는 한 사람의 로컬 스냅샷을 패킹합니다 — 공유 서버나
 
 ## 기술 스택
 
-Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby 문법, GDScript는 `tree-sitter-language-pack` 경유) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · Gemini API (기본값 `gemini-flash-latest`, `GEMINI_MODEL`로 재정의 가능; `requests`를 통한 순수 REST 호출) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
+Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby 문법, GDScript는 `tree-sitter-language-pack` 경유) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · `requests`를 통한 순수 REST 호출로 Gemini(기본값 `gemini-flash-latest`, `GEMINI_MODEL`로 재정의 가능), OpenAI 호환 엔드포인트(실제 OpenAI, Ollama, LM Studio, vLLM, OpenRouter 등), 또는 Claude 중 선택 — [다른 AI 프로바이더](#빠른-시작) 참고 · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
 
 ## 라이선스
 

@@ -58,6 +58,21 @@ ziplex pack ./your-project/ --auto --auto-correct  # fully non-interactive (CI, 
 
 </details>
 
+<details>
+<summary>Other AI providers (OpenAI-compatible, Ollama, LM Studio, Claude)</summary>
+
+Gemini is the default, but every LLM-calling step (summaries, coding rules, the project guide) can run through a different provider instead — set `LLM_PROVIDER` (env var, for CLI/CI use) or pick one on the GUI's [Options page](#gui) (takes effect on the very next pack, no restart needed):
+
+| Provider | `LLM_PROVIDER` | Config |
+|---|---|---|
+| Gemini (default) | `gemini` | `GEMINI_API_KEY`, optional `GEMINI_MODEL` |
+| OpenAI-compatible — real OpenAI, Ollama, LM Studio, vLLM, OpenRouter, Groq, llama.cpp's server, ... | `openai` | `OPENAI_API_KEY` (often unneeded for a local server), `OPENAI_BASE_URL`, `OPENAI_MODEL` |
+| Claude (Anthropic) | `claude` | `ANTHROPIC_API_KEY` (or `CLAUDE_API_KEY`), optional `CLAUDE_MODEL` |
+
+A local model (Gemma, Llama, Mistral, ...) served through Ollama or LM Studio is just the `openai` provider pointed at that server — `OPENAI_BASE_URL=http://localhost:11434/v1` (Ollama) or `http://localhost:1234/v1` (LM Studio), `OPENAI_MODEL` set to whatever name that server expects, no API key needed either way. The GUI's Options page has one-click presets for both.
+
+</details>
+
 ### Config file
 
 `ziplex init ./your-project/` scaffolds `.ziplex.json` in the target project (not in Ziplex's own repo) so `include`/`ignore` glob patterns don't need retyping on every `pack`:
@@ -145,6 +160,7 @@ A pack produces three files, each read differently:
 - **Human-in-the-loop, but it scales** — every LLM output (summaries, rules, project guide, dependency tree) is reviewable and editable, or skippable entirely with `--auto-correct`. Only low-confidence summaries get flagged for review — review time doesn't grow with project size.
 - **Three ways to consume the result** — an [MCP server](#mcp-server) for Claude Code/Cursor/etc., a local [GUI](#gui) for packing and browsing without a terminal, or a [Claude Agent Skill export](#claude-agent-skill-export) that needs no server at all.
 - **Cheap to keep current** — incremental re-pack only re-summarizes files that actually changed (content hash), retries with backoff on LLM flakiness, and checkpoints a failed run instead of restarting from scratch.
+- **Bring your own LLM** — Gemini by default, or switch to any OpenAI-compatible endpoint (real OpenAI, Ollama, LM Studio, vLLM, OpenRouter, ...) or Claude directly, via `LLM_PROVIDER` or the GUI's Options page — including a fully local setup with no API key or network call at all (see [Other AI providers](#quick-start)).
 - **No API key required, if you want** — `pack --no-llm` skips every LLM call and still produces structural summaries, dependency graphs, and tech-stack detection. Scope any pack with `.ziplex.json`/`--include`/`--ignore`, and guard CI budgets with `--max-tokens`.
 
 ## Testing
@@ -196,6 +212,8 @@ ziplex-gui --no-window                                # plain browser tab instea
 
 **Browse an existing pack** — the same overview/files/relationships/detail/search views the MCP server exposes, as web pages instead of MCP tool calls. The Relationships page reuses the same whole-tree-then-edit-one-file flow packing uses, so a relationship noticed after the fact can be fixed without re-running the pipeline. Each page has a Copy button; the intended flow is looking around here and pasting what's useful into a separate AI chat by hand, not the GUI talking to that chat itself.
 
+**Options page** — display language, the default output folder new packs save to, and which AI provider every pack uses (Gemini / OpenAI-compatible / Claude — see [Other AI providers](#quick-start)), with one-click presets for Ollama's and LM Studio's default local ports so a fully local setup needs no typed URL.
+
 Binds to `127.0.0.1` only — no `--host` flag, no way to expose it to a network.
 
 ## Claude Agent Skill export
@@ -221,7 +239,7 @@ Ziplex packs one person's local snapshot — there's no shared server or live sy
 
 ## Tech stack
 
-Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby grammars, GDScript via `tree-sitter-language-pack`) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · Gemini API (`gemini-flash-latest` by default, overridable via `GEMINI_MODEL`; plain REST via `requests`) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
+Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby grammars, GDScript via `tree-sitter-language-pack`) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · plain REST via `requests` against Gemini (`gemini-flash-latest` by default, overridable via `GEMINI_MODEL`), any OpenAI-compatible endpoint (real OpenAI, Ollama, LM Studio, vLLM, OpenRouter, ...), or Claude — see [Other AI providers](#quick-start) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
 
 ## License
 

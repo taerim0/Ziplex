@@ -379,7 +379,7 @@
             <span class="twig-mod">llm.py · summarizer.py</span>
             <span class="chip ok">안정</span>
           </div>
-          <p class="twig-desc">Gemini REST 호출, 파일 여러 개를 한 프롬프트로 묶는 배치 처리로 429/503 부담을 줄임. --no-llm이면 시그니처만으로 만든 구조적 요약으로 완전 대체.</p>
+          <p class="twig-desc">Gemini가 기본값이지만 OpenAI 호환 엔드포인트(Ollama·LM Studio 등 로컬 서버 포함)나 Claude로도 전환 가능(LLM_PROVIDER 또는 GUI Options). 파일 여러 개를 한 프롬프트로 묶는 배치 처리로 429/503 부담을 줄이고, 모든 REST 호출에 타임아웃을 걸어 네트워크가 막혀도 무한 대기하지 않음. --no-llm이면 시그니처만으로 만든 구조적 요약으로 완전 대체.</p>
         </div>
         <div class="twig">
           <div class="twig-head">
@@ -575,7 +575,7 @@
             <span class="twig-mod">settings.py</span>
             <span class="chip ok">안정</span>
           </div>
-          <p class="twig-desc">사용자별 — 기본 출력 폴더(전역+프로젝트별 고정), Gemini API 키(GUI Options에서 입력).</p>
+          <p class="twig-desc">사용자별 — 기본 출력 폴더(전역+프로젝트별 고정), AI 프로바이더 선택(Gemini/OpenAI 호환/Claude)과 각각의 키·모델·base URL(GUI Options에서 입력, Ollama/LM Studio는 원클릭 프리셋 제공).</p>
         </div>
       </div>
     </details>
@@ -703,7 +703,7 @@
   </div>
 
   <footer>
-    2026-08-24 세션 기준 스냅샷 · 코드가 계속 바뀌니 자동 동기화되는 문서는 아닙니다
+    2026-08-25 세션 기준 스냅샷 · 코드가 계속 바뀌니 자동 동기화되는 문서는 아닙니다
   </footer>
 
 </div>
