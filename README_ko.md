@@ -53,14 +53,14 @@ project/  ──►  수집  ──►  보안 스캔  ──►  선택  ──
 
 ```bash
 venv\Scripts\activate
-pip install -r requirement.txt        # 참고: 파일명에 "s"가 없습니다
+pip install -e .        # Ziplex 설치 + ziplex/ziplex-gui/ziplex-mcp 명령 등록
 ```
 
 `.env`에 `GEMINI_API_KEY=...`를 추가한 뒤 (`gemini-flash-latest`가 불안정할 때는 `GEMINI_MODEL=...`도 선택적으로 추가 -- [기술 스택](#기술-스택) 참고):
 
 ```bash
-python src/cli.py pack ./your-project/                        # 전체 파이프라인, 대화형
-python src/cli.py pack ./your-project/ --auto --auto-correct  # 완전 비대화형 (CI, 스크립트용)
+ziplex pack ./your-project/                        # 전체 파이프라인, 대화형
+ziplex pack ./your-project/ --auto --auto-correct  # 완전 비대화형 (CI, 스크립트용)
 ```
 
 `--auto`(대화형 파일 선택 생략)와 `--auto-correct`(대화형 보정 생략)는 서로 독립된 옵션이라 마음대로 조합해서 써도 됩니다. 전에 한 번 pack한 프로젝트를 다시 pack하면, 실제로 내용이 바뀐 파일(콘텐츠 해시 기준)만 다시 요약합니다 — 나머지는 이전 요약을 그대로 재사용해서 LLM을 다시 호출하지 않습니다.
@@ -83,7 +83,7 @@ python src/cli.py pack ./your-project/ --auto --auto-correct  # 완전 비대화
 
 ### 설정 파일
 
-`python src/cli.py init ./your-project/`를 실행하면 대상 프로젝트(Ziplex 저장소 자체가 아니라) 안에 `.ziplex.json`이 생겨서, `pack`을 돌릴 때마다 `include`/`ignore` 패턴을 다시 타이핑할 필요가 없습니다:
+`ziplex init ./your-project/`를 실행하면 대상 프로젝트(Ziplex 저장소 자체가 아니라) 안에 `.ziplex.json`이 생겨서, `pack`을 돌릴 때마다 `include`/`ignore` 패턴을 다시 타이핑할 필요가 없습니다:
 
 ```jsonc
 // your-project/.ziplex.json
@@ -118,13 +118,13 @@ python src/cli.py pack ./your-project/ --auto --auto-correct  # 완전 비대화
 ## 테스트
 
 ```bash
-pip install -r requirement-dev.txt   # requirement.txt에 pytest만 추가됨
+pip install -e ".[dev]"   # 기본 설치에 pytest만 추가됨
 pytest
 ```
 
 압축기, Tree-sitter 추출기, collector의 ignore/바이너리 필터링, 의존성 그래프 연산(`build_tree`/`has_cycle`/`move_file`), 순수 `aif` 편집 API까지 — 네트워크나 `GEMINI_API_KEY` 없이 결정적으로 동작하는 핵심 로직을 커버합니다. 여기에 더해 Gemini 대신 네트워크 없는 `MockProvider`로 `pack()` 전체를 실제로 한 번 돌려서, 체크포인트·병렬 요약·토큰 계산까지 실제 LLM 호출의 비용·대기시간 없이 검증합니다.
 
-실제 프로젝트로 `pack`을 빠르게 스모크테스트하고 싶다면: `LLM_PROVIDER=mock python src/cli.py pack <project> --auto --auto-correct`로 1초 안에 네트워크 없이 전체 파이프라인을 돌릴 수 있습니다.
+실제 프로젝트로 `pack`을 빠르게 스모크테스트하고 싶다면: `LLM_PROVIDER=mock ziplex pack <project> --auto --auto-correct`로 1초 안에 네트워크 없이 전체 파이프라인을 돌릴 수 있습니다.
 
 ## 출력 포맷
 
@@ -162,8 +162,8 @@ pytest
 Claude Code, Cursor 등 MCP 클라이언트에서 이미 패킹된 프로젝트를 바로 질의할 수 있습니다 — `aif.json`을 프롬프트에 복사-붙여넣기할 필요 없이요.
 
 ```bash
-python src/mcp_server.py                              # 직접 실행 (stdio 트랜스포트)
-claude mcp add ziplex -- python src/mcp_server.py      # Claude Code에 등록 (레포 루트에서)
+ziplex-mcp                              # 직접 실행 (stdio 트랜스포트)
+claude mcp add ziplex -- ziplex-mcp     # Claude Code에 등록
 ```
 
 | 툴 | 하는 일 |
@@ -186,9 +186,9 @@ claude mcp add ziplex -- python src/mcp_server.py      # Claude Code에 등록 (
 터미널을 쓰지 않고 프로젝트를 패킹하거나, Claude Code(또는 MCP 자체)를 쓸 수 없지만 브라우저 기반 AI 챗은 쓸 수 있는 환경에서 이미 패킹된 프로젝트를 둘러보는 용도의 로컬 단일 사용자 GUI입니다.
 
 ```bash
-python src/gui/gui_server.py                                            # 네이티브 창 (pywebview)
-python src/gui/gui_server.py --aif out.json --project ./your-project/   # 시작 화면 미리 채우기
-python src/gui/gui_server.py --no-window                                # 창 대신 일반 브라우저 탭
+ziplex-gui                                            # 네이티브 창 (pywebview)
+ziplex-gui --aif out.json --project ./your-project/   # 시작 화면 미리 채우기
+ziplex-gui --no-window                                # 창 대신 일반 브라우저 탭
 ```
 
 **GUI에서 패킹하기** — 네이티브 폴더 선택창으로 프로젝트 폴더를 고르고, 어떤 파일을 포함할지 체크박스로 고른 뒤(`collect`의 보안 스캔이 만드는 것과 같은 safe/dangerous 구분), 원하면 "LLM 사용 안 함"(`pack --no-llm`의 GUI 버전)도 체크하고, 백그라운드에서 돌아가는 패킹 과정을 지켜봅니다. 분석이 끝나면 저장 전에 검토 단계에서 멈춥니다 — 프로젝트 이름, 가이드, 룰, 파일별 요약을 고칠 수 있고(CLI와 같은 기준으로 신뢰도가 낮은 것만 검토 대상으로 표시됩니다), 의존성 그래프는 먼저 접었다 펼 수 있는 전체 트리로 보여줍니다 — 고칠 파일을 발견하면 그 파일 이름을 클릭해 엣지 하나하나를 잇거나 끊는 편집 화면으로 들어갑니다 (부모가 여러 개인 파일이라도 다른 참조는 그대로 남습니다).
@@ -202,8 +202,8 @@ python src/gui/gui_server.py --no-window                                # 창 �
 패킹된 프로젝트에 접근하는 세 번째 방법입니다 — MCP 서버나 GUI 대신, Claude Code는 쓸 수 있지만 MCP 서버 등록까지는 부담스러운 순간을 위한 것입니다:
 
 ```bash
-python src/cli.py skill result/my-project.json               # .claude/skills/my-project/ 생성
-python src/cli.py skill result/my-project.json -o some/dir    # 출력 디렉터리 직접 지정
+ziplex skill result/my-project.json               # .claude/skills/my-project/ 생성
+ziplex skill result/my-project.json -o some/dir    # 출력 디렉터리 직접 지정
 ```
 
 [Claude Agent Skill](https://code.claude.com/docs/en/skills)을 만듭니다 — `SKILL.md`와 `references/overview.md`/`files.md`/`relationships.md`/`detail.json`으로 구성되며, `.claude/skills/` 아래에 두기만 하면 서버 프로세스 없이도 Claude Code가 알아서 인식하고 점진적으로 불러옵니다. [repomix](https://repomix.com/guide/agent-skills-generation)의 동일한 `--skill-generate` 기능과 다른 점: `references/files.md`엔 원본 코드를 통째로 넣지 않습니다 — `aif.json` 자체가 이미 그렇듯 요약과 신뢰도 점수까지만 담고, 압축된 본문은 `references/detail.json`으로만 나갑니다. 생성된 디렉터리를 커밋하는 것도 `aif.json`/`detail.json`을 커밋하는 것과 같은 방식입니다(아래 팀에서 사용하기 참고) — 그냥 파일일 뿐이니까요.

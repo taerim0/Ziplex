@@ -4,7 +4,7 @@ Windows, see _scan_with_secretlint()'s own docstring) never actually runs;
 every real invocation in this suite exercises the fallback path.
 """
 
-from file.scanner import scan_file, scan_files
+from ziplex.file.scanner import scan_file, scan_files
 
 
 def _write(path, content):
@@ -55,7 +55,7 @@ def test_scan_files_splits_safe_and_dangerous_with_reasons(tmp_path):
 
 
 def test_scan_file_falls_back_to_pattern_when_secretlint_is_unavailable(tmp_path, monkeypatch):
-    import file.scanner as scanner
+    from ziplex.file import scanner
 
     monkeypatch.setattr(scanner, "_scan_with_secretlint", lambda path: None)
     path = tmp_path / "secret.env"
@@ -71,7 +71,7 @@ def test_scan_file_trusts_a_clean_secretlint_result_without_falling_back(tmp_pat
     # pattern fallback -- only None (secretlint itself couldn't run) should.
     # A file that would otherwise match a fallback pattern stays "safe" here
     # specifically to prove the False/None distinction is respected.
-    import file.scanner as scanner
+    from ziplex.file import scanner
 
     monkeypatch.setattr(scanner, "_scan_with_secretlint", lambda path: False)
     path = tmp_path / "secret.env"

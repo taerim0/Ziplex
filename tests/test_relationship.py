@@ -1,6 +1,6 @@
 import pytest
 
-from file.relationship import (
+from ziplex.file.relationship import (
     build_tree, has_cycle, move_file, add_dependency, remove_dependency, build_stem_map, CycleError,
     get_dependents, get_blast_radius, has_relationship_cycle, add_relationship, remove_relationship,
     resolve_dependency,

@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ziplex"
+dynamic = ["version"]
+description = "Turn any local project into a token-reduced context file (aif.json) an AI can load instantly, instead of reading through hundreds of raw files."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "rim" }]
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Software Development :: Libraries",
+    "Environment :: Console",
+]
+dependencies = [
+    "tree-sitter",
+    "tree-sitter-python",
+    "tree-sitter-java",
+    "tree-sitter-typescript",
+    "tree-sitter-lua",
+    "tree-sitter-go",
+    "tree-sitter-cpp",
+    "tree-sitter-rust",
+    "tree-sitter-c-sharp",
+    "tree-sitter-language-pack",
+    "tiktoken",
+    "pathspec",
+    "python-dotenv",
+    "requests",
+    "mcp",
+    "flask",
+    "pywebview",
+    "watchdog",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/taerim0/Ziplex"
+Repository = "https://github.com/taerim0/Ziplex"
+
+# `ziplex` covers pack/collect/tokens/tree/search/detail/freshness/skill/init
+# (cli.py's own subcommands -- see the root CLAUDE.md's Commands section);
+# ziplex-gui and ziplex-mcp are separate entry points, not `ziplex`
+# subcommands, since each starts its own long-running process (a local
+# server, a stdio MCP loop) instead of running once and exiting.
+[project.scripts]
+ziplex = "ziplex.cli:main"
+ziplex-gui = "ziplex.gui.gui_server:main"
+ziplex-mcp = "ziplex.mcp_server:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "ziplex.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The GUI's frontend (index.html/js/**/style.css) ships as package data --
+# gui_server.py's Flask app serves these straight off disk next to itself
+# (static_folder="."), so they need to actually be installed alongside the
+# .py files, not left behind as source-only assets. CLAUDE.md files are
+# Claude Code's own working notes for this repo, not runtime assets --
+# deliberately excluded from the built package.
+[tool.setuptools.package-data]
+"ziplex.gui" = ["index.html", "style.css", "js/*.js", "js/pages/*.js"]

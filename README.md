@@ -53,14 +53,14 @@ project/  ──►  collect  ──►  security scan  ──►  select  ─�
 
 ```bash
 venv\Scripts\activate
-pip install -r requirement.txt        # note: filename has no "s"
+pip install -e .        # installs Ziplex + registers the ziplex/ziplex-gui/ziplex-mcp commands
 ```
 
 Add a `.env` with `GEMINI_API_KEY=...` (optionally `GEMINI_MODEL=...` too, if `gemini-flash-latest` is having a rough day — see [Tech stack](#tech-stack)), then:
 
 ```bash
-python src/cli.py pack ./your-project/                        # full pipeline, interactive
-python src/cli.py pack ./your-project/ --auto --auto-correct  # fully non-interactive (CI, scripted runs)
+ziplex pack ./your-project/                        # full pipeline, interactive
+ziplex pack ./your-project/ --auto --auto-correct  # fully non-interactive (CI, scripted runs)
 ```
 
 `--auto` (skip interactive file selection) and `--auto-correct` (skip interactive correction) are independent, so any combination of the two works. Re-running `pack` on a project you've packed before only re-summarizes files that actually changed (by content hash) — everything else reuses its previous summary instead of another LLM call.
@@ -83,7 +83,7 @@ python src/cli.py pack ./your-project/ --auto --auto-correct  # fully non-intera
 
 ### Config file
 
-`python src/cli.py init ./your-project/` scaffolds `.ziplex.json` in the target project (not in Ziplex's own repo) so `include`/`ignore` glob patterns don't need retyping on every `pack`:
+`ziplex init ./your-project/` scaffolds `.ziplex.json` in the target project (not in Ziplex's own repo) so `include`/`ignore` glob patterns don't need retyping on every `pack`:
 
 ```jsonc
 // your-project/.ziplex.json
@@ -118,13 +118,13 @@ python src/cli.py pack ./your-project/ --auto --auto-correct  # fully non-intera
 ## Testing
 
 ```bash
-pip install -r requirement-dev.txt   # adds pytest on top of requirement.txt
+pip install -e ".[dev]"   # adds pytest on top of the base install
 pytest
 ```
 
 Covers the deterministic core — compressors, the Tree-sitter extractor, the collector's ignore/binary-file filtering, the dependency-graph operations (`build_tree`/`has_cycle`/`move_file`), and the pure `aif`-editing API — plus a full `pack()` run against a network-free `MockProvider` instead of Gemini, exercising checkpointing, parallel summaries, and token counting end to end without the cost or latency of a real LLM call.
 
-Want to smoke-test `pack` against a real project without waiting on Gemini? `LLM_PROVIDER=mock python src/cli.py pack <project> --auto --auto-correct` runs the whole pipeline network-free in under a second.
+Want to smoke-test `pack` against a real project without waiting on Gemini? `LLM_PROVIDER=mock ziplex pack <project> --auto --auto-correct` runs the whole pipeline network-free in under a second.
 
 ## Output format
 
@@ -163,8 +163,8 @@ Want to smoke-test `pack` against a real project without waiting on Gemini? `LLM
 Query an already-packed project directly from Claude Code, Cursor, or any other MCP client — no copy-pasting `aif.json` into a prompt.
 
 ```bash
-python src/mcp_server.py                              # run directly (stdio transport)
-claude mcp add ziplex -- python src/mcp_server.py      # register with Claude Code, from the repo root
+ziplex-mcp                              # run directly (stdio transport)
+claude mcp add ziplex -- ziplex-mcp     # register with Claude Code
 ```
 
 | Tool | What it does |
@@ -187,9 +187,9 @@ Read-only and deliberately so: every tool serves an `aif.json`/`detail.json` a h
 A local, single-user GUI for two situations: packing a project without touching a terminal, and browsing an already-packed project somewhere Claude Code (or MCP generally) isn't available but a browser-based AI chat is.
 
 ```bash
-python src/gui/gui_server.py                                            # native window (pywebview)
-python src/gui/gui_server.py --aif out.json --project ./your-project/   # prefill the landing page
-python src/gui/gui_server.py --no-window                                # plain browser tab instead
+ziplex-gui                                            # native window (pywebview)
+ziplex-gui --aif out.json --project ./your-project/   # prefill the landing page
+ziplex-gui --no-window                                # plain browser tab instead
 ```
 
 **Pack from the GUI** — pick a project folder with the native folder picker, check off which files to include (the same safe/dangerous split `collect`'s security scan produces), optionally check "no LLM" (`pack --no-llm`'s GUI equivalent), and watch the pack run in the background. Analysis pauses for review before anything is saved: edit the project name, guide, rules, and per-file summaries (only the low-confidence ones are flagged, same triage the CLI uses). The dependency graph opens as a collapsible whole-tree overview first — click a file's name once you've spotted one worth fixing to drop into an edit view for just that file, linking or unlinking individual edges (a file with more than one real parent keeps its other references intact).
@@ -203,8 +203,8 @@ Binds to `127.0.0.1` only — no `--host` flag, no way to expose it to a network
 A third way to reach a packed project, alongside the MCP server and the GUI — for when Claude Code is available but registering an MCP server isn't (or is more setup than the moment calls for):
 
 ```bash
-python src/cli.py skill result/my-project.json               # writes .claude/skills/my-project/
-python src/cli.py skill result/my-project.json -o some/dir    # custom output directory
+ziplex skill result/my-project.json               # writes .claude/skills/my-project/
+ziplex skill result/my-project.json -o some/dir    # custom output directory
 ```
 
 Generates a [Claude Agent Skill](https://code.claude.com/docs/en/skills) — `SKILL.md` plus `references/overview.md`/`files.md`/`relationships.md`/`detail.json` — that Claude Code discovers and progressively loads on its own once it sits under `.claude/skills/`, no server process required. Unlike [repomix](https://repomix.com/guide/agent-skills-generation)'s equivalent `--skill-generate` feature, `references/files.md` never embeds full raw source — it stays to summaries and confidence scores, exactly what `aif.json` itself already restricts to; the *compressed* body only ships as `references/detail.json`. Committing the generated directory works the same way committing `aif.json`/`detail.json` does (see Team use below) — it's just files.

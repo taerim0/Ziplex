@@ -1,4 +1,4 @@
-from extract.code.compressor import compress_code, MARKER
+from ziplex.extract.code.compressor import compress_code, MARKER
 
 
 def test_python_function_body_is_stripped():

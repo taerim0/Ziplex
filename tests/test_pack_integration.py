@@ -15,10 +15,10 @@ import builtins
 import json
 from pathlib import Path
 
-import checkpoint
-import llm
-import packager
-import summarizer
+from ziplex import checkpoint
+from ziplex import llm
+from ziplex import packager
+from ziplex import summarizer
 
 
 def _write(path, content):
@@ -394,7 +394,7 @@ def test_pack_attaches_tech_stack_detected_from_a_manifest_file(tmp_path, monkey
 
     # survives finalize_aif() the same way project.name/prompt do -- it's
     # not a per-file field finalize_aif() prunes
-    from edits import finalize_aif
+    from ziplex.edits import finalize_aif
     assert finalize_aif(aif)["project"]["tech_stack"] == aif["project"]["tech_stack"]
 
 
@@ -426,7 +426,7 @@ def test_pack_captures_a_text_file_reference_to_a_code_file(tmp_path, monkeypatc
     assert aif["files"]["README.md"]["dependencies"] == ["entities/player.gd"]
     # and it survives finalize_aif()'s relationship-building the same way a
     # real import would
-    from edits import finalize_aif
+    from ziplex.edits import finalize_aif
     final = finalize_aif(aif)
     assert final["relationships"]["README.md"]["internal"] == ["entities/player.gd"]
 

@@ -2,10 +2,10 @@ import sys
 
 import pytest
 
-import cli
-import llm
-import summarizer
-from cli import _split_patterns, _check_max_tokens
+from ziplex import cli
+from ziplex import llm
+from ziplex import summarizer
+from ziplex.cli import _split_patterns, _check_max_tokens
 
 
 def test_split_patterns_none_when_no_value():

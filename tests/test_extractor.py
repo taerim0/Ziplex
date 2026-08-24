@@ -1,4 +1,4 @@
-from extract.code.extractor import extract_signatures, extract_dependencies, extract_api
+from ziplex.extract.code.extractor import extract_signatures, extract_dependencies, extract_api
 
 
 def test_extract_signatures_from_python_file(tmp_path):

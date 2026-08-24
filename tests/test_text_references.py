@@ -1,4 +1,4 @@
-from text_references import find_text_references, find_text_references_for_file
+from ziplex.text_references import find_text_references, find_text_references_for_file
 
 
 def test_matches_full_relative_path():

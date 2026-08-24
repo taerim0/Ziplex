@@ -6,10 +6,10 @@ include/ignore-scoped pack() actually produced.
 """
 import json
 
-import checkpoint
-import llm
-import packager
-import query_service
+from ziplex import checkpoint
+from ziplex import llm
+from ziplex import packager
+from ziplex import query_service
 
 
 def _write(path, content):

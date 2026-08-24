@@ -1,6 +1,6 @@
 import json
 
-from config import load_config, init_config, DEFAULT_CONFIG, CONFIG_FILENAME
+from ziplex.config import load_config, init_config, DEFAULT_CONFIG, CONFIG_FILENAME
 
 
 def test_load_config_returns_defaults_when_no_file(tmp_path):

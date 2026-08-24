@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from search import search_files, read_detail_range
+from ziplex.search import search_files, read_detail_range
 
 
 def _write(path: Path, content: str):

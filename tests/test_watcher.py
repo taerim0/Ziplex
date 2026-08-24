@@ -10,8 +10,8 @@ import time
 
 import pytest
 
-from gui import watcher
-from freshness import build_manifest
+from ziplex.gui import watcher
+from ziplex.freshness import build_manifest
 
 
 @pytest.fixture(autouse=True)

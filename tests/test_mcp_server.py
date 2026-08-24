@@ -14,8 +14,8 @@ import json
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
-import freshness
-import mcp_server
+from ziplex import freshness
+from ziplex import mcp_server
 
 
 def _call(name: str, arguments: dict):

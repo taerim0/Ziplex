@@ -1,6 +1,6 @@
 import pytest
 
-from edits import (
+from ziplex.edits import (
     set_project_name,
     set_project_prompt,
     add_rule,

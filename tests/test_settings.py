@@ -1,6 +1,6 @@
 import json
 
-import settings
+from ziplex import settings
 
 
 def test_load_settings_returns_defaults_when_no_file(tmp_path, monkeypatch):

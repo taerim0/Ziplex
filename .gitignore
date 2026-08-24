@@ -1,6 +1,11 @@
 **/__pycache__/
 .pytest_cache/
 
+# Python packaging build artifacts (pip install -e ., python -m build)
+*.egg-info/
+build/
+dist/
+
 .env
 
 aif.json

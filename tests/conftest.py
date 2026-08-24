@@ -4,7 +4,7 @@ belonging to any one module.
 
 import pytest
 
-import settings as app_settings
+from ziplex import settings as app_settings
 
 
 @pytest.fixture(autouse=True)

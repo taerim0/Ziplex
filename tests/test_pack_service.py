@@ -12,12 +12,12 @@ import time
 
 import pytest
 
-import checkpoint
-import llm
-import packager
-import settings as app_settings
-from gui import pack_service
-from file.relationship import CycleError
+from ziplex import checkpoint
+from ziplex import llm
+from ziplex import packager
+from ziplex import settings as app_settings
+from ziplex.gui import pack_service
+from ziplex.file.relationship import CycleError
 
 
 def _write(path, content):

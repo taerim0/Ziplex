@@ -7,7 +7,7 @@ unconditionally, crashing with EOFError under closed stdin (e.g. `pack
 
 import builtins
 
-import checkpoint
+from ziplex import checkpoint
 
 
 def test_handle_llm_failure_non_interactive_checkpoints_without_prompting(tmp_path, monkeypatch):

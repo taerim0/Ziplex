@@ -8,7 +8,7 @@ review step specifically.
 
 import builtins
 
-from file.selector import review_dangerous_files
+from ziplex.file.selector import review_dangerous_files
 
 
 def _entry(file, reason="패턴 일치", line=3, matched_text='API_KEY = "x"'):

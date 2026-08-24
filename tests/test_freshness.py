@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from freshness import hash_file, build_manifest, check_freshness, load_previous_summaries
+from ziplex.freshness import hash_file, build_manifest, check_freshness, load_previous_summaries
 
 
 def _write(path: Path, content: str):

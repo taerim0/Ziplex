@@ -11,8 +11,8 @@ import json
 
 import requests
 
-import llm
-import settings as app_settings
+from ziplex import llm
+from ziplex import settings as app_settings
 
 
 def _model_in_url(provider) -> str:

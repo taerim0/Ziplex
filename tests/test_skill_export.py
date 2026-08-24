@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from skill_export import _slugify, _yaml_double_quoted, generate_skill_files, export_skill
+from ziplex.skill_export import _slugify, _yaml_double_quoted, generate_skill_files, export_skill
 
 
 def _sample_aif():

@@ -1,4 +1,4 @@
-from tokenizer import count_tokens, analyze_tokens_with_compression, analyze_tokens_with_payload, MODEL_ENCODINGS
+from ziplex.tokenizer import count_tokens, analyze_tokens_with_compression, analyze_tokens_with_payload, MODEL_ENCODINGS
 
 
 def test_count_tokens_is_monotonic_with_length():

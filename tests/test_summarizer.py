@@ -5,7 +5,7 @@ llm.MockProvider).
 
 import json
 
-import summarizer
+from ziplex import summarizer
 
 
 def test_chunked_splits_into_groups_of_size():

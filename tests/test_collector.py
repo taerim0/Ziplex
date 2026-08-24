@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from file.collector import collect_files
+from ziplex.file.collector import collect_files
 
 
 def _write(path: Path, content: str):

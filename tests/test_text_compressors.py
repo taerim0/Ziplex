@@ -1,8 +1,8 @@
 import json
 
-from extract.text.json import compress_json, MAX_STRING_LEN, MAX_ARRAY_ITEMS
-from extract.text.markdown import compress_markdown, MAX_PARAGRAPH_LEN, MAX_LIST_ITEMS
-from extract.text.txt import compress_txt, MAX_LINE_LEN, MAX_BLOCK_LINES
+from ziplex.extract.text.json import compress_json, MAX_STRING_LEN, MAX_ARRAY_ITEMS
+from ziplex.extract.text.markdown import compress_markdown, MAX_PARAGRAPH_LEN, MAX_LIST_ITEMS
+from ziplex.extract.text.txt import compress_txt, MAX_LINE_LEN, MAX_BLOCK_LINES
 
 
 def test_json_keeps_short_values_untouched():

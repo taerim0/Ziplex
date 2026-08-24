@@ -1,7 +1,7 @@
 import json
 
-import tech_stack
-from tech_stack import detect_tech_stack, MAX_DEPENDENCIES
+from ziplex import tech_stack
+from ziplex.tech_stack import detect_tech_stack, MAX_DEPENDENCIES
 
 
 def _write(path, content):

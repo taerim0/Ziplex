@@ -17,12 +17,12 @@ from unittest import mock
 
 import pytest
 
-import checkpoint
-import freshness
-from gui import gui_server
-import llm
-import packager
-import settings as app_settings
+from ziplex import checkpoint
+from ziplex import freshness
+from ziplex.gui import gui_server
+from ziplex import llm
+from ziplex import packager
+from ziplex import settings as app_settings
 
 
 @pytest.fixture
@@ -595,7 +595,7 @@ def _make_watch_project(tmp_path):
 
 
 def test_api_watch_start_then_status_reports_fresh(client, tmp_path, monkeypatch):
-    from gui import watcher
+    from ziplex.gui import watcher
     monkeypatch.setattr(watcher, "DEBOUNCE_SECONDS", 0.05)
     project, aif_path = _make_watch_project(tmp_path)
 
