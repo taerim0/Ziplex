@@ -126,6 +126,32 @@ def test_overview_md_marks_a_truncated_dependency_list():
     assert "react, ..." in overview_md
 
 
+def test_overview_md_omits_security_scan_section_when_field_absent():
+    # Same backward-compat guard as tech_stack -- an aif.json packed before
+    # this field existed has no "security_scan" key at all.
+    files = generate_skill_files(_sample_aif(), {})
+    assert "## Security scan" not in files["references/overview.md"]
+
+
+def test_overview_md_reports_no_files_flagged():
+    aif = _sample_aif()
+    aif["project"]["security_scan"] = {"flagged": 0, "included_anyway": 0, "excluded": 0}
+    overview_md = generate_skill_files(aif, {})["references/overview.md"]
+
+    assert "## Security scan" in overview_md
+    assert "No files were flagged" in overview_md
+
+
+def test_overview_md_reports_flagged_included_and_excluded_counts():
+    aif = _sample_aif()
+    aif["project"]["security_scan"] = {"flagged": 3, "included_anyway": 1, "excluded": 2}
+    overview_md = generate_skill_files(aif, {})["references/overview.md"]
+
+    assert "3 file(s) flagged" in overview_md
+    assert "1 included anyway" in overview_md
+    assert "2 left out" in overview_md
+
+
 def test_relationships_md_shows_internal_external_and_no_deps():
     files = generate_skill_files(_sample_aif(), {})
     rel_md = files["references/relationships.md"]

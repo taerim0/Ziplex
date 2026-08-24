@@ -111,7 +111,9 @@ pack 한 번에 파일 세 개가 나오고, 각각 읽히는 방식이 다릅�
 {
   "project": {
     "name": "...", "prompt": "...",
-    "tech_stack": [{ "manifest": "package.json", "language": "JavaScript/TypeScript", "package_manager": "npm", "dependencies": ["react", "..."], "dependencies_truncated": false }]
+    "tech_stack": [{ "manifest": "package.json", "language": "JavaScript/TypeScript", "package_manager": "npm", "dependencies": ["react", "..."], "dependencies_truncated": false }],
+    "security_scan": { "flagged": 0, "included_anyway": 0, "excluded": 0 },
+    "format_notes": "..."  // confidence/⋮---- 등을 다른 맥락 없이 이 파일만 보는 사람에게 설명해주는 고정 문구
   },
   "rules": ["..."],
   "tokens": { "GPT-4o": { "original": 3100, "compressed": 749, "saved_pct": 75.8 } },

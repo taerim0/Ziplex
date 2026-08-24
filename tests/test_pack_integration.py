@@ -54,6 +54,16 @@ def test_pack_runs_end_to_end_with_mock_provider(tmp_path, monkeypatch):
     assert "GPT-4o" in aif["tokens"]
     assert aif["tokens"]["GPT-4o"]["original"] > 0
 
+    # security_scan is always attached, zeroed out when nothing was ever
+    # flagged -- same "always present, zero when N/A" convention tech_stack
+    # already uses, so a reader can tell "scanned, found nothing" apart
+    # from "not attached at all" (an older aif.json packed before this
+    # field existed).
+    assert aif["project"]["security_scan"] == {"flagged": 0, "included_anyway": 0, "excluded": 0}
+    # format_notes is a fixed constant, identical on every pack -- not
+    # LLM-generated, so it's exactly packager.FORMAT_NOTES verbatim.
+    assert aif["project"]["format_notes"] == packager.FORMAT_NOTES
+
     # no checkpoint should be left behind on a clean success
     assert not checkpoint._checkpoint_path(str(project)).exists()
 
@@ -484,6 +494,7 @@ def test_pack_excludes_a_dangerous_file_non_interactively_with_no_prompt(tmp_pat
     aif = packager.pack(str(project), auto=True, interactive=False)
 
     assert set(aif["files"].keys()) == {"main.py"}  # secret.env stays excluded, no prompt raised
+    assert aif["project"]["security_scan"] == {"flagged": 1, "included_anyway": 0, "excluded": 1}
 
 
 def test_pack_interactive_review_includes_a_dangerous_file_when_chosen(tmp_path, monkeypatch):
@@ -503,6 +514,10 @@ def test_pack_interactive_review_includes_a_dangerous_file_when_chosen(tmp_path,
     aif = packager.pack(str(project), auto=True, interactive=True)
 
     assert set(aif["files"].keys()) == {"main.py", "secret.env"}
+    # Computed from the final `selected` list, not the CLI-only
+    # `included_anyway` variable -- this is the interactive-prompt path's
+    # own proof that it lands in the count either way.
+    assert aif["project"]["security_scan"] == {"flagged": 1, "included_anyway": 1, "excluded": 0}
 
 
 def test_pack_interactive_review_declines_by_default_on_blank_input(tmp_path, monkeypatch):
@@ -542,6 +557,13 @@ def test_pack_preselected_can_name_a_dangerous_file_directly(tmp_path, monkeypat
     )
 
     assert set(aif["files"].keys()) == {"main.py", "secret.env"}
+    # The whole reason security_scan is computed from `selected`, not the
+    # `included_anyway` variable -- a preselected/GUI caller never touches
+    # that variable at all (it's only ever populated by the interactive
+    # terminal prompt), so this is the one case that would have silently
+    # under-reported "included_anyway" if the count had been sourced from
+    # the wrong place.
+    assert aif["project"]["security_scan"] == {"flagged": 1, "included_anyway": 1, "excluded": 0}
 
 
 def test_pack_does_not_duplicate_a_dangerous_file_approved_both_ways(tmp_path, monkeypatch, capsys):

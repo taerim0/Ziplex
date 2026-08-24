@@ -123,6 +123,23 @@ def _overview_md(aif: dict) -> str:
         compressed = data.get("compressed", 0)
         saved_pct = data.get("saved_pct", 0)
         lines.append(f"| {model} | {original:,} | {compressed:,} | {saved_pct}% |")
+
+    # Same backward-compat guard as tech_stack above -- an aif.json packed
+    # before packager.py started attaching this field simply has no
+    # "security_scan" key, so the section is skipped rather than rendered
+    # with misleading zeros.
+    security_scan = project.get("security_scan")
+    if security_scan:
+        lines += ["", "## Security scan", ""]
+        if security_scan.get("flagged"):
+            lines.append(
+                f"{security_scan['flagged']} file(s) flagged as potentially sensitive during packing -- "
+                f"{security_scan['included_anyway']} included anyway (human-reviewed), "
+                f"{security_scan['excluded']} left out of this reference entirely."
+            )
+        else:
+            lines.append("No files were flagged as potentially sensitive.")
+
     return "\n".join(lines) + "\n"
 
 

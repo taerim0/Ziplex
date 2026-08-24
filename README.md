@@ -111,7 +111,9 @@ A pack produces three files, each read differently:
 {
   "project": {
     "name": "...", "prompt": "...",
-    "tech_stack": [{ "manifest": "package.json", "language": "JavaScript/TypeScript", "package_manager": "npm", "dependencies": ["react", "..."], "dependencies_truncated": false }]
+    "tech_stack": [{ "manifest": "package.json", "language": "JavaScript/TypeScript", "package_manager": "npm", "dependencies": ["react", "..."], "dependencies_truncated": false }],
+    "security_scan": { "flagged": 0, "included_anyway": 0, "excluded": 0 },
+    "format_notes": "..."  // fixed legend explaining confidence/⋮---- to a reader with no other Ziplex context
   },
   "rules": ["..."],
   "tokens": { "GPT-4o": { "original": 3100, "compressed": 749, "saved_pct": 75.8 } },
