@@ -1,0 +1,35 @@
+# Freshness gate for a project that commits its Ziplex output
+# (aif.json / detail.json / cache.json -- see README's "Team use" section).
+#
+# This does NOT re-pack the project. `ziplex freshness` only re-hashes the
+# files on disk and compares them against the committed cache.json -- no
+# Tree-sitter parsing, no LLM calls, no GEMINI_API_KEY, no network. It just
+# fails the check when the committed output has drifted from the code, so a
+# human has to run `ziplex pack` (and review the result) locally before the
+# PR can merge, instead of a stale aif.json silently going unnoticed.
+#
+# Copy this file to .github/workflows/ in the *target* project's own repo
+# (not this one -- Ziplex's own repo doesn't commit its own aif.json) and
+# adjust the two paths on the last line to whatever was actually committed.
+
+name: aif.json freshness check
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install ziplex
+
+      # <project_path> <name>.cache.json -- match whatever this project
+      # actually committed (e.g. `.` and `result/MyProject.cache.json`).
+      - run: ziplex freshness . MyProject.cache.json

@@ -216,6 +216,8 @@ Ziplex는 한 사람의 로컬 스냅샷을 패킹합니다 — 공유 서버나
 - 다른 사람들의 `aif.json`은 마지막으로 커밋된 시점만큼만 최신입니다 — `check_freshness`(또는 위에서 설명한, `project_path`를 넘긴 `get_overview`/`list_files`)로 자기 작업 사본이 커밋된 것과 얼마나 어긋났는지 다시 `pack`하지 않고도 확인할 수 있습니다.
 - 이건 실시간 동기화가 아니라 권장 컨벤션입니다 — Ziplex가 강제하거나 조율하지 않습니다. 병합/충돌 해결도 없고, 두 사람이 각자 커밋하기 전에 따로 `pack`을 돌리면 "누구 결과가 맞는지"도 정해져 있지 않습니다.
 
+**CI 게이트 (선택):** `ziplex freshness <project> <name>.cache.json`은 커밋된 결과물이 코드와 어긋났을 때 0이 아닌 코드로 종료됩니다 — LLM 호출도, `GEMINI_API_KEY`도 필요 없이 해시 비교만 합니다. PR 체크로 연결해두면([템플릿](docs/ci/freshness-gate.yml)) 오래된 `aif.json`이 재검토 없이 병합되는 걸 막을 수 있습니다. `pack` 자체를 자동화하는 건 아닙니다 — 실제 LLM 비용이 들고 사람의 검토 단계를 건너뛰게 되므로, 의도적으로 수동 단계로 남겨뒀습니다.
+
 ## 기술 스택
 
 Python 3.11 · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby 문법, GDScript는 `tree-sitter-language-pack` 경유) · [tiktoken](https://github.com/openai/tiktoken) · Gemini API (기본값 `gemini-flash-latest`, `GEMINI_MODEL`로 재정의 가능; `requests`를 통한 순수 REST 호출) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`

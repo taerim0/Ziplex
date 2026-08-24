@@ -414,6 +414,10 @@ def main():
                 print(f"  추가됨 ({len(report.added)}): {', '.join(report.added)}")
             if report.removed:
                 print(f"  삭제됨 ({len(report.removed)}): {', '.join(report.removed)}")
+            # Non-zero exit lets `ziplex freshness` double as a CI/PR gate --
+            # fail the check when the committed aif.json has drifted from disk,
+            # forcing a human to re-pack and re-review rather than merging a stale one.
+            sys.exit(1)
 
     elif args.command == "skill":
         target = export_skill(args.aif_path, args.output)

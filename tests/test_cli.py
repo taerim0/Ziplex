@@ -1,3 +1,4 @@
+import json
 import sys
 
 import pytest
@@ -6,6 +7,7 @@ from ziplex import cli
 from ziplex import llm
 from ziplex import summarizer
 from ziplex.cli import _split_patterns, _check_max_tokens
+from ziplex.freshness import build_manifest
 
 
 def test_split_patterns_none_when_no_value():
@@ -83,6 +85,48 @@ def test_pack_main_exits_cleanly_when_pack_incomplete_and_no_max_tokens_requeste
     monkeypatch.setattr(sys, "argv", ["cli.py", "pack", str(tmp_path), "--auto", "--auto-correct"])
 
     cli.main()  # must not raise SystemExit
+
+
+def test_freshness_main_exits_nonzero_when_stale(tmp_path, monkeypatch, capsys):
+    # `ziplex freshness` doubles as a free CI/PR gate (no LLM calls, just a
+    # hash comparison) -- it must fail loudly (non-zero exit) when the
+    # committed cache.json has drifted from disk, or a CI pipeline wired to
+    # it would silently pass on a stale, un-re-reviewed aif.json forever.
+    project = tmp_path / "project"
+    project.mkdir()
+    file_path = project / "main.py"
+    file_path.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+    manifest = build_manifest([str(file_path)], str(project))
+    cache_path = tmp_path / "out.cache.json"
+    cache_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    file_path.write_text("def add(a, b):\n    return a + b + 1\n", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "freshness", str(project), str(cache_path)])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    assert "오래됐습니다" in capsys.readouterr().out
+
+
+def test_freshness_main_exits_cleanly_when_unchanged(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "project"
+    project.mkdir()
+    file_path = project / "main.py"
+    file_path.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+    manifest = build_manifest([str(file_path)], str(project))
+    cache_path = tmp_path / "out.cache.json"
+    cache_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "freshness", str(project), str(cache_path)])
+
+    cli.main()  # must not raise SystemExit
+
+    assert "최신 상태" in capsys.readouterr().out
 
 
 def test_analyze_command_delegates_to_summarizer_and_shares_its_failure_placeholder(tmp_path, monkeypatch, capsys):
