@@ -70,6 +70,19 @@ def test_extra_ignore_pattern_excludes_beyond_defaults(tmp_path):
     assert collected == {"src/app.py"}
 
 
+def test_keeps_a_recognized_media_asset_despite_being_binary(tmp_path):
+    # a media file (file/media.py's MEDIA_EXTENSIONS) is the one deliberate
+    # exception to the binary filter above -- unlike sprite.bin (an
+    # unrecognized extension), a known image/video/audio/font asset survives
+    # collection so it can show up in `files`/`relationships` with a free
+    # metadata-only summary instead of vanishing entirely.
+    _write(tmp_path / "app.py", "x = 1\n")
+    (tmp_path / "logo.png").write_bytes(bytes(range(256)))
+
+    collected = {Path(f).relative_to(tmp_path).as_posix() for f in collect_files(str(tmp_path))}
+    assert collected == {"app.py", "logo.png"}
+
+
 def test_no_include_patterns_keeps_default_behavior(tmp_path):
     # an empty list, same as None, must not be mistaken for "include
     # nothing" -- both mean "no include filter at all"

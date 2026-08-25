@@ -5,6 +5,7 @@ from typing import Callable
 from .file.collector import collect_files
 from .file.scanner import scan_files
 from .file.selector import select_files, review_dangerous_files
+from .file.media import classify_media_file, media_summary
 from .file.textutil import relative_key as _rel_key
 from .extract.code.extractor import extract_signatures, extract_dependencies, extract_api
 from .extract.code.compressor import compress_file
@@ -197,6 +198,18 @@ def pack(
     "reuse" so much as re-caching a miss -- see
     _confirm_regenerate_failed_summaries() below.
 
+    A recognized media asset (image/video/audio/font -- file/media.py's
+    classify_media_file(), extension and content both confirmed) is
+    unconditionally structural-only regardless of
+    use_llm: it never reaches Tree-sitter extraction (nothing to parse) or
+    an LLM call (describing what an image/video actually *shows* would need
+    a vision-capable model, real per-file cost this pipeline deliberately
+    doesn't pay -- see media.py's own docstring). Its `summary` is a free,
+    deterministic metadata line (kind, size, and pixel dimensions for the
+    image formats media.py knows how to header-parse) filled in during
+    extraction itself, which is what keeps it out of the LLM/structural
+    `pending` set below either way.
+
     check_cancelled, if given, is polled at a few natural checkpoints (once
     per file during extraction, once more right before the LLM summary
     step, and once right after it) and should return None to keep going, or
@@ -358,7 +371,19 @@ def pack(
             return {}
 
         name = _rel_key(file_path, root)
-        text_refs_by_path[file_path] = find_text_references_for_file(file_path, name, all_names)
+        # classify_media_file() computed once here and reused below (the
+        # media-branch check further down) rather than called twice --
+        # extension *and* content confirmed (see media.py's own docstring
+        # for why extension alone isn't enough), which means it costs a
+        # read_text() attempt for anything with a media extension. A
+        # confirmed media file has no text content to scan for references
+        # in the first place, so find_text_references_for_file() (which
+        # would otherwise pay its own separate, redundant read_text()
+        # attempt only to find nothing) is skipped for it outright.
+        media_kind = classify_media_file(file_path)
+        text_refs_by_path[file_path] = (
+            [] if media_kind else find_text_references_for_file(file_path, name, all_names)
+        )
 
         # restore from checkpoint
         if name in restored_files_data:
@@ -374,6 +399,32 @@ def pack(
             # identical pack.
             if files_data[file_path].get("signatures") or files_data[file_path].get("dependencies"):
                 signatures_map[file_path] = files_data[file_path].get("signatures", [])
+            continue
+
+        # Media assets (images/video/audio/fonts, see file/media.py) never
+        # reach Tree-sitter extraction or an LLM call at all -- there's no
+        # code to parse and, deliberately, no vision-model call to make (see
+        # media.py's own docstring for why that's out of scope). `summary`
+        # is filled in right here with a free, deterministic metadata
+        # description, which is what keeps it out of `pending` below (only
+        # entries with no summary yet get one generated) -- this is the
+        # actual mechanism that makes a media file cost nothing to pack.
+        # media_kind was already computed above, before the checkpoint-
+        # restore check -- reused here rather than calling
+        # classify_media_file() a second time.
+        if media_kind:
+            reused_summary = previous_summaries.get(name, "")
+            files_data[file_path] = {
+                "signatures": [],
+                "dependencies": [],
+                "api": [],
+                "compressed": "",
+                "summary": reused_summary or media_summary(file_path, media_kind),
+            }
+            if reused_summary:
+                print(f"  ♻️  {name} (변경 없음, 이전 요약 재사용)")
+            else:
+                print(f"  🖼️  {name} (미디어 파일, LLM 미사용)")
             continue
 
         sigs = extract_signatures(file_path)

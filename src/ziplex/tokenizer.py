@@ -104,21 +104,29 @@ def analyze_tokens_with_payload(file_paths: list[str], files_data: dict[str, dic
 
     files_data must already be fully populated (summaries included) -- call this
     after the LLM summary pass, using the same file_path keys as file_paths.
+
+    A media asset (file/media.py) has no readable "original" text -- its
+    contribution to original_text is correctly 0 -- but it does have a real
+    `summary` that ships in aif.json exactly like any other file's, so it's
+    still counted on the payload side unconditionally (not skipped the way
+    original_text's own read_text()-is-None branch skips it). Missing this
+    used to silently undercount the actual packed payload cli.py's
+    `--max-tokens` CI guard checks against -- a project with several media
+    assets could exceed its real token budget while the guard still passed.
     """
     original_text = ""
     payload_text = ""
 
     for file_path in file_paths:
-        content = read_text(file_path)
-        if content is None:
-            continue
-        original_text += f"\n### {file_path}\n{content}\n"
-
         data = files_data.get(file_path, {})
         payload = {
             "summary": data.get("summary", ""),
         }
         payload_text += f"\n### {file_path}\n{json.dumps(payload, ensure_ascii=False)}\n"
+
+        content = read_text(file_path)
+        if content is not None:
+            original_text += f"\n### {file_path}\n{content}\n"
 
     results = {}
     for model, encoding in MODEL_ENCODINGS.items():

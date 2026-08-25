@@ -26,6 +26,20 @@ def test_hash_file_returns_none_for_binary(tmp_path):
     assert hash_file(str(tmp_path / "sprite.bin")) is None
 
 
+def test_hash_file_hashes_raw_bytes_for_a_recognized_media_asset(tmp_path):
+    # a media file is the one exception to "no text, no hash" -- matches
+    # collect_files()'s own binary-filter exception, so incremental cache
+    # reuse still works on a project's images/video/audio/fonts
+    (tmp_path / "a.png").write_bytes(b"same bytes")
+    (tmp_path / "b.png").write_bytes(b"same bytes")
+    (tmp_path / "c.png").write_bytes(b"different")
+
+    digest = hash_file(str(tmp_path / "a.png"))
+    assert digest is not None
+    assert digest == hash_file(str(tmp_path / "b.png"))
+    assert digest != hash_file(str(tmp_path / "c.png"))
+
+
 def test_build_manifest_keys_by_relative_path(tmp_path):
     _write(tmp_path / "sub" / "a.py", "x = 1\n")
     manifest = build_manifest([str(tmp_path / "sub" / "a.py")], str(tmp_path))

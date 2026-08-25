@@ -66,6 +66,38 @@ def test_scan_file_falls_back_to_pattern_when_secretlint_is_unavailable(tmp_path
     assert result["matched_text"] == 'API_KEY = "abc123"'
 
 
+def test_scan_file_still_scans_a_text_file_that_merely_has_a_media_extension(tmp_path):
+    # a media *extension* alone must never waive scanning -- only a file
+    # that's actually undecodable as text may. Otherwise a secrets file
+    # simply renamed to .mp3 (or a Git LFS pointer file checked in for a
+    # real video/image) would silently skip both secretlint and the
+    # pattern fallback purely because of its name.
+    path = tmp_path / "secrets.mp3"
+    _write(path, 'API_KEY = "abc123supersecret"\n')
+
+    result = scan_file(str(path))
+    assert result is not None
+    assert result["matched_text"] == 'API_KEY = "abc123supersecret"'
+
+
+def test_scan_file_treats_a_recognized_media_asset_as_always_safe(tmp_path, monkeypatch):
+    # neither secretlint nor the pattern fallback should even run against a
+    # media file's opaque binary bytes -- proven here by making both blow up
+    # if called at all, not just by asserting the final "safe" result
+    from ziplex.file import scanner
+
+    def _boom(path):
+        raise AssertionError("scan_file must not scan a recognized media asset")
+
+    monkeypatch.setattr(scanner, "_scan_with_secretlint", _boom)
+    monkeypatch.setattr(scanner, "_scan_with_pattern", _boom)
+
+    path = tmp_path / "logo.png"
+    path.write_bytes(bytes(range(256)))
+
+    assert scan_file(str(path)) is None
+
+
 def test_scan_file_trusts_a_clean_secretlint_result_without_falling_back(tmp_path, monkeypatch):
     # secretlint returning False (ran, found nothing) must NOT trigger the
     # pattern fallback -- only None (secretlint itself couldn't run) should.

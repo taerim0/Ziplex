@@ -7,6 +7,7 @@ from .extract.code.extractor import extract_signatures, extract_dependencies, ex
 from .extract.code.compressor import compress_file
 from .file.collector import collect_files, print_tree as print_file_tree
 from .file.scanner import scan_files
+from .file.media import classify_media_file, media_summary
 from .file.textutil import relative_key as _rel_key
 from .text_references import find_text_references_for_file
 from .tokenizer import analyze_tokens, analyze_tokens_with_compression
@@ -186,7 +187,16 @@ def main():
         safe_files = _collect_and_scan(args.path)["safe"]
 
         results, _ = analyze_tokens_with_compression(safe_files)
-        print(f"\n📊 토큰 분석 ({len(safe_files)}개 파일)\n")
+        # analyze_tokens_with_compression() silently skips any file it can't
+        # read as text (matches its own before/after-*compression* scope --
+        # a media asset, see file/media.py, has no text body to compress in
+        # the first place). The printed count reflects only what was
+        # actually measured, not every safe file, so it doesn't imply more
+        # was covered than really was.
+        media_count = sum(1 for f in safe_files if classify_media_file(f))
+        measured_count = len(safe_files) - media_count
+        note = f" (미디어 자산 {media_count}개 제외)" if media_count else ""
+        print(f"\n📊 토큰 분석 ({measured_count}개 파일{note})\n")
         for model, data in results.items():
             print(f"{model}")
             print(f"  압축 전: {data['original']:,} / {data['max']:,} {data['original_bar']}")
@@ -229,7 +239,20 @@ def main():
         # missing this command the way a hand-rolled duplicate would.
         pending = {}
         signatures_map = {}
+        media_summaries = {}
         for file in safe_files:
+            media_kind = classify_media_file(file)
+            if media_kind:
+                # Same free, no-LLM metadata summary pack() gives a media
+                # asset (see file/media.py) -- without this branch it fell
+                # straight into extract_signatures/extract_dependencies
+                # (both [] for a media file) and the "no signatures, no
+                # dependencies" skip just below, silently vanishing from
+                # this command's own output despite being counted in the
+                # "분석 대상" total printed above.
+                media_summaries[file] = media_summary(file, media_kind)
+                continue
+
             sigs = extract_signatures(file)
             deps = extract_dependencies(file)
 
@@ -241,6 +264,7 @@ def main():
 
         print(f"  🔍 {len(pending)}개 파일 분석 중...")
         summaries = generate_summaries(pending, Path(args.path))
+        summaries.update(media_summaries)
 
         # 3. Extract rules
         print(f"\n  📋 코딩 룰 추출 중...")

@@ -3,6 +3,7 @@ import json
 import re
 
 from ..file.textutil import read_text
+from .media import classify_media_file
 
 # fallback patterns used when secretlint fails/isn't available
 SENSITIVE_PATTERNS = [
@@ -111,7 +112,18 @@ def scan_file(file_path: str) -> dict | None:
     "matched_text": that line's own text or None} -- enough for a human to
     judge a false positive (see file/selector.py's review_dangerous_files())
     without needing to go open the file themselves.
+
+    A recognized media asset -- file/media.py's classify_media_file(),
+    extension *and* content both confirmed, not extension alone (see that
+    function's own docstring for the real gap extension-alone had) -- always
+    scans as safe, with neither secretlint nor the pattern fallback ever
+    actually run on it. A genuine binary media file still costs only one
+    read_text() call here (which fails fast) instead of a real secretlint
+    process spawn -- the real, if smaller, win this exists for.
     """
+    if classify_media_file(file_path) is not None:
+        return None
+
     result = _scan_with_secretlint(file_path)
 
     # 2. pattern-based fallback if secretlint failed to run at all

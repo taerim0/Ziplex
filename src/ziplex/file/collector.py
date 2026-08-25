@@ -3,6 +3,7 @@ from pathlib import Path
 import pathspec
 
 from ..file.textutil import read_text
+from .media import is_media_file
 
 # Common reproducible build outputs / dependency & tool caches, across
 # ecosystems beyond the JS/Python ones already listed above. Not exhaustive
@@ -101,8 +102,23 @@ def collect_files(root_path: str, include: list[str] | None = None, ignore: list
             # Detect it directly instead: a file unreadable as text has nothing
             # for the LLM to summarize, and letting it through just means a
             # summary hallucinated from the filename alone, wasted tokens in
-            # every downstream step, and a wasted LLM call.
-            if read_text(str(file_path)) is None:
+            # every downstream step, and a wasted LLM call. One deliberate
+            # exception: a *recognized* media asset (image/video/audio/font,
+            # see file/media.py) survives too, despite also being binary --
+            # packager.py gives it a free, metadata-only summary instead of an
+            # LLM one, so letting it through costs nothing, and keeping it out
+            # entirely used to make it invisible everywhere downstream (never
+            # in `files`, never resolvable as another file's dependency
+            # target -- a Godot scene's ext_resource, an <img src>, a README
+            # naming a screenshot). is_media_file() checked first, not
+            # read_text() -- both orders are logically equivalent (this is
+            # an OR: keep if text OR media-extension), but reading a whole
+            # file into memory just to attempt a doomed UTF-8 decode is real,
+            # avoidable I/O for a large binary (a video/audio asset
+            # especially) that a plain extension check already answers for
+            # free; only a file collect_files() doesn't already recognize as
+            # media needs the real read_text() check at all.
+            if is_media_file(str(file_path)) is None and read_text(str(file_path)) is None:
                 continue
 
             collected.append(str(file_path))

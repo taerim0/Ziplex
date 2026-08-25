@@ -23,6 +23,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .file.media import is_media_file
 from .file.textutil import read_text, relative_key
 
 # load_previous_summaries()'s guard against a cross-project cache collision
@@ -34,15 +35,50 @@ _MIN_OVERLAP_RATIO = 0.5
 
 
 def hash_file(file_path: str) -> str | None:
-    """SHA-256 of a file's text content, or None if it can't be read as text.
+    """SHA-256 of a file's text content, or -- for a recognized media asset
+    (file/media.py's is_media_file(), see collect_files()'s own binary-filter
+    exception for one) -- its raw bytes instead, since there's no text to
+    decode. None only for a file that's neither: matches collect_files()'s
+    own binary filter, a file that wouldn't be packed in the first place has
+    no meaningful hash to compare.
 
-    Matches collect_files()'s own binary filter -- a file that wouldn't be
-    packed in the first place has no meaningful hash to compare.
+    is_media_file() (cheap, extension-only) is checked before ever
+    attempting read_text() -- a real binary media file's decode attempt is
+    guaranteed to fail only after reading the whole file, wasted I/O this
+    function used to always pay first regardless of extension, and pays
+    at least twice per pack (see the chunked-read comment below). This
+    doesn't need the stricter classify_media_file() other call sites use:
+    a file that merely carries a media extension but is actually real text
+    (a Git LFS pointer) still gets a stable, correct hash either way here
+    (raw bytes instead of decoded text) -- the exact bytes hashed only has
+    to stay consistent between one pack's manifest and the next's freshness
+    check, which this function alone (always called the same way) already
+    guarantees regardless of which path a given file takes.
     """
+    if is_media_file(file_path) is not None:
+        return _hash_bytes(file_path)
+
     content = read_text(file_path)
-    if content is None:
+    if content is not None:
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+    return None
+
+
+def _hash_bytes(file_path: str) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        # Streamed in fixed-size chunks, not one f.read() -- a media asset
+        # has no size cap (MEDIA_EXTENSIONS includes video/audio), and this
+        # function runs at least twice per pack (load_previous_summaries()'s
+        # own check_freshness()/build_manifest(), then pack()'s final
+        # build_manifest()); loading a large video/audio file whole, twice
+        # over, is real avoidable memory pressure a chunked read doesn't pay.
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1_048_576), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
         return None
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def build_manifest(file_paths: list[str], root: str) -> dict[str, str]:

@@ -47,3 +47,26 @@ def test_analyze_tokens_with_payload_counts_only_the_summary(tmp_path):
     assert "A short summary." in payload_text
     assert "whatever" not in payload_text
     assert "x = 1" not in payload_text
+
+
+def test_analyze_tokens_with_payload_still_counts_a_media_files_summary(tmp_path):
+    # a media asset (file/media.py) has no readable "original" text -- it
+    # correctly contributes 0 there -- but its real, shipped `summary` must
+    # still be counted on the payload side, or the CI --max-tokens guard
+    # silently undercounts the actual packed payload for any project with
+    # media assets in it
+    media_path = tmp_path / "logo.png"
+    media_path.write_bytes(bytes(range(256)))  # not valid UTF-8
+
+    files_data = {
+        str(media_path): {"summary": "[image asset, 64x32, 24B]"},
+    }
+
+    results, payload_text = analyze_tokens_with_payload([str(media_path)], files_data)
+
+    assert "[image asset, 64x32, 24B]" in payload_text
+    for model in MODEL_ENCODINGS:
+        # nothing readable as "original" text for a binary file, but the
+        # payload side must still reflect the real summary that ships
+        assert results[model]["original"] == 0
+        assert results[model]["compressed"] > 0

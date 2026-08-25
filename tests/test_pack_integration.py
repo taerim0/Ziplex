@@ -13,6 +13,7 @@ point -- by an earlier test file.
 
 import builtins
 import json
+import struct
 from pathlib import Path
 
 from ziplex import checkpoint
@@ -69,6 +70,70 @@ def test_pack_runs_end_to_end_with_mock_provider(tmp_path, monkeypatch):
 
     # pack() attaches a content-hash manifest for freshness.check_freshness()
     assert set(aif["_manifest"].keys()) == {"main.py", "README.md"}
+
+
+def test_pack_never_calls_the_llm_for_a_media_asset_even_with_use_llm_true(tmp_path, monkeypatch):
+    # A media file (file/media.py) must cost nothing to pack regardless of
+    # whether an LLM is available for everything else -- proven the same
+    # strict way test_pack_use_llm_false_... below proves it for that mode:
+    # a provider that raises on any call at all, so a call this test doesn't
+    # expect fails at the point it happens, not just via a call-count assert.
+    class _CountingProvider(llm.MockProvider):
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, prompt: str, retry: int = 5) -> str:
+            self.calls += 1
+            return super().generate(prompt, retry)
+
+    provider = _CountingProvider()
+    monkeypatch.setattr(llm, "_provider", provider)
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    # a minimal-but-real PNG header (89PNG signature + IHDR width/height) --
+    # media_summary() only ever reads these bytes, never needs a full image
+    (project / "logo.png").write_bytes(
+        b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", 64, 32)
+    )
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+
+    assert set(aif["files"].keys()) == {"main.py", "logo.png"}
+    assert aif["files"]["logo.png"]["summary"] == "[image asset, 64x32, 24B]"
+    # no code to strip -- a media file's compressed body is always empty
+    assert aif["files"]["logo.png"]["compressed"] == ""
+    # no signatures to check against -- same free 1.0 a trivial text file
+    # (e.g. this same test's README-less project has none for) gets
+    assert aif["files"]["logo.png"]["confidence"] == 1.0
+    # main.py still got a real (mocked) LLM call -- only the media file was
+    # skipped, not the whole run
+    assert provider.calls > 0
+    assert aif["files"]["main.py"]["summary"] == "Mock summary for local testing."
+
+    # media assets never got scanned as "dangerous" either
+    assert aif["project"]["security_scan"] == {"flagged": 0, "included_anyway": 0, "excluded": 0}
+
+
+def test_pack_gives_a_text_file_with_a_media_extension_a_real_summary_not_a_metadata_one(tmp_path, monkeypatch):
+    # a Git LFS pointer file (or any mislabeled text file) checked in with a
+    # media extension must still go through the normal text/LLM path --
+    # extension alone must never misclassify it as a media asset (a real
+    # gap caught by review: file/media.py's classify_media_file() confirms
+    # content, not just extension)
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(
+        project / "video.mp4",
+        "version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 123\n",
+    )
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+
+    assert aif["files"]["video.mp4"]["summary"] == "Mock summary for local testing."
 
 
 def test_pack_use_llm_false_never_calls_the_llm_and_uses_structural_summaries(tmp_path, monkeypatch):
