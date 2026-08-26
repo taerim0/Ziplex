@@ -134,6 +134,40 @@ def check_freshness(file_paths: list[str], root: str, manifest: dict[str, str]) 
     return FreshnessReport(changed=changed, added=added, removed=removed, unchanged=unchanged)
 
 
+def freshness_candidate_files(scan_result: dict, root: str, manifest: dict[str, str]) -> list[str]:
+    """The file list check_freshness() should actually be compared against
+    -- scan_result["safe"] plus any scan_result["dangerous"] entry that's
+    already a key in `manifest` (build_manifest()'s shape, e.g. loaded from
+    a <name>.cache.json).
+
+    A file flagged sensitive by scan_files() can still have been included
+    in the pack for real -- a human opted back in via file/selector.py's
+    review_dangerous_files(), the GUI's per-file "include anyway"
+    checkbox, or a `preselected` caller naming it directly (see
+    packager.pack()'s own handling of `dangerous`) -- in which case it has
+    a real entry in that pack's manifest. Every freshness caller (the
+    `freshness` CLI subcommand, query_service.check_freshness() for the
+    GUI/MCP, gui/watcher.py's live recompute) used to pass only
+    scan_result["safe"] to check_freshness() -- a real bug reported
+    directly: re-scanning always re-flags that same file as dangerous
+    regardless of the earlier human decision, dropping it from "safe"
+    every single time, so check_freshness() (which only ever sees what
+    it's handed) reports it as `removed` forever after, even though it's
+    unchanged and still on disk.
+
+    Checked against `manifest` specifically, not unioned in unconditionally
+    -- a dangerous file that's *never* been packed (still correctly,
+    deliberately excluded every time, e.g. a real `.env` with live
+    secrets) would otherwise show up as spurious "added" noise on every
+    single freshness check for a file that was never supposed to be
+    included in the first place.
+    """
+    safe = scan_result["safe"]
+    dangerous = scan_result.get("dangerous", [])
+    included_before = [d["file"] for d in dangerous if relative_key(d["file"], root) in manifest]
+    return safe + included_before
+
+
 def load_previous_summaries(root_path: str, selected: list[str], result_dir: Path, lang: str = "en") -> dict[str, str]:
     """{relative key: summary} for files in `selected` whose content hash
     matches the last successful pack's manifest, at result_dir (the
