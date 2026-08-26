@@ -70,8 +70,23 @@ def _stale_warning(project_path: str | None, aif_path: str) -> dict | None:
     except (OSError, json.JSONDecodeError):
         return None
 
-    safe_files = collect_and_scan(project_path)["safe"]
-    report = _check_freshness(safe_files, project_path, manifest)
+    # freshness_candidate_files(), not a bare collect_and_scan()["safe"] --
+    # a real bug reported directly (2026-08-26): a file scan_files() flags
+    # as sensitive but a human included anyway re-flags as dangerous on
+    # every later scan regardless of that earlier decision, so this used to
+    # report it "removed" every time get_overview()/list_files() attached
+    # this warning, even though check_freshness() (the standalone
+    # `/api/freshness` route and this same file's own check_freshness())
+    # had already been fixed to not make that mistake -- a second call site
+    # of the identical bug, missed in that first pass because it lives in
+    # this private helper rather than the function the bug was originally
+    # reported against. Symptom that made it visible even after the first
+    # fix: opening a project showed "changed" for a beat, then the page's
+    # own live watcher (gui/watcher.py, fixed correctly the first time)
+    # caught up and corrected the badge a moment later.
+    scan_result = collect_and_scan(project_path)
+    candidates = freshness_candidate_files(scan_result, project_path, manifest)
+    report = _check_freshness(candidates, project_path, manifest)
     if not report.is_stale:
         return None
     return {"is_stale": True, "changed": report.changed, "added": report.added, "removed": report.removed}
