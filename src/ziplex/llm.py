@@ -47,6 +47,32 @@ def _lang_name(lang: str) -> str:
     return LANGUAGE_NAMES.get(lang, LANGUAGE_NAMES["en"])
 
 
+# Appended to every per-file summary prompt (analyze_file_summary/
+# analyze_text_summary/analyze_batch_summaries) -- confidence.py's
+# estimate_confidence() scores a summary by word-overlap against the file's
+# own extracted signatures, and that overlap only happens "for free" in
+# English: an English summary naturally reuses identifier-derived words
+# (describing `parse_input()` as "parses input" overlaps "parse"/"input"
+# even with no literal quote) because the summary vocabulary and the
+# identifier vocabulary are the same language. A Korean summary of the same
+# function uses genuinely different words (파싱하다/입력, not "parse"/
+# "input") for the same meaning -- there's no shared-vocabulary overlap to
+# find regardless of how accurate the summary is, unless the LLM happens to
+# quote the identifier verbatim. Reported directly: packing this repo's own
+# CLAUDE.md-documented codebase flagged ~17 low-confidence files in English
+# but ~63 in Korean, not because the Korean summaries were worse but because
+# the scoring heuristic's whole signal (shared vocabulary) structurally
+# doesn't exist across languages. This instruction asks the model to keep
+# identifiers untranslated so that signal exists again by construction --
+# also a real readability win on its own (a Korean reader can still map a
+# summary back to the actual function/class name it's describing).
+_IDENTIFIER_FIDELITY_NOTE = (
+    "When you mention a specific function, class, method, variable, or file "
+    "name, keep it exactly as written in the source (do not translate or "
+    "transliterate it)."
+)
+
+
 def _clean_json(text: str) -> str:
     # strip markdown code fences
     text = text.strip()
@@ -461,6 +487,7 @@ def analyze_file_summary(file_path: str, signatures: list[str], dependencies: li
     prompt = f"""
 Based on the file info below, summarize this file's role in one line.
 Write the "summary" value in {_lang_name(lang)}. Keep the JSON key itself in English.
+{_IDENTIFIER_FIDELITY_NOTE}
 Respond with JSON only, nothing else.
 
 File: {file_path}
@@ -476,6 +503,7 @@ def analyze_text_summary(file_path: str, content: str, lang: str = "en") -> str:
     prompt = f"""
 Based on the file content below, summarize this file's role in one line.
 Write the "summary" value in {_lang_name(lang)}. Keep the JSON key itself in English.
+{_IDENTIFIER_FIDELITY_NOTE}
 Respond with JSON only, nothing else.
 
 File: {file_path}
@@ -527,6 +555,7 @@ Based on the file info below, summarize each file's role in one line.
 Write every summary value in {_lang_name(lang)}. Keep JSON keys (including each
 file name) in their original form -- only the summary text itself is
 translated.
+{_IDENTIFIER_FIDELITY_NOTE}
 Respond with JSON only, nothing else.
 
 {joined}
