@@ -88,7 +88,7 @@ export function renderPackHome() {
         selectAll.addEventListener("change", () => {
           for (const cb of selectableCheckboxes) cb.checked = selectAll.checked;
         });
-        fileListBox.appendChild(el("label", { class: "file-checklist-row", style: "font-weight:600" }, [
+        fileListBox.appendChild(el("label", { class: "file-checklist-row select-all-row" }, [
           selectAll, el("span", { text: t("pack.form.allFiles", { n: data.safe.length }) }),
         ]));
 
@@ -97,6 +97,14 @@ export function renderPackHome() {
           const cb = el("input", { type: "checkbox", checked: "checked", "data-name": name });
           cb.checked = true;
           selectableCheckboxes.push(cb);
+          // Keeps the select-all's own checked state honest if a human
+          // unchecks (or re-checks) one file individually -- same two-way
+          // sync the dangerous-files select-all below uses, for consistency
+          // between the two lists (flagged by code review: the first
+          // version only synced this one-way, only for the dangerous list).
+          cb.addEventListener("change", () => {
+            selectAll.checked = selectableCheckboxes.every(c => c.checked);
+          });
           list.appendChild(el("label", { class: "file-checklist-row" }, [cb, el("span", { text: name })]));
         }
         fileListBox.appendChild(list);
@@ -134,7 +142,7 @@ export function renderPackHome() {
         dangerousSelectAll.addEventListener("change", () => {
           for (const cb of dangerousCheckboxes) cb.checked = dangerousSelectAll.checked;
         });
-        box.appendChild(el("label", { class: "file-checklist-row dangerous-select-all" }, [
+        box.appendChild(el("label", { class: "file-checklist-row select-all-row dangerous-select-all" }, [
           dangerousSelectAll, el("span", { text: t("pack.form.dangerousSelectAll") }),
         ]));
 

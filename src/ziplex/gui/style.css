@@ -275,6 +275,11 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
   flex-shrink: 0;
   cursor: pointer;
 }
+/* Shared "this row toggles everything below it" header styling -- both the
+   safe-files list's own select-all and the dangerous-files one (below) are
+   this shape; the dangerous one layers .dangerous-select-all's own
+   warning-specific look on top rather than duplicating the bold weight. */
+.select-all-row { font-weight: 600; }
 
 .dangerous-files { margin: 6px 0 14px; }
 .dangerous-explain {
@@ -283,7 +288,6 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
   margin: -4px 0 10px;
 }
 .dangerous-select-all {
-  font-weight: 600;
   color: var(--danger);
   padding: 5px 6px 9px;
   margin-bottom: 4px;
