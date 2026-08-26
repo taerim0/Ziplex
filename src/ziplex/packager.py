@@ -118,6 +118,7 @@ def _confirm_regenerate_failed_summaries(failed_names: list[str], interactive: b
 def _maybe_stop(
     check_cancelled: Callable[[], str | None] | None,
     root_path: str, root: Path, files_data: dict, rules: list | None = None, prompt: str = "",
+    lang: str = "en",
 ) -> bool:
     """True if `check_cancelled` says to stop -- checkpointing first
     (reusing checkpoint.build_snapshot(), the exact shape handle_llm_failure()
@@ -128,6 +129,11 @@ def _maybe_stop(
     only a caller that runs pack() on a background thread (the GUI -- see
     gui/pack_service.py's request_cancel()) needs this, since a real Python
     thread can't be safely killed from outside once started.
+
+    lang is recorded into the checkpoint (build_snapshot()) so a later
+    pack() resuming it can tell whether it was saved under the same
+    language selection as the resuming run -- see pack()'s own
+    `lang_matches` for why that comparison matters.
     """
     if check_cancelled is None:
         return False
@@ -135,7 +141,7 @@ def _maybe_stop(
     if action is None:
         return False
     if action == "save":
-        ckpt.save_checkpoint(root_path, ckpt.build_snapshot(root, files_data, rules, prompt))
+        ckpt.save_checkpoint(root_path, ckpt.build_snapshot(root, files_data, rules, prompt, lang))
     return True
 
 
@@ -313,7 +319,20 @@ def pack(
         ckpt.delete_checkpoint(root_path)
 
     # restore from checkpoint
-    restored_rules, restored_prompt, restored_files_data = ckpt.unpack_snapshot(checkpoint)
+    restored_rules, restored_prompt, restored_files_data, restored_lang = ckpt.unpack_snapshot(checkpoint)
+    # True only when there's actually a checkpoint to compare against -- a
+    # fresh run (no checkpoint) has nothing stale to discard, so restored_*
+    # (already the ""/[]/{} defaults from unpack_snapshot(None)) are used
+    # as-is regardless of this flag. When a checkpoint *does* exist but was
+    # saved under a different `lang` (a forgotten --lang flag, a changed
+    # selection on resume), its rules/prompt/per-file summaries are written
+    # in a stale language -- reusing them verbatim would ship an aif.json
+    # whose `project.language` claims one language while some content is
+    # actually in another, the same self-contradiction class this codebase
+    # already fixed once for rules/prompt vs. `use_llm` (see below).
+    lang_matches = restored_lang == lang
+    if checkpoint and not lang_matches:
+        print(f"  ⚠️  체크포인트가 다른 언어({restored_lang})로 생성됨 -- rules/AI 가이드/요약을 {lang}(으)로 다시 생성합니다")
 
     # 1. Collect files
     print("\n📁 파일 수집 중...")
@@ -379,7 +398,7 @@ def pack(
 
     # incremental reuse (staleness stage 2): {relative key: summary} for
     # files whose content hasn't changed since the last successful pack
-    previous_summaries = load_previous_summaries(root_path, selected, effective_result_dir) if use_cache else {}
+    previous_summaries = load_previous_summaries(root_path, selected, effective_result_dir, lang=lang) if use_cache else {}
     if previous_summaries:
         print(f"  ♻️  이전 pack에서 변경 없는 파일 {len(previous_summaries)}개 발견 — 요약 재사용")
 
@@ -415,7 +434,7 @@ def pack(
     text_refs_by_path: dict[str, list[str]] = {}
 
     for file_path in selected:
-        if _maybe_stop(check_cancelled, root_path, root, files_data, restored_rules, restored_prompt):
+        if _maybe_stop(check_cancelled, root_path, root, files_data, restored_rules, restored_prompt, lang):
             return {}
 
         name = _rel_key(file_path, root)
@@ -436,7 +455,16 @@ def pack(
         # restore from checkpoint
         if name in restored_files_data:
             print(f"  ✅ {name} (체크포인트에서 복원)")
-            files_data[file_path] = restored_files_data[name]
+            files_data[file_path] = dict(restored_files_data[name])
+            if not lang_matches and files_data[file_path].get("summary"):
+                # A summary already captured in a stale-language checkpoint
+                # is exactly as wrong here as one reused across a language
+                # change via load_previous_summaries() (freshness.py) would
+                # be -- discard it so it falls into `pending` below and gets
+                # regenerated in the currently requested `lang`.
+                # signatures/dependencies/api/compressed aren't language-
+                # dependent, so those are kept as-is.
+                files_data[file_path]["summary"] = ""
             # Same condition the fresh-extraction branch below uses (`sigs
             # or deps`, not just `sigs`) -- this used to check "signatures"
             # alone, silently excluding a checkpoint-restored file that has
@@ -497,7 +525,7 @@ def pack(
         else:
             print(f"  ✅ {name}")
 
-    if _maybe_stop(check_cancelled, root_path, root, files_data, restored_rules, restored_prompt):
+    if _maybe_stop(check_cancelled, root_path, root, files_data, restored_rules, restored_prompt, lang):
         return {}
 
     # 5. Summary generation -- LLM-based (the default) or, with use_llm=False,
@@ -545,7 +573,7 @@ def pack(
     # landing there would sit in job["cancel_action"] unconsumed until
     # pack() finishes on its own (reviewing state), never actually taking
     # effect.
-    if _maybe_stop(check_cancelled, root_path, root, files_data, restored_rules, restored_prompt):
+    if _maybe_stop(check_cancelled, root_path, root, files_data, restored_rules, restored_prompt, lang):
         return {}
 
     # extract rules (restored from checkpoint if available)
@@ -556,8 +584,11 @@ def pack(
     # Restoring a genuine prior LLM result here would silently ship an
     # aif.json with real coding rules alongside a prompt asserting no LLM
     # inference ever happened -- a direct self-contradiction in the same
-    # document.
-    rules = restored_rules if use_llm else []
+    # document. lang_matches is the same guard for the same reason: a
+    # checkpoint saved under a different `lang` has rules written in that
+    # stale language, which would contradict the `project.language` this
+    # run is about to claim.
+    rules = restored_rules if (use_llm and lang_matches) else []
     if not rules and use_llm:
         print("  📋 코딩 룰 추출 중...")
         while not rules:
@@ -571,7 +602,7 @@ def pack(
             if not rules:
                 result = ckpt.handle_llm_failure(
                     "rules", "코딩 룰",
-                    ckpt.build_snapshot(root, files_data),
+                    ckpt.build_snapshot(root, files_data, lang=lang),
                     root_path,
                     interactive=interactive,
                 )
@@ -594,8 +625,8 @@ def pack(
         print("  📋 코딩 룰 추출 건너뜀 (--no-llm)")
 
     # generate prompt (restored from checkpoint if available)
-    # Same use_llm guard as rules above, and for the same reason.
-    prompt = restored_prompt if use_llm else ""
+    # Same use_llm/lang_matches guard as rules above, and for the same reason.
+    prompt = restored_prompt if (use_llm and lang_matches) else ""
     if not prompt and use_llm:
         print("  ✍️  AI 가이드 생성 중...")
         while not prompt:
@@ -614,7 +645,7 @@ def pack(
             if not prompt:
                 result = ckpt.handle_llm_failure(
                     "prompt", "AI 가이드",
-                    ckpt.build_snapshot(root, files_data, rules),
+                    ckpt.build_snapshot(root, files_data, rules, lang=lang),
                     root_path,
                     interactive=interactive,
                 )

@@ -165,6 +165,55 @@ def test_load_previous_summaries_rejects_a_cross_project_basename_collision(tmp_
     assert load_previous_summaries(str(new_project), new_files, result_dir) == {}
 
 
+def test_load_previous_summaries_rejects_a_different_language_selection(tmp_path):
+    # A previous pack's summaries were written in *that* pack's language --
+    # reusing them under a different `lang` this run would silently ship an
+    # aif.json whose project.language claims one language while some
+    # content is actually in another (the exact bug class caught by review:
+    # `pack --lang en` then re-packing unchanged with `--lang ko` used to
+    # keep the English summaries while stamping project.language: "ko").
+    result_dir = tmp_path / "result"
+    result_dir.mkdir()
+    project = tmp_path / "project"
+    _write(project / "a.py", "x = 1\n")
+
+    (result_dir / "project.json").write_text(
+        json.dumps({"project": {"language": "en"}, "files": {"a.py": {"summary": "does a thing"}}}),
+        encoding="utf-8",
+    )
+    (result_dir / "project.cache.json").write_text(
+        json.dumps(build_manifest([str(project / "a.py")], str(project))), encoding="utf-8"
+    )
+
+    assert load_previous_summaries(str(project), [str(project / "a.py")], result_dir, lang="ko") == {}
+    # Same language this time -- reuse proceeds normally.
+    reused = load_previous_summaries(str(project), [str(project / "a.py")], result_dir, lang="en")
+    assert reused == {"a.py": "does a thing"}
+
+
+def test_load_previous_summaries_missing_language_field_defaults_to_english(tmp_path):
+    # A previous aif.json packed before project.language existed has no
+    # such field at all -- must be treated as "en" (the only language that
+    # existed then), same convention packager.pack()/checkpoint.
+    # unpack_snapshot() use for the same missing-field case.
+    result_dir = tmp_path / "result"
+    result_dir.mkdir()
+    project = tmp_path / "project"
+    _write(project / "a.py", "x = 1\n")
+
+    (result_dir / "project.json").write_text(
+        json.dumps({"files": {"a.py": {"summary": "does a thing"}}}), encoding="utf-8"
+    )
+    (result_dir / "project.cache.json").write_text(
+        json.dumps(build_manifest([str(project / "a.py")], str(project))), encoding="utf-8"
+    )
+
+    assert load_previous_summaries(str(project), [str(project / "a.py")], result_dir, lang="en") == {
+        "a.py": "does a thing"
+    }
+    assert load_previous_summaries(str(project), [str(project / "a.py")], result_dir, lang="ko") == {}
+
+
 def test_load_previous_summaries_tolerates_a_corrupt_cache_file(tmp_path):
     result_dir = tmp_path / "result"
     result_dir.mkdir()

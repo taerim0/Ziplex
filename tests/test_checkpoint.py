@@ -63,7 +63,7 @@ def test_build_snapshot_keys_files_data_by_relative_name(tmp_path):
     )
 
     assert snapshot == {
-        "project": {"name": "project", "prompt": "a guide"},
+        "project": {"name": "project", "prompt": "a guide", "language": "en"},
         "rules": ["rule one"],
         "files_data": {"src/main.py": {"summary": "does a thing"}},
     }
@@ -73,7 +73,18 @@ def test_build_snapshot_defaults_rules_and_prompt(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
     snapshot = checkpoint.build_snapshot(root, {})
-    assert snapshot == {"project": {"name": "project", "prompt": ""}, "rules": [], "files_data": {}}
+    assert snapshot == {
+        "project": {"name": "project", "prompt": "", "language": "en"},
+        "rules": [],
+        "files_data": {},
+    }
+
+
+def test_build_snapshot_records_the_given_lang(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    snapshot = checkpoint.build_snapshot(root, {}, lang="ko")
+    assert snapshot["project"]["language"] == "ko"
 
 
 def test_unpack_snapshot_round_trips_build_snapshot(tmp_path):
@@ -82,17 +93,31 @@ def test_unpack_snapshot_round_trips_build_snapshot(tmp_path):
     fp = str(root / "src" / "main.py")
 
     snapshot = checkpoint.build_snapshot(
-        root, {fp: {"summary": "does a thing"}}, rules=["rule one"], prompt="a guide"
+        root, {fp: {"summary": "does a thing"}}, rules=["rule one"], prompt="a guide", lang="ko"
     )
-    rules, prompt, files_data = checkpoint.unpack_snapshot(snapshot)
+    rules, prompt, files_data, lang = checkpoint.unpack_snapshot(snapshot)
 
     assert rules == ["rule one"]
     assert prompt == "a guide"
     assert files_data == {"src/main.py": {"summary": "does a thing"}}
+    assert lang == "ko"
 
 
 def test_unpack_snapshot_returns_empty_defaults_for_none():
-    assert checkpoint.unpack_snapshot(None) == ([], "", {})
+    assert checkpoint.unpack_snapshot(None) == ([], "", {}, "en")
+
+
+def test_unpack_snapshot_defaults_lang_to_english_for_a_checkpoint_predating_the_field(tmp_path):
+    # A checkpoint saved before `language` existed has no such key at all --
+    # must default to "en" (the only language that existed then), same
+    # convention project.language's own missing-field default uses.
+    root = tmp_path / "project"
+    root.mkdir()
+    snapshot = checkpoint.build_snapshot(root, {}, rules=["r"], prompt="p")
+    del snapshot["project"]["language"]
+
+    _, _, _, lang = checkpoint.unpack_snapshot(snapshot)
+    assert lang == "en"
 
 
 def test_save_load_delete_checkpoint_round_trip(tmp_path, monkeypatch):

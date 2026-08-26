@@ -81,17 +81,25 @@ def delete_checkpoint(root_path: str) -> None:
         path.unlink()
 
 
-def build_snapshot(root: Path, files_data: dict, rules: list = None, prompt: str = "") -> dict:
+def build_snapshot(root: Path, files_data: dict, rules: list = None, prompt: str = "", lang: str = "en") -> dict:
     """The shape handle_llm_failure() checkpoints on a failure -- everything
     pack() has produced so far, keyed by relative name (matching what
     unpack_snapshot() below expects to restore from), so a resumed run can
     skip straight past whatever already succeeded.
+
+    lang (2026-08-26) records which packing-content language `rules`/
+    `prompt`/each file's `summary` were actually written in -- so a later
+    pack() resuming this checkpoint under a *different* `lang` (a forgotten
+    `--lang` flag, a changed selection) can tell its own restored content is
+    stale and needs regenerating instead of silently mixing languages under
+    one `project.language` value. See unpack_snapshot()'s own docstring and
+    packager.py's `lang_matches`.
     """
     return {
         # root.resolve().name, not root.name -- root itself stays unresolved
         # (needed as-is for _rel_key(fp, root) below), but resolving just for
         # the name avoids the same "" result Path(".").name gives.
-        "project": {"name": root.resolve().name, "prompt": prompt},
+        "project": {"name": root.resolve().name, "prompt": prompt, "language": lang},
         "rules": rules or [],
         "files_data": {
             _rel_key(fp, root): d
@@ -100,25 +108,31 @@ def build_snapshot(root: Path, files_data: dict, rules: list = None, prompt: str
     }
 
 
-def unpack_snapshot(checkpoint: dict | None) -> tuple[list, str, dict]:
+def unpack_snapshot(checkpoint: dict | None) -> tuple[list, str, dict, str]:
     """The read-side counterpart to build_snapshot() -- pulls (rules, prompt,
-    files_data) back out of a loaded checkpoint, so a caller restoring from
-    one never has to know this shape's exact keys itself. Keeps the shape
-    defined in exactly one place: a future change to build_snapshot()'s keys
-    has to change this function right alongside it, in the same file,
+    files_data, lang) back out of a loaded checkpoint, so a caller restoring
+    from one never has to know this shape's exact keys itself. Keeps the
+    shape defined in exactly one place: a future change to build_snapshot()'s
+    keys has to change this function right alongside it, in the same file,
     instead of silently drifting from a raw dict-indexing read site
     somewhere else that build_snapshot() has no visibility into.
 
     checkpoint=None (nothing to resume, e.g. load_checkpoint() found
     nothing) returns the same empty defaults an absent checkpoint already
-    implied before this function existed.
+    implied before this function existed -- lang defaults to "en" in that
+    case too, matching pack()'s own default.
+
+    lang defaults to "en" when reading a checkpoint saved before this field
+    existed, same backward-compat convention `project.language`'s own
+    missing-field default (packager.py/freshness.py) already uses.
     """
     if not checkpoint:
-        return [], "", {}
+        return [], "", {}, "en"
     rules = checkpoint.get("rules", [])
     prompt = checkpoint.get("project", {}).get("prompt", "")
     files_data = checkpoint.get("files_data", {})
-    return rules, prompt, files_data
+    lang = checkpoint.get("project", {}).get("language", "en")
+    return rules, prompt, files_data, lang
 
 
 def handle_llm_failure(

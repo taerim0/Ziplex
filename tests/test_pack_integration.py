@@ -871,6 +871,94 @@ def test_pack_result_dir_overrides_result_dir_for_cache_lookup(tmp_path, monkeyp
     assert aif2["files"]["main.py"]["summary"] == aif1["files"]["main.py"]["summary"]
 
 
+def test_pack_lang_change_forces_full_resummarization_not_cross_language_reuse(tmp_path, monkeypatch):
+    # Real bug caught by code review: an unchanged file's summary used to be
+    # reused verbatim across a `lang` change (freshness.load_previous_
+    # summaries() had no notion of language at all), so re-packing with a
+    # different --lang kept the *previous* language's summaries while still
+    # stamping the *new* language onto project.language -- the same
+    # self-contradiction class this codebase already fixed once for
+    # rules/prompt vs. use_llm. 3 calls (summary + rules + prompt) on the
+    # second pack proves a real resummarization happened, not a silent
+    # reuse that would cost only 2 (rules + prompt).
+    provider = _CountingMockProvider()
+    monkeypatch.setattr(llm, "_provider", provider)
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    result_dir = tmp_path / "result"
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    aif1 = packager.pack(str(project), auto=True, interactive=False, result_dir=result_dir, lang="en")
+    packager.save_aif(aif1, output_path=str(result_dir / "project.json"))
+    assert aif1["project"]["language"] == "en"
+
+    provider.calls = 0
+    aif2 = packager.pack(str(project), auto=True, interactive=False, result_dir=result_dir, lang="ko")
+
+    assert provider.calls == 3
+    assert aif2["project"]["language"] == "ko"
+
+
+def test_pack_checkpoint_resumed_under_a_different_lang_discards_stale_rules_and_prompt(tmp_path, monkeypatch):
+    # A checkpoint saved under `lang="ko"` (real Korean-ish rules/prompt
+    # here, standing in for content an actual LLM would have written in
+    # Korean) must not be reused verbatim when the resuming pack() call asks
+    # for a different `lang` -- the resulting aif would otherwise claim
+    # project.language == "en" while shipping rules/prompt actually written
+    # in Korean, the same class of self-contradiction this codebase already
+    # fixed once for rules/prompt vs. use_llm.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    checkpoint.save_checkpoint(
+        str(project),
+        {
+            "project": {"name": "project", "prompt": "한국어로 작성된 안내", "language": "ko"},
+            "rules": ["한국어 규칙"],
+            "files_data": {},
+        },
+    )
+
+    # interactive=False auto-resumes the checkpoint found above.
+    aif = packager.pack(str(project), auto=True, interactive=False, lang="en")
+
+    assert aif["project"]["language"] == "en"
+    assert aif["rules"] != ["한국어 규칙"]  # regenerated, not the stale-language checkpoint value
+    assert aif["project"]["prompt"] != "한국어로 작성된 안내"
+
+
+def test_pack_checkpoint_resumed_under_the_same_lang_still_reuses_rules_and_prompt(tmp_path, monkeypatch):
+    # Sanity check alongside the mismatch test above: a checkpoint whose
+    # own language matches the resuming run's `lang` must still be reused
+    # verbatim -- the lang_matches guard shouldn't regress this already-
+    # covered case (test_pack_check_cancelled_save_preserves_rules_restored_
+    # from_a_prior_checkpoint covers the no-`language`-key/default-"en" case).
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    checkpoint.save_checkpoint(
+        str(project),
+        {
+            "project": {"name": "project", "prompt": "restored prompt", "language": "ko"},
+            "rules": ["Rule A"],
+            "files_data": {},
+        },
+    )
+
+    aif = packager.pack(str(project), auto=True, interactive=False, lang="ko")
+
+    assert aif["project"]["language"] == "ko"
+    assert aif["rules"] == ["Rule A"]
+    assert aif["project"]["prompt"] == "restored prompt"
+
+
 def test_pack_only_resummarizes_a_changed_file(tmp_path, monkeypatch):
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
