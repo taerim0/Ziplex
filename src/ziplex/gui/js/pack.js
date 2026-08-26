@@ -77,11 +77,32 @@ export async function renderPackJob(jobId) {
   // without awaiting it (same "best-effort" spirit as its own button
   // handlers below) since navigation proceeds regardless of whether that
   // request has landed yet -- it'll complete server-side either way.
-  activeGuard = () => {
-    if (!confirm(t("pack.guard.confirmLeaveRunning"))) return false;
-    if (confirm(t("pack.guard.offerStopAndSave"))) requestStop(true);
-    return true;
-  };
+  // (Re)armed inside poll() itself, only once a response actually confirms
+  // the job is still "running"/"finalizing" -- not set eagerly here, so a
+  // click in the brief window before the first poll response lands (or a
+  // reload of a job that already finished/errored server-side) never asks
+  // about a job that isn't actually running anymore, a real gap code
+  // review caught in this function's first version.
+  function armRunningGuard() {
+    activeGuard = () => {
+      if (!confirm(t("pack.guard.confirmLeaveRunning"))) return false;
+      if (confirm(t("pack.guard.offerStopAndSave"))) requestStop(true);
+      // Leaving is confirmed either way past this point -- clear the guard
+      // so it doesn't keep firing for every later, unrelated navigation
+      // while the job goes on running in the background with nobody
+      // watching (also a real bug code review caught: declining "stop and
+      // save" left this closure armed, popping the same "still running?"
+      // prompt on every subsequent click anywhere in the app until the job
+      // actually finished). Also stop this render's own poll() loop --
+      // without this, its already-scheduled setTimeout would fire ~1s
+      // later, see the job is still "running" server-side, and call
+      // armRunningGuard() again, silently re-arming the very guard just
+      // cleared and reintroducing the same bug on a delay.
+      activeGuard = null;
+      stopped = true;
+      return true;
+    };
+  }
 
   stopSaveButton.addEventListener("click", () => {
     if (confirm(t("pack.confirmStopSave"))) requestStop(true);
@@ -196,19 +217,28 @@ export async function renderPackJob(jobId) {
     const beforeUnload = (e) => { e.preventDefault(); e.returnValue = ""; };
     window.addEventListener("beforeunload", beforeUnload);
 
-    // Guards a topbar/sidebar click while this review is still open --
-    // same confirm text the Cancel button below uses, same end result
-    // (discard the job server-side), but fire-and-forget rather than
-    // awaited: confirmLeaveActivePackJob() (see its own comment, top of
-    // file) has to return synchronously so router.js's click handler can
-    // decide whether to preventDefault() the click itself, and confirm()
-    // being a blocking call is what makes that possible even though the
-    // actual /api/pack/cancel request keeps running after this returns.
-    activeGuard = () => {
-      if (!confirm(t("pack.review.confirmCancel"))) return false;
+    // The one place "discard this review" actually happens server-side --
+    // shared between the Cancel button below (awaited, so it can disable
+    // both buttons first and only navigate once the request settles) and
+    // the topbar/sidebar/back-button navigation guard just below (fire-
+    // and-forget: confirmLeaveActivePackJob() has to return synchronously,
+    // see its own comment at the top of this file, so the caller can't
+    // await this). Originally two separate copies of the same confirm/
+    // remove-listener/cancel sequence -- factored out after code review
+    // flagged them as already-diverging duplicates.
+    function discardReview() {
       window.removeEventListener("beforeunload", beforeUnload);
       activeGuard = null;
-      apiPost("/api/pack/cancel", { job_id: jobId }).catch(() => {});
+      return apiPost("/api/pack/cancel", { job_id: jobId });
+    }
+
+    // Guards a topbar/sidebar/back-button navigation while this review is
+    // still open -- same confirm text the Cancel button below uses, same
+    // discardReview() end result, but fire-and-forget (see that function's
+    // own comment for why).
+    activeGuard = () => {
+      if (!confirm(t("pack.review.confirmCancel"))) return false;
+      discardReview().catch(() => {});
       return true;
     };
 
@@ -336,9 +366,7 @@ export async function renderPackJob(jobId) {
       // requests before either response comes back.
       cancelButton.disabled = true;
       submitButton.disabled = true;
-      window.removeEventListener("beforeunload", beforeUnload);
-      activeGuard = null; // already confirmed/handled here -- don't ask again for the hash change on the next line
-      try { await apiPost("/api/pack/cancel", { job_id: jobId }); } catch (e) { /* best-effort */ }
+      try { await discardReview(); } catch (e) { /* best-effort */ }
       location.hash = "#/pack"; // back to the pack-new-project screen, not the bare-logo home
     });
 
@@ -387,6 +415,7 @@ export async function renderPackJob(jobId) {
     // in that narrow window -- keep polling through it the same as
     // "running" rather than falling into the generic error branch below.
     if (data.state === "running" || data.state === "finalizing") {
+      armRunningGuard(); // see its own comment above for why this is (re)armed here, not eagerly at render time
       setTimeout(poll, 1000);
       return;
     }

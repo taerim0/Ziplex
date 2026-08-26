@@ -84,7 +84,32 @@ document.addEventListener("click", (e) => {
   if (!confirmLeaveActivePackJob()) e.preventDefault();
 }, true);
 
-window.addEventListener("hashchange", route);
+// Belt-and-suspenders alongside the click-delegation above: an anchor click
+// is the *reported* way to bypass the guard, but it's not the only way the
+// hash can change -- the browser's own Back/Forward buttons fire
+// `hashchange` directly with no click event at all, which the delegation
+// above never sees (a real gap code review caught: pressing Back out of a
+// "reviewing" screen silently discarded it with zero warning, exactly what
+// this whole feature exists to prevent). Unlike a click, a hashchange can't
+// be preventDefault()'d -- location.hash has already changed by the time
+// this fires -- so a declined guard reverts it back to `lastHash` instead;
+// that revert's own hashchange re-enters this same function with
+// newHash === lastHash, taking the early-return branch below (a harmless
+// re-render of the page already showing, not a second prompt).
+let lastHash = location.hash || "#/";
+
+function guardedRoute() {
+  const newHash = location.hash || "#/";
+  if (newHash === lastHash) { route(); return; }
+  if (!confirmLeaveActivePackJob()) {
+    location.hash = lastHash;
+    return;
+  }
+  lastHash = newHash;
+  route();
+}
+
+window.addEventListener("hashchange", guardedRoute);
 window.addEventListener("DOMContentLoaded", () => {
   applyStaticI18n(); // index.html's own static topbar/sidebar labels (i18n.js) -- route() below never touches them
   route();
