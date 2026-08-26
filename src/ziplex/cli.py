@@ -19,7 +19,7 @@ from .corrector import correct_aif
 from .edits import finalize_aif
 from .file.relationship import build_tree, print_tree as print_dependency_tree
 from .search import search_files, read_detail_range
-from .freshness import check_freshness, freshness_candidate_files
+from .freshness import check_freshness_scoped
 from .skill_export import export_skill
 from .config import init_config, CONFIG_FILENAME, collection_kwargs as _collection_kwargs, collect_and_scan as _collect_and_scan
 
@@ -431,9 +431,7 @@ def main():
         with open(args.cache_path, "r", encoding="utf-8") as f:
             manifest = json.load(f)
 
-        scan_result = _collect_and_scan(args.path)
-        candidates = freshness_candidate_files(scan_result, args.path, manifest)
-        report = check_freshness(candidates, args.path, manifest)
+        report = check_freshness_scoped(args.path, manifest)
 
         if not report.is_stale:
             print("✅ 최신 상태 — 변경된 파일 없음")
