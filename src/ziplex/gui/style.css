@@ -255,21 +255,53 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 3px 0;
+  padding: 5px 6px;
+  margin: 1px 0;
+  border-radius: 4px;
   font-family: var(--mono);
   font-size: 0.9em;
   cursor: pointer;
 }
+/* The label wrapping a checkbox already makes the whole row clickable, but
+   without a visible hit area the checkbox itself -- a native ~13px box --
+   reads as the only clickable thing. Reported directly ("체크박스의
+   히트박스크기가 너무 작다") -- a bigger checkbox plus a hover highlight on
+   the row it sits in makes the actual (already-larger) click target visible
+   rather than just technically present. */
+.file-checklist-row:hover { background: rgba(255, 255, 255, 0.04); }
+.file-checklist-row input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+/* Shared "this row toggles everything below it" header styling -- both the
+   safe-files list's own select-all and the dangerous-files one (below) are
+   this shape; the dangerous one layers .dangerous-select-all's own
+   warning-specific look on top rather than duplicating the bold weight. */
+.select-all-row { font-weight: 600; }
 
 .dangerous-files { margin: 6px 0 14px; }
+.dangerous-explain {
+  color: var(--muted);
+  font-size: 0.85em;
+  margin: -4px 0 10px;
+}
+.dangerous-select-all {
+  color: var(--danger);
+  padding: 5px 6px 9px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
 .dangerous-file-row {
   border: 1px solid var(--border);
   border-left: 3px solid var(--danger);
   border-radius: 6px;
-  padding: 6px 10px;
-  margin-bottom: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
 }
-.dangerous-file-row .file-checklist-row { padding: 0 0 4px; }
+.dangerous-file-row .file-checklist-row { padding: 2px 4px 6px; margin: 0; }
+.dangerous-file-row .file-checklist-row:hover { background: rgba(242, 161, 84, 0.08); }
 .dangerous-file-detail {
   margin-left: 24px;
   font-family: var(--mono);

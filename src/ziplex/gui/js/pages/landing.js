@@ -88,7 +88,7 @@ export function renderPackHome() {
         selectAll.addEventListener("change", () => {
           for (const cb of selectableCheckboxes) cb.checked = selectAll.checked;
         });
-        fileListBox.appendChild(el("label", { class: "file-checklist-row", style: "font-weight:600" }, [
+        fileListBox.appendChild(el("label", { class: "file-checklist-row select-all-row" }, [
           selectAll, el("span", { text: t("pack.form.allFiles", { n: data.safe.length }) }),
         ]));
 
@@ -97,6 +97,14 @@ export function renderPackHome() {
           const cb = el("input", { type: "checkbox", checked: "checked", "data-name": name });
           cb.checked = true;
           selectableCheckboxes.push(cb);
+          // Keeps the select-all's own checked state honest if a human
+          // unchecks (or re-checks) one file individually -- same two-way
+          // sync the dangerous-files select-all below uses, for consistency
+          // between the two lists (flagged by code review: the first
+          // version only synced this one-way, only for the dangerous list).
+          cb.addEventListener("change", () => {
+            selectAll.checked = selectableCheckboxes.every(c => c.checked);
+          });
           list.appendChild(el("label", { class: "file-checklist-row" }, [cb, el("span", { text: name })]));
         }
         fileListBox.appendChild(list);
@@ -121,10 +129,32 @@ export function renderPackHome() {
       if (data.dangerous.length) {
         const box = el("div", { class: "dangerous-files" }, [
           el("p", { class: "muted", text: t("pack.form.dangerousDetected", { n: data.dangerous.length }) }),
+          el("p", { class: "dangerous-explain", text: t("pack.form.dangerousExplain") }),
         ]);
+
+        // A separate select-all from the safe-files one above, on purpose --
+        // sweeping a flagged file in should never be a side effect of the
+        // *safe* list's own "전체" toggle, only ever its own deliberate
+        // click. Still built from the same dangerousCheckboxes array
+        // packButton's click handler already reads, so no new wiring is
+        // needed there.
+        const dangerousSelectAll = el("input", { type: "checkbox" });
+        dangerousSelectAll.addEventListener("change", () => {
+          for (const cb of dangerousCheckboxes) cb.checked = dangerousSelectAll.checked;
+        });
+        box.appendChild(el("label", { class: "file-checklist-row select-all-row dangerous-select-all" }, [
+          dangerousSelectAll, el("span", { text: t("pack.form.dangerousSelectAll") }),
+        ]));
+
         for (const entry of data.dangerous) {
           const cb = el("input", { type: "checkbox", "data-name": entry.file });
           dangerousCheckboxes.push(cb);
+          // Keep the select-all's own checked state honest if a human
+          // unchecks (or checks) one file individually afterward -- it
+          // should read "checked" only when every file actually is.
+          cb.addEventListener("change", () => {
+            dangerousSelectAll.checked = dangerousCheckboxes.every(c => c.checked);
+          });
 
           const detail = [el("div", { class: "dangerous-file-reason", text: entry.reason || t("pack.form.dangerousDefaultReason") })];
           if (entry.line && entry.matched_text != null) {
