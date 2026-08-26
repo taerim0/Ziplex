@@ -705,6 +705,49 @@ def test_pack_preselected_can_name_a_dangerous_file_directly(tmp_path, monkeypat
     assert aif["project"]["security_scan"] == {"flagged": 1, "included_anyway": 1, "excluded": 0}
 
 
+def test_pack_preselected_dangerous_file_is_not_logged_as_excluded(tmp_path, monkeypatch, capsys):
+    # Real bug reported directly: the pack itself always included a
+    # preselected dangerous file correctly (security_scan's own count,
+    # asserted in the test above, proves that) -- but the printed "민감
+    # 파일 제외" log used to be computed from `included_anyway`, which only
+    # the interactive terminal prompt ever populates, right after the scan
+    # and *before* `preselected` got a chance to override it. So a GUI
+    # user who explicitly checked "include anyway" still saw their own
+    # file listed as excluded in the pack log, even though it was about to
+    # be included -- confusing, even though the actual result was correct.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "secret.env", 'API_KEY = "abc123"\n')
+
+    packager.pack(str(project), interactive=False, preselected=["main.py", "secret.env"])
+
+    out = capsys.readouterr().out
+    assert "민감 파일 제외" not in out
+    assert "❌ secret.env" not in out
+
+
+def test_pack_still_logs_a_genuinely_excluded_dangerous_file(tmp_path, monkeypatch, capsys):
+    # Sanity check alongside the fix above: a dangerous file that's
+    # actually left out (not named in preselected) must still be logged as
+    # excluded -- the fix moves *when*/*how* this is computed, not whether
+    # it happens at all.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "secret.env", 'API_KEY = "abc123"\n')
+
+    packager.pack(str(project), interactive=False, preselected=["main.py"])
+
+    out = capsys.readouterr().out
+    assert "민감 파일 제외: 1개" in out
+    assert "secret.env" in out
+
+
 def test_pack_does_not_duplicate_a_dangerous_file_approved_both_ways(tmp_path, monkeypatch, capsys):
     # Found by code review: interactive review folding a dangerous file
     # into safe_files, *and* preselected separately naming that same file,
