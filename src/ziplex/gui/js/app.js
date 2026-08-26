@@ -126,23 +126,42 @@ let openModal = null;
 export function showConfirmModal(message, buttons) {
   if (openModal) return openModal;
 
+  // Accessibility (code review, 2026-08-26): window.confirm() guaranteed a
+  // focus-managed, screen-reader-announced native dialog for free -- this
+  // DOM replacement has to do that itself, or a keyboard/screen-reader
+  // user gets no indication a blocking dialog even opened. previouslyFocused
+  // is restored on close so focus lands back where the human actually was
+  // (whatever they'd clicked/tabbed to before triggering the guard), not
+  // wherever the DOM happens to leave it once the overlay's gone.
+  const previouslyFocused = document.activeElement;
+
   openModal = new Promise((resolve) => {
     function close(value) {
       overlay.remove();
       document.removeEventListener("keydown", onKeyDown);
+      if (previouslyFocused && previouslyFocused.focus) previouslyFocused.focus();
       openModal = null;
       resolve(value);
     }
+    // Tab/Shift+Tab cycle only through this modal's own buttons while it's
+    // open -- a minimal focus trap, not a full one (no other focusable
+    // content exists inside a confirm dialog), but enough that Tab can't
+    // walk out into the page underneath.
     function onKeyDown(e) {
-      if (e.key === "Escape") close(null);
+      if (e.key === "Escape") { close(null); return; }
+      if (e.key !== "Tab") return;
+      const first = buttonEls[0];
+      const last = buttonEls[buttonEls.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     }
     const buttonEls = buttons.map(b => el("button", {
       class: b.primary ? "" : "secondary",
       text: b.label,
       onclick: () => close(b.value),
     }));
-    const overlay = el("div", { class: "modal-overlay" }, [
-      el("div", { class: "modal-box" }, [
+    const overlay = el("div", { class: "modal-overlay", role: "presentation" }, [
+      el("div", { class: "modal-box", role: "dialog", "aria-modal": "true", "aria-label": message, tabindex: "-1" }, [
         el("p", { text: message }),
         el("div", { class: "modal-buttons" }, buttonEls),
       ]),
@@ -150,6 +169,7 @@ export function showConfirmModal(message, buttons) {
     overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
     document.addEventListener("keydown", onKeyDown);
     document.body.appendChild(overlay);
+    (buttons.find(b => b.primary) ? buttonEls[buttons.findIndex(b => b.primary)] : buttonEls[0]).focus();
   });
   return openModal;
 }

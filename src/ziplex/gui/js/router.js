@@ -103,37 +103,44 @@ document.addEventListener("click", (e) => {
 // "reviewing" screen silently discarded it with zero warning, exactly what
 // this whole feature exists to prevent). Unlike a click, a hashchange can't
 // be preventDefault()'d -- location.hash has already changed by the time
-// this fires -- so an active guard reverts it back to `lastHash`
-// immediately (pausing the visible navigation while the modal is shown,
+// this fires -- so an active guard reverts the visible URL back to
+// `lastHash` immediately (pausing the navigation while the modal is shown,
 // since the page underneath is still whatever `lastHash` was already
-// rendering) rather than deciding first, and that revert's own hashchange
-// re-enters this same function with newHash === lastHash.
+// rendering) rather than deciding first.
 //
-// That re-entry -- and the settling one after a *confirmed* leave
-// reassigns `location.hash` back to the original target -- has to be a
-// pure no-op, not "harmlessly" call route() again: renderPackJob() tears
-// down and rebuilds its whole DOM/state on every call (a fresh
-// /api/pack/review fetch included), so re-invoking it here would silently
-// wipe out a "reviewing" screen's own in-progress name/guide/rules/summary
-// edits on every declined Back-navigation attempt -- a real regression an
-// earlier version of this function had (it called route() unconditionally
-// whenever newHash === lastHash, exactly this case) that went unnoticed
-// because testing it only checked the final hash value, never whether the
-// page underneath survived intact. If the human confirms leaving, the
-// guard has already cleared itself (every guard closure does) by the time
-// that reassignment's hashchange arrives, so it takes the "no active
-// guard" branch below and renders normally -- once, not twice.
+// That revert uses history.replaceState(), not a plain `location.hash =`
+// assignment -- a real gap code review caught: reassigning location.hash
+// pushes a *new* history entry, so declining a Back press left the
+// session-history stack shaped differently than if the press had never
+// happened (a duplicate/truncated entry around the current page, so a
+// later Back press could land somewhere unexpected). replaceState() swaps
+// the URL back in place instead, and -- unlike a `location.hash =`
+// assignment -- fires no `hashchange` of its own, so there's no re-entrant
+// "settling" call to guard against the way an earlier version of this
+// function needed (and got wrong once already: it called route()
+// unconditionally on that re-entry, which for the pack-job route means
+// fully re-invoking renderPackJob() -- silently wiping out a "reviewing"
+// screen's own in-progress name/guide/rules/summary edits on every
+// declined Back-navigation attempt, a real regression that went unnoticed
+// because its own test only ever checked the final hash value, never
+// whether the page underneath survived intact).
+//
+// If the human confirms leaving instead, `location.hash = newHash` below
+// *is* a real navigation and deliberately pushes a fresh entry, firing a
+// normal hashchange that lands in the `!hasActiveGuard()` branch (every
+// guard closure clears itself once it resolves) and renders once, not
+// twice.
 let lastHash = location.hash || "#/";
 
 function guardedRoute() {
   const newHash = location.hash || "#/";
-  if (newHash === lastHash) return; // our own revert (or its settling) -- nothing actually changed
+  if (newHash === lastHash) return; // no real change -- hashchange shouldn't even fire without one
   if (!hasActiveGuard()) {
     lastHash = newHash;
     route();
     return;
   }
-  location.hash = lastHash;
+  history.replaceState(null, "", lastHash);
   confirmLeaveActivePackJob().then((proceed) => {
     if (proceed) location.hash = newHash;
   });

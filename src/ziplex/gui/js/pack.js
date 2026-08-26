@@ -43,8 +43,23 @@ export function hasActiveGuard() {
   return activeGuard !== null;
 }
 
-export async function confirmLeaveActivePackJob() {
-  return activeGuard ? activeGuard() : true;
+// A guard invocation is now a real, non-blocking async wait on a modal --
+// unlike the old window.confirm(), a second navigation attempt (a fast
+// double Back-press, or a Back press landing while a click's own guard is
+// still pending) can arrive before the first one's promise settles.
+// pendingGuardDecision de-dupes that the same way showConfirmModal() itself
+// de-dupes concurrent modal requests: a second call while one's still
+// in flight gets the *same* promise instead of invoking activeGuard() (and
+// its side effects -- requestStop(), discardReview()) a second time, which
+// was a real bug code review caught -- two independent stop/cancel
+// requests firing, and two .then() callbacks racing to set location.hash.
+let pendingGuardDecision = null;
+
+export function confirmLeaveActivePackJob() {
+  if (!activeGuard) return Promise.resolve(true);
+  if (pendingGuardDecision) return pendingGuardDecision;
+  pendingGuardDecision = activeGuard().finally(() => { pendingGuardDecision = null; });
+  return pendingGuardDecision;
 }
 
 export async function renderPackJob(jobId) {
@@ -428,6 +443,15 @@ export async function renderPackJob(jobId) {
       showErrorState(e.message);
       return;
     }
+    // Re-checked here, not just at entry: this specific request could have
+    // already been in flight when the running-guard's modal resolved
+    // "save & stop"/"discard & stop" (which sets stopped = true) --
+    // stopping isn't instant server-side, so the response landing right
+    // now can still legitimately say "running". Without this check,
+    // armRunningGuard() below would re-arm activeGuard for a job the human
+    // already told to stop, popping "still running, leave anyway?" again
+    // on their very next click -- a real bug code review caught.
+    if (stopped) return;
 
     if (data.log.length) {
       logPre.textContent += (logPre.textContent ? "\n" : "") + data.log.join("\n");
