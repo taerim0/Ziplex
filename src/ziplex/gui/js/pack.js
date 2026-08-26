@@ -5,33 +5,45 @@
 // dependency-tree overview + editor from graph.js for relationships)
 // before submit/finalize.
 
-import { app, nav, el, api, apiPost, openProject, confidenceLevel } from "./app.js";
+import { app, nav, el, api, apiPost, openProject, confidenceLevel, showConfirmModal } from "./app.js";
 import { t } from "./i18n.js";
 import { renderDependencyTreeOverview, renderRelationshipEditor } from "./graph.js";
 
-// Navigation guard for in-app hash links (topbar/sidebar) -- router.js's
-// document-level click-delegation calls confirmLeaveActivePackJob() before
-// letting any `<a href="#...">` click through. A hash-link click doesn't
-// fire `beforeunload` (that only ever catches a real page reload/tab
-// close), so a pack job's "running"/"reviewing" screen used to have no way
-// to warn before a topbar click silently swapped it out with no
-// confirmation at all -- reported directly by the user clicking a topbar
-// item mid-pack and landing on a different page with zero warning.
+// Navigation guard for in-app hash links (topbar/sidebar) and the
+// browser's own Back/Forward -- router.js's click-delegation and
+// hashchange handler both check hasActiveGuard()/confirmLeaveActivePackJob()
+// before letting a navigation through. A hash-link click (or a Back/
+// Forward press) doesn't fire `beforeunload` (that only ever catches a
+// real page reload/tab close), so a pack job's "running"/"reviewing"
+// screen used to have no way to warn before a topbar click silently
+// swapped it out with no confirmation at all -- reported directly by the
+// user clicking a topbar item mid-pack and landing on a different page
+// with zero warning.
 //
-// The backend job itself is *not* affected either way by this guard, or by
-// leaving without it: packager.pack() runs on its own background thread in
-// the Flask/pywebview process (see gui/pack_service.py's module docstring),
-// entirely decoupled from whether any browser tab happens to be watching
-// it. Leaving mid-"running" doesn't stop or lose the pack -- it keeps
-// computing regardless. What's actually at risk is *reaching* the result
-// afterward: a "reviewing" job with no jobs-list page has nothing bringing
-// a human back to its `#/pack/<id>` URL to actually submit/save it, and a
-// "reviewing" screen's own name/guide/rules/summary edits (unlike a link/
-// unlink, which hits the server immediately) live only in that page's JS
-// state until submitted.
-let activeGuard = null; // null | () => boolean (return false to block the navigation)
+// Leaving a "running" job now always stops it (see armRunningGuard()
+// below) -- the user's own call, made explicitly after being shown that
+// leaving used to let it keep computing unsupervised in the background
+// with no jobs-list page to ever find it again. A "reviewing" job's
+// name/guide/rules/summary edits (unlike a link/unlink, which hits the
+// server immediately) still only live in that page's JS state until
+// submitted, so leaving there still means discarding them.
+//
+// Each guard closure is `async` (showConfirmModal() below is a real DOM
+// dialog awaiting a click, not window.confirm()'s blocking-but-synchronous
+// native one) -- confirmLeaveActivePackJob() returns a Promise<boolean>
+// accordingly; router.js's callers (a click handler, a hashchange handler)
+// both cope with that asynchrony themselves rather than needing this to
+// resolve before they return. hasActiveGuard() is the cheap synchronous
+// half -- checked first so a click/hashchange with nothing active to guard
+// never even calls into confirmLeaveActivePackJob() at all, the common
+// case on every ordinary navigation.
+let activeGuard = null; // null | () => Promise<boolean> (resolve false to block the navigation)
 
-export function confirmLeaveActivePackJob() {
+export function hasActiveGuard() {
+  return activeGuard !== null;
+}
+
+export async function confirmLeaveActivePackJob() {
   return activeGuard ? activeGuard() : true;
 }
 
@@ -70,45 +82,56 @@ export async function renderPackJob(jobId) {
       // already shows whatever it actually ended up as.
     }
   }
-  // Guards a topbar/sidebar click while the job is still "running" -- see
-  // confirmLeaveActivePackJob()'s own comment above for why this exists.
-  // Both confirm()s are synchronous/blocking, so by the time this returns
-  // the human has already answered both; requestStop(true) is fired
-  // without awaiting it (same "best-effort" spirit as its own button
-  // handlers below) since navigation proceeds regardless of whether that
-  // request has landed yet -- it'll complete server-side either way.
+  // Guards a topbar/sidebar click or Back/Forward press while the job is
+  // still "running" -- see confirmLeaveActivePackJob()'s own comment above
+  // for the full story. Leaving always stops the job now (save or
+  // discard, the human's own explicit choice on this modal) rather than
+  // letting it keep computing unsupervised in the background -- reusing
+  // pack.stopSave/pack.stopDiscard's own labels since it's the identical
+  // underlying action as the persistent Stop buttons below, just reached
+  // by trying to navigate away instead of clicking one of them directly.
   // (Re)armed inside poll() itself, only once a response actually confirms
   // the job is still "running"/"finalizing" -- not set eagerly here, so a
   // click in the brief window before the first poll response lands (or a
   // reload of a job that already finished/errored server-side) never asks
   // about a job that isn't actually running anymore, a real gap code
-  // review caught in this function's first version.
+  // review caught in an earlier version of this function.
   function armRunningGuard() {
-    activeGuard = () => {
-      if (!confirm(t("pack.guard.confirmLeaveRunning"))) return false;
-      if (confirm(t("pack.guard.offerStopAndSave"))) requestStop(true);
+    activeGuard = async () => {
+      const choice = await showConfirmModal(t("pack.guard.runningModalMessage"), [
+        { label: t("pack.stopSave"), value: "save", primary: true },
+        { label: t("pack.stopDiscard"), value: "discard" },
+        { label: t("pack.guard.stay"), value: null },
+      ]);
+      if (choice === null) return false;
+      await requestStop(choice === "save");
       // Leaving is confirmed either way past this point -- clear the guard
       // so it doesn't keep firing for every later, unrelated navigation
-      // while the job goes on running in the background with nobody
-      // watching (also a real bug code review caught: declining "stop and
-      // save" left this closure armed, popping the same "still running?"
-      // prompt on every subsequent click anywhere in the app until the job
-      // actually finished). Also stop this render's own poll() loop --
-      // without this, its already-scheduled setTimeout would fire ~1s
-      // later, see the job is still "running" server-side, and call
-      // armRunningGuard() again, silently re-arming the very guard just
-      // cleared and reintroducing the same bug on a delay.
+      // (a real bug an earlier version had: declining to stop left this
+      // closure armed, and the still-ticking poll() loop below re-armed it
+      // every second until the job finished). stopped = true is what
+      // actually silences that loop -- without it, its already-scheduled
+      // setTimeout would fire ~1s later, see the job still "running"
+      // server-side (the stop request above only just landed, the
+      // background thread hasn't necessarily noticed it yet), and call
+      // armRunningGuard() again.
       activeGuard = null;
       stopped = true;
       return true;
     };
   }
 
-  stopSaveButton.addEventListener("click", () => {
-    if (confirm(t("pack.confirmStopSave"))) requestStop(true);
+  stopSaveButton.addEventListener("click", async () => {
+    if (await showConfirmModal(t("pack.confirmStopSave"), [
+      { label: t("pack.guard.confirm"), value: true, primary: true },
+      { label: t("pack.guard.cancel"), value: false },
+    ])) requestStop(true);
   });
-  stopDiscardButton.addEventListener("click", () => {
-    if (confirm(t("pack.confirmStopDiscard"))) requestStop(false);
+  stopDiscardButton.addEventListener("click", async () => {
+    if (await showConfirmModal(t("pack.confirmStopDiscard"), [
+      { label: t("pack.guard.confirm"), value: true, primary: true },
+      { label: t("pack.guard.cancel"), value: false },
+    ])) requestStop(false);
   });
 
   const card = el("div", { class: "card" }, [
@@ -218,27 +241,34 @@ export async function renderPackJob(jobId) {
     window.addEventListener("beforeunload", beforeUnload);
 
     // The one place "discard this review" actually happens server-side --
-    // shared between the Cancel button below (awaited, so it can disable
-    // both buttons first and only navigate once the request settles) and
-    // the topbar/sidebar/back-button navigation guard just below (fire-
-    // and-forget: confirmLeaveActivePackJob() has to return synchronously,
-    // see its own comment at the top of this file, so the caller can't
-    // await this). Originally two separate copies of the same confirm/
-    // remove-listener/cancel sequence -- factored out after code review
-    // flagged them as already-diverging duplicates.
+    // shared between the Cancel button below and the topbar/sidebar/
+    // Back-Forward navigation guard just below, both of which now show the
+    // same confirmDiscardReview() modal first (originally two separate
+    // copies of the same confirm/remove-listener/cancel sequence --
+    // factored out after code review flagged them as already-diverging
+    // duplicates).
     function discardReview() {
       window.removeEventListener("beforeunload", beforeUnload);
       activeGuard = null;
       return apiPost("/api/pack/cancel", { job_id: jobId });
     }
 
-    // Guards a topbar/sidebar/back-button navigation while this review is
-    // still open -- same confirm text the Cancel button below uses, same
-    // discardReview() end result, but fire-and-forget (see that function's
-    // own comment for why).
-    activeGuard = () => {
-      if (!confirm(t("pack.review.confirmCancel"))) return false;
-      discardReview().catch(() => {});
+    // Shared confirm step for discardReview() -- reused by the Cancel
+    // button below and the navigation guard just below it, so the same
+    // in-page modal (not window.confirm()'s native box) backs "취소"
+    // regardless of which path triggers it.
+    async function confirmDiscardReview() {
+      return !!(await showConfirmModal(t("pack.review.confirmCancel"), [
+        { label: t("pack.guard.stay"), value: false, primary: true },
+        { label: t("pack.review.cancel"), value: true },
+      ]));
+    }
+
+    // Guards a topbar/sidebar/Back-Forward navigation while this review is
+    // still open.
+    activeGuard = async () => {
+      if (!(await confirmDiscardReview())) return false;
+      try { await discardReview(); } catch (e) { /* best-effort */ }
       return true;
     };
 
@@ -360,7 +390,7 @@ export async function renderPackJob(jobId) {
       // (name/guide/rules/summaries -- see the beforeUnload comment above)
       // with no undo, so it gets the same one-step confirmation any
       // destructive action should have rather than firing on a single click.
-      if (!confirm(t("pack.review.confirmCancel"))) return;
+      if (!(await confirmDiscardReview())) return;
       // Disable both, not just this one -- otherwise a click here followed
       // fast enough by a click on "완료 및 저장" (still enabled) fires both
       // requests before either response comes back.

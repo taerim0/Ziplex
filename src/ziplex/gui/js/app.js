@@ -110,6 +110,50 @@ export function el(tag, attrs = {}, children = []) {
   return node;
 }
 
+// A themed in-page confirmation dialog, replacing window.confirm()'s
+// native OS-styled box -- reported directly: an alert-style native dialog
+// reads as the browser interrupting the app, and can't offer more than a
+// bare OK/Cancel (pack.js's leave-an-active-pack-job guard needs three:
+// save & leave / discard & leave / stay). `buttons` is
+// [{label, value, primary?}, ...] -- resolves to whichever one was
+// clicked, or null if dismissed via the overlay or Escape (every caller
+// treats null the same as its own explicit "stay"/"cancel" option). Only
+// one modal is ever open at a time -- a second call while one's still
+// pending (a fast double click/keypress) returns the same promise rather
+// than stacking a second overlay on top of the first.
+let openModal = null;
+
+export function showConfirmModal(message, buttons) {
+  if (openModal) return openModal;
+
+  openModal = new Promise((resolve) => {
+    function close(value) {
+      overlay.remove();
+      document.removeEventListener("keydown", onKeyDown);
+      openModal = null;
+      resolve(value);
+    }
+    function onKeyDown(e) {
+      if (e.key === "Escape") close(null);
+    }
+    const buttonEls = buttons.map(b => el("button", {
+      class: b.primary ? "" : "secondary",
+      text: b.label,
+      onclick: () => close(b.value),
+    }));
+    const overlay = el("div", { class: "modal-overlay" }, [
+      el("div", { class: "modal-box" }, [
+        el("p", { text: message }),
+        el("div", { class: "modal-buttons" }, buttonEls),
+      ]),
+    ]);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
+    document.addEventListener("keydown", onKeyDown);
+    document.body.appendChild(overlay);
+  });
+  return openModal;
+}
+
 export function copyButton(getText, label = t("core.copy")) {
   const btn = el("button", { class: "secondary", text: label });
   btn.addEventListener("click", async () => {
