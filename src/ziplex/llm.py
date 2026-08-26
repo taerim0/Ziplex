@@ -155,7 +155,33 @@ class GeminiProvider:
         for attempt in range(retry):
             try:
                 response = requests.post(f"{self.url}?key={api_key}", json={
-                    "contents": [{"parts": [{"text": prompt}]}]
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    # Every prompt here is a short, single-shot extraction
+                    # task (summarize this file in one line, list these
+                    # rules) with a "JSON only" answer -- none of it benefits
+                    # from Gemini's extended "thinking" mode, which is on by
+                    # default for the 2.5+/3.x Flash generation this
+                    # project's own DEFAULT_MODEL/GEMINI_MODEL point at.
+                    # Confirmed directly against the real API (2026-08-26,
+                    # reported by a user whose AI Studio cost jumped ~10x
+                    # with no code or usage-pattern change on their end,
+                    # traced to exactly this): a trivial one-word request
+                    # billed usageMetadata.thoughtsTokenCount = 142 (of a
+                    # 150-token total) with no thinkingConfig set, and 0
+                    # (field absent, totalTokenCount = 8) with
+                    # thinkingBudget: 0 -- since `-latest` is a floating
+                    # alias (see DEFAULT_MODEL's own comment), the model it
+                    # actually points to -- and therefore whether thinking
+                    # is on by default -- can change with no code change on
+                    # this end at all. Every model reachable through the API
+                    # at the time of this fix (checked directly) is from a
+                    # thinking-capable generation -- both older, non-thinking
+                    # Flash releases tried during this investigation came
+                    # back 404 (sunset) -- so there's no live model left to
+                    # confirm this field is harmlessly ignored elsewhere
+                    # rather than rejected; revisit if a future model
+                    # actually errors on it.
+                    "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}},
                 }, timeout=REQUEST_TIMEOUT)
                 data = response.json()
             except (requests.exceptions.RequestException, json.JSONDecodeError) as e:

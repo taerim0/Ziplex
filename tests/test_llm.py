@@ -81,6 +81,28 @@ class _FakeResponse:
         return self._payload
 
 
+def test_generate_disables_gemini_thinking_by_default(monkeypatch):
+    # Real cost bug reported directly: Gemini's "thinking" mode is on by
+    # default for the 2.5+/3.x Flash generation DEFAULT_MODEL/GEMINI_MODEL
+    # point at, and none of these prompts (short, single-shot, "JSON only")
+    # benefit from it -- confirmed directly against the real API that a
+    # trivial request billed 142 hidden thinking tokens (of 150 total) with
+    # no thinkingConfig set, and 0 with thinkingBudget: 0. Every request
+    # must carry that field regardless of which model ends up handling it.
+    captured = {}
+
+    def fake_post(url, json, timeout=None):
+        captured["json"] = json
+        return _FakeResponse({"candidates": [{"content": {"parts": [{"text": "{}"}]}}]})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.GeminiProvider(api_key="x")
+
+    provider.generate("prompt")
+
+    assert captured["json"]["generationConfig"]["thinkingConfig"]["thinkingBudget"] == 0
+
+
 def test_generate_retries_past_a_transport_level_exception(monkeypatch):
     # A network blip (connection reset, DNS failure, read timeout) used to
     # propagate straight out of generate() uncaught -- unlike an explicit
