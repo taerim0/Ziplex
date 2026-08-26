@@ -140,7 +140,13 @@ def generate_summaries(pending: dict[str, dict], root: Path, lang: str = "en") -
     failure: correct_aif()'s per-file review (triaged by confidence.py) is
     what catches and fixes a wrong or missing summary later, not a retry
     loop here -- see pack()'s own docstring for why that trade-off (try
-    once, in parallel, let review catch the rest) was made.
+    once, in parallel, let review catch the rest) was made. The printed
+    progress line reflects which of those two actually happened per file
+    (✅ for a real summary, ❌ for a placeholder) -- reported directly as a
+    real bug: this used to print ✅ unconditionally, so a file that
+    silently fell back to the failure placeholder looked exactly like a
+    success in the log, with nothing pointing a human at the one place
+    (correct_aif()'s review) meant to actually catch it.
     """
     name_to_fp = {_rel_key(fp, root): fp for fp in pending}
     batches = [
@@ -158,8 +164,12 @@ def generate_summaries(pending: dict[str, dict], root: Path, lang: str = "en") -
         for future in as_completed(futures):
             for name, summary in future.result().items():
                 fp = name_to_fp[name]
-                results[fp] = summary or placeholder
-                print(f"  ✅ {name}")
+                if summary:
+                    results[fp] = summary
+                    print(f"  ✅ {name}")
+                else:
+                    results[fp] = placeholder
+                    print(f"  ❌ {name} (요약 생성 실패 -- 검토 단계에서 확인 필요)")
     return results
 
 
