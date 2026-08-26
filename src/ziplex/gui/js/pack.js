@@ -9,7 +9,38 @@ import { app, nav, el, api, apiPost, openProject, confidenceLevel } from "./app.
 import { t } from "./i18n.js";
 import { renderDependencyTreeOverview, renderRelationshipEditor } from "./graph.js";
 
+// Navigation guard for in-app hash links (topbar/sidebar) -- router.js's
+// document-level click-delegation calls confirmLeaveActivePackJob() before
+// letting any `<a href="#...">` click through. A hash-link click doesn't
+// fire `beforeunload` (that only ever catches a real page reload/tab
+// close), so a pack job's "running"/"reviewing" screen used to have no way
+// to warn before a topbar click silently swapped it out with no
+// confirmation at all -- reported directly by the user clicking a topbar
+// item mid-pack and landing on a different page with zero warning.
+//
+// The backend job itself is *not* affected either way by this guard, or by
+// leaving without it: packager.pack() runs on its own background thread in
+// the Flask/pywebview process (see gui/pack_service.py's module docstring),
+// entirely decoupled from whether any browser tab happens to be watching
+// it. Leaving mid-"running" doesn't stop or lose the pack -- it keeps
+// computing regardless. What's actually at risk is *reaching* the result
+// afterward: a "reviewing" job with no jobs-list page has nothing bringing
+// a human back to its `#/pack/<id>` URL to actually submit/save it, and a
+// "reviewing" screen's own name/guide/rules/summary edits (unlike a link/
+// unlink, which hits the server immediately) live only in that page's JS
+// state until submitted.
+let activeGuard = null; // null | () => boolean (return false to block the navigation)
+
+export function confirmLeaveActivePackJob() {
+  return activeGuard ? activeGuard() : true;
+}
+
 export async function renderPackJob(jobId) {
+  // Reset on every fresh render (a brand-new job, or the URL bar navigating
+  // directly to one) rather than inheriting whatever a previous job's guard
+  // left behind -- that guard belongs to a job this render has nothing to
+  // do with.
+  activeGuard = null;
   nav.classList.add("hidden");
   app.innerHTML = "";
 
@@ -39,6 +70,19 @@ export async function renderPackJob(jobId) {
       // already shows whatever it actually ended up as.
     }
   }
+  // Guards a topbar/sidebar click while the job is still "running" -- see
+  // confirmLeaveActivePackJob()'s own comment above for why this exists.
+  // Both confirm()s are synchronous/blocking, so by the time this returns
+  // the human has already answered both; requestStop(true) is fired
+  // without awaiting it (same "best-effort" spirit as its own button
+  // handlers below) since navigation proceeds regardless of whether that
+  // request has landed yet -- it'll complete server-side either way.
+  activeGuard = () => {
+    if (!confirm(t("pack.guard.confirmLeaveRunning"))) return false;
+    if (confirm(t("pack.guard.offerStopAndSave"))) requestStop(true);
+    return true;
+  };
+
   stopSaveButton.addEventListener("click", () => {
     if (confirm(t("pack.confirmStopSave"))) requestStop(true);
   });
@@ -67,6 +111,7 @@ export async function renderPackJob(jobId) {
   // retry_params from (the status/review fetch itself failing) -- the
   // "back to the pack form" button below still gives a way out either way.
   function showErrorState(message, retryParams) {
+    activeGuard = null; // nothing left running/unsaved to warn about
     statusBadge.className = "pack-status error";
     statusBadge.textContent = t("pack.status.error");
 
@@ -94,6 +139,7 @@ export async function renderPackJob(jobId) {
   }
 
   function showDoneState(result) {
+    activeGuard = null; // saved already -- nothing left to warn about leaving
     statusBadge.className = "pack-status done";
     statusBadge.textContent = t("pack.status.done");
     const openIt = () => openProject(result.aif_path, result.project_path);
@@ -149,6 +195,22 @@ export async function renderPackJob(jobId) {
     // navigation.
     const beforeUnload = (e) => { e.preventDefault(); e.returnValue = ""; };
     window.addEventListener("beforeunload", beforeUnload);
+
+    // Guards a topbar/sidebar click while this review is still open --
+    // same confirm text the Cancel button below uses, same end result
+    // (discard the job server-side), but fire-and-forget rather than
+    // awaited: confirmLeaveActivePackJob() (see its own comment, top of
+    // file) has to return synchronously so router.js's click handler can
+    // decide whether to preventDefault() the click itself, and confirm()
+    // being a blocking call is what makes that possible even though the
+    // actual /api/pack/cancel request keeps running after this returns.
+    activeGuard = () => {
+      if (!confirm(t("pack.review.confirmCancel"))) return false;
+      window.removeEventListener("beforeunload", beforeUnload);
+      activeGuard = null;
+      apiPost("/api/pack/cancel", { job_id: jobId }).catch(() => {});
+      return true;
+    };
 
     const nameInput = el("input", { type: "text", value: review.project.name || "" });
     const promptInput = el("textarea", { rows: "3" });
@@ -275,6 +337,7 @@ export async function renderPackJob(jobId) {
       cancelButton.disabled = true;
       submitButton.disabled = true;
       window.removeEventListener("beforeunload", beforeUnload);
+      activeGuard = null; // already confirmed/handled here -- don't ask again for the hash change on the next line
       try { await apiPost("/api/pack/cancel", { job_id: jobId }); } catch (e) { /* best-effort */ }
       location.hash = "#/pack"; // back to the pack-new-project screen, not the bare-logo home
     });
