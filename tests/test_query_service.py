@@ -66,6 +66,32 @@ def test_check_freshness_does_not_flag_a_previously_included_dangerous_file_as_r
     assert report["unchanged"] == ["config.py"]
 
 
+def test_get_overview_stale_field_does_not_flag_a_previously_included_dangerous_file(tmp_path, monkeypatch):
+    # Same bug as the standalone check_freshness() test above, but for
+    # _stale_warning() -- a *separate* private helper with its own inline
+    # collect_and_scan()["safe"] call, missed in the first pass at this fix
+    # since it lives in a different function than the one the bug was
+    # originally reported against. Symptom that made the miss visible:
+    # opening a project in the GUI showed "changed" for the previously-
+    # included file for about a second, until the page's own live watcher
+    # (gui/watcher.py, fixed correctly the first time) caught up and
+    # corrected the badge -- get_overview()'s own "_stale" field is what
+    # the *initial* page load actually shows before that correction lands.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "config.py", 'API_KEY = "abc123"\n')
+
+    aif = packager.pack(str(project), preselected=["config.py"], interactive=False)
+    aif_path = tmp_path / "out.json"
+    packager.save_aif(aif, str(aif_path))
+
+    result = query_service.get_overview(str(aif_path), str(project))
+
+    assert "_stale" not in result
+
+
 def test_stale_warning_is_none_for_an_unchanged_scoped_project(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")

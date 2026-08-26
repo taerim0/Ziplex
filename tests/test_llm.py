@@ -313,6 +313,34 @@ def test_analyze_prompt_labels_the_retry_with_a_fixed_name(monkeypatch):
     assert labels == ["AI 가이드"]
 
 
+# Real bug reported directly: packing this same repo scored ~17 low-confidence
+# files in English but ~63 in Korean via confidence.py's word-overlap
+# heuristic -- not because the Korean summaries were actually worse, but
+# because an English summary naturally reuses identifier-derived words (no
+# literal quote needed) while a Korean summary uses genuinely different
+# words for the same meaning, leaving no shared vocabulary for the heuristic
+# to find unless the model quotes the identifier verbatim. These three
+# prompts (the ones confidence.py's overlap is scored against) now ask the
+# model to keep identifiers untranslated so that signal exists regardless of
+# output language -- see llm.py's _IDENTIFIER_FIDELITY_NOTE.
+def test_analyze_file_summary_asks_to_keep_identifiers_untranslated(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_file_summary("main.py", ["add(a, b)"], [], lang="ko")
+    assert "do not translate" in captured[0]
+
+
+def test_analyze_text_summary_asks_to_keep_identifiers_untranslated(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_text_summary("README.md", "hello", lang="ko")
+    assert "do not translate" in captured[0]
+
+
+def test_analyze_batch_summaries_asks_to_keep_identifiers_untranslated(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_batch_summaries([{"file": "main.py", "signatures": ["add()"], "dependencies": []}], lang="ko")
+    assert "do not translate" in captured[0]
+
+
 def test_generate_gives_up_gracefully_after_repeated_transport_failures(monkeypatch):
     # Exhausting every retry on transport failures alone (never even
     # reaching a real HTTP response) must still return the same "{}"
