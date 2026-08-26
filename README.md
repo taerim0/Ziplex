@@ -55,6 +55,7 @@ ziplex pack ./your-project/ --auto --auto-correct  # fully non-interactive (CI, 
 | `--ignore <patterns>` | Additionally exclude these comma-separated globs, on top of `.ziplex.json` |
 | `--max-tokens N` (+ `--max-tokens-model M`) | CI guard: exit code 1 if the packed payload exceeds `N` tokens for model `M` (default GPT-4o) |
 | `--no-llm` | No `GEMINI_API_KEY`/network at all — structural summaries only, `rules`/AI guide skipped |
+| `--lang en\|ko` | Language every summary/rule/AI guide is *written in* (default/recommended `en`) — independent of what language your code or comments are in |
 
 </details>
 
@@ -208,7 +209,7 @@ ziplex-gui --aif out.json --project ./your-project/   # prefill the landing page
 ziplex-gui --no-window                                # plain browser tab instead
 ```
 
-**Pack from the GUI** — pick a project folder with the native folder picker, check off which files to include (the same safe/dangerous split `collect`'s security scan produces), optionally check "no LLM" (`pack --no-llm`'s GUI equivalent), and watch the pack run in the background. Analysis pauses for review before anything is saved: edit the project name, guide, rules, and per-file summaries (only the low-confidence ones are flagged, same triage the CLI uses). The dependency graph opens as a collapsible whole-tree overview first — click a file's name once you've spotted one worth fixing to drop into an edit view for just that file, linking or unlinking individual edges (a file with more than one real parent keeps its other references intact).
+**Pack from the GUI** — pick a project folder with the native folder picker, check off which files to include (the same safe/dangerous split `collect`'s security scan produces), pick the packing language (`pack --lang`'s GUI equivalent — what language summaries/rules/the AI guide are *written in*, separate from the Options page's own display-language setting below), optionally check "no LLM" (`pack --no-llm`'s GUI equivalent), and watch the pack run in the background. Analysis pauses for review before anything is saved: edit the project name, guide, rules, and per-file summaries (only the low-confidence ones are flagged, same triage the CLI uses). The dependency graph opens as a collapsible whole-tree overview first — click a file's name once you've spotted one worth fixing to drop into an edit view for just that file, linking or unlinking individual edges (a file with more than one real parent keeps its other references intact).
 
 **Browse an existing pack** — the same overview/files/relationships/detail/search views the MCP server exposes, as web pages instead of MCP tool calls. The Relationships page reuses the same whole-tree-then-edit-one-file flow packing uses, so a relationship noticed after the fact can be fixed without re-running the pipeline. Each page has a Copy button; the intended flow is looking around here and pasting what's useful into a separate AI chat by hand, not the GUI talking to that chat itself.
 
