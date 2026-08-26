@@ -15,7 +15,7 @@ def test_chunked_splits_into_groups_of_size():
 def test_request_batch_summaries_uses_the_batch_response_when_complete(monkeypatch):
     monkeypatch.setattr(
         summarizer, "analyze_batch_summaries",
-        lambda items: json.dumps({"summaries": {"a.py": "does a", "b.py": "does b"}}),
+        lambda items, lang="en": json.dumps({"summaries": {"a.py": "does a", "b.py": "does b"}}),
     )
 
     def _unexpected_fallback(*a, **k):
@@ -32,17 +32,17 @@ def test_request_batch_summaries_falls_back_per_file_on_a_missing_key(monkeypatc
     # individually rather than the whole batch being lost
     monkeypatch.setattr(
         summarizer, "analyze_batch_summaries",
-        lambda items: json.dumps({"summaries": {"a.py": "does a"}}),
+        lambda items, lang="en": json.dumps({"summaries": {"a.py": "does a"}}),
     )
-    monkeypatch.setattr(summarizer, "request_summary", lambda name, data: f"fallback for {name}")
+    monkeypatch.setattr(summarizer, "request_summary", lambda name, data, lang="en": f"fallback for {name}")
 
     batch = [("a.py", {"signatures": [], "dependencies": []}), ("b.py", {"signatures": [], "dependencies": []})]
     assert summarizer.request_batch_summaries(batch) == {"a.py": "does a", "b.py": "fallback for b.py"}
 
 
 def test_request_batch_summaries_falls_back_entirely_on_a_garbled_response(monkeypatch):
-    monkeypatch.setattr(summarizer, "analyze_batch_summaries", lambda items: "not json")
-    monkeypatch.setattr(summarizer, "request_summary", lambda name, data: f"fallback for {name}")
+    monkeypatch.setattr(summarizer, "analyze_batch_summaries", lambda items, lang="en": "not json")
+    monkeypatch.setattr(summarizer, "request_summary", lambda name, data, lang="en": f"fallback for {name}")
 
     batch = [("a.py", {"signatures": [], "dependencies": []})]
     assert summarizer.request_batch_summaries(batch) == {"a.py": "fallback for a.py"}
@@ -51,7 +51,7 @@ def test_request_batch_summaries_falls_back_entirely_on_a_garbled_response(monke
 def test_generate_summaries_returns_a_summary_per_pending_file_keyed_by_path(tmp_path, monkeypatch):
     monkeypatch.setattr(
         summarizer, "analyze_batch_summaries",
-        lambda items: json.dumps({"summaries": {"a.py": "does a"}}),
+        lambda items, lang="en": json.dumps({"summaries": {"a.py": "does a"}}),
     )
 
     root = tmp_path / "project"
@@ -63,15 +63,27 @@ def test_generate_summaries_returns_a_summary_per_pending_file_keyed_by_path(tmp
 
 
 def test_generate_summaries_placeholders_a_summary_that_never_comes_back(tmp_path, monkeypatch):
-    monkeypatch.setattr(summarizer, "analyze_batch_summaries", lambda items: json.dumps({"summaries": {}}))
-    monkeypatch.setattr(summarizer, "request_summary", lambda name, data: "")
+    monkeypatch.setattr(summarizer, "analyze_batch_summaries", lambda items, lang="en": json.dumps({"summaries": {}}))
+    monkeypatch.setattr(summarizer, "request_summary", lambda name, data, lang="en": "")
 
     root = tmp_path / "project"
     root.mkdir()
     fp = str(root / "a.py")
     pending = {fp: {"signatures": [], "dependencies": []}}
 
-    assert summarizer.generate_summaries(pending, root) == {fp: "요약 생성 실패"}
+    assert summarizer.generate_summaries(pending, root) == {fp: summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"]}
+
+
+def test_generate_summaries_placeholders_in_the_requested_language(tmp_path, monkeypatch):
+    monkeypatch.setattr(summarizer, "analyze_batch_summaries", lambda items, lang="en": json.dumps({"summaries": {}}))
+    monkeypatch.setattr(summarizer, "request_summary", lambda name, data, lang="en": "")
+
+    root = tmp_path / "project"
+    root.mkdir()
+    fp = str(root / "a.py")
+    pending = {fp: {"signatures": [], "dependencies": []}}
+
+    assert summarizer.generate_summaries(pending, root, lang="ko") == {fp: summarizer.SUMMARY_FAILED_PLACEHOLDERS["ko"]}
 
 
 def test_structural_summary_lists_signatures_when_present():
@@ -97,6 +109,25 @@ def test_structural_summary_falls_back_to_a_fixed_note_when_neither_exists():
     assert summarizer._structural_summary(data) == (
         "No signatures or dependencies detected (structural-only mode, no LLM summary)."
     )
+
+
+def test_structural_summary_localizes_labels_for_korean():
+    data = {"signatures": ["add(a, b)"], "dependencies": []}
+    assert summarizer._structural_summary(data, lang="ko") == "정의: add(a, b)"
+
+    data = {"signatures": [], "dependencies": ["os"]}
+    assert summarizer._structural_summary(data, lang="ko") == "참조: os"
+
+    data = {"signatures": [], "dependencies": []}
+    assert summarizer._structural_summary(data, lang="ko") == (
+        "감지된 시그니처/의존성 없음 (구조 정보 전용 모드, LLM 요약 없음)."
+    )
+
+
+def test_is_summary_failed_placeholder_recognizes_every_supported_language():
+    assert summarizer.is_summary_failed_placeholder(summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"])
+    assert summarizer.is_summary_failed_placeholder(summarizer.SUMMARY_FAILED_PLACEHOLDERS["ko"])
+    assert not summarizer.is_summary_failed_placeholder("a real summary")
 
 
 def test_generate_structural_summaries_returns_one_summary_per_pending_file(tmp_path):

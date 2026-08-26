@@ -40,6 +40,18 @@ export function renderPackHome() {
   const packOutInput = el("input", { type: "text", placeholder: t("pack.form.outputPathPlaceholder") });
   const noCacheInput = el("input", { type: "checkbox" });
   const noLlmInput = el("input", { type: "checkbox" });
+  // Packed-CONTENT language (each file's summary/rules/AI guide, written by
+  // the LLM itself, or -- with "LLM 사용 안 함" checked -- Ziplex's own fixed
+  // structural-summary text) -- independent of the GUI's own display-
+  // language switcher on the Options page (js/i18n.js, a fixed dictionary
+  // translating only this app's own chrome, never anything an LLM writes).
+  // "en" default/first option, matching llm.py's LANGUAGE_NAMES comment on
+  // why English is both the default and the recommended choice.
+  const packLangInput = el("select", {}, [
+    el("option", { value: "en", text: t("pack.form.langEnglish") }),
+    el("option", { value: "ko", text: t("pack.form.langKorean") }),
+  ]);
+  packLangInput.value = "en";
   const packError = el("div", { class: "error hidden" });
   const loadFilesButton = el("button", { class: "secondary", text: t("pack.form.loadFiles") });
   const fileListBox = el("div", { class: "hidden" });
@@ -159,6 +171,7 @@ export function renderPackHome() {
         no_cache: noCacheInput.checked,
         no_llm: noLlmInput.checked,
         selected_files,
+        lang: packLangInput.value,
       });
       location.hash = `#/pack/${job_id}`;
     } catch (e) {
@@ -175,6 +188,9 @@ export function renderPackHome() {
     el("div", { class: "input-row" }, [packProjInput, browseButton(packProjInput)]),
     el("label", { text: t("pack.form.outputPathLabel") }),
     el("div", { class: "input-row" }, [packOutInput, browseSaveButton(packOutInput)]),
+    el("label", { text: t("pack.form.langLabel"), style: "margin-top:14px" }),
+    packLangInput,
+    el("p", { class: "muted", text: t("pack.form.langHint") }),
     el("label", { style: "display:flex;align-items:center;gap:6px;margin-top:14px" }, [
       noCacheInput,
       el("span", { text: t("pack.form.noCacheLabel") }),

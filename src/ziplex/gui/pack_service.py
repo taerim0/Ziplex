@@ -363,14 +363,14 @@ def request_cancel(job_id: str, save: bool) -> bool:
 
 def _run(
     job: dict, project_path: str, no_cache: bool, no_llm: bool, selected_files: list[str],
-    result_dir: Path | None = None,
+    result_dir: Path | None = None, lang: str = "en",
 ) -> None:
     try:
         with _capture_for_job(job):
             aif = packager.pack(
                 project_path, interactive=False, use_cache=not no_cache, use_llm=not no_llm,
                 preselected=selected_files, check_cancelled=_check_cancelled_for(job),
-                result_dir=result_dir,
+                result_dir=result_dir, lang=lang,
             )
             if not aif:
                 with job["lock"]:
@@ -401,7 +401,7 @@ def _run(
 
 def start_pack_job(
     project_path: str, output_path: str | None = None, no_cache: bool = False, no_llm: bool = False,
-    selected_files: list[str] | None = None
+    selected_files: list[str] | None = None, lang: str = "en",
 ) -> str:
     """Kicks off one pack() run in a background thread and returns its job id
     immediately. selected_files (relative names, from list_selectable_files()'s
@@ -419,6 +419,12 @@ def start_pack_job(
     summaries() instead of an LLM. The review screen (get_review()) needs no
     changes for this -- confidence.triage() and the summary-edit fields
     already just render whatever `pack()` produced, structural or not.
+
+    lang mirrors CLI `pack --lang` -- passed straight through to
+    packager.pack()'s own `lang` param, see its docstring for what it
+    controls (the language every LLM-written value, plus Ziplex's own fixed
+    strings, is actually written in). "en" is both the default and the
+    recommended choice, matching the pack form's own dropdown.
 
     output_path resolution (settings.py): a caller-given output_path (the
     pack form's "출력 경로" field, non-blank) is used as-is for this run and
@@ -469,6 +475,7 @@ def start_pack_job(
         "no_cache": no_cache,
         "no_llm": no_llm,
         "selected_files": selected_files or [],
+        "lang": lang,
         "retry_output_path": original_output_path,
         "lock": threading.Lock(),
         "cancel_action": None,  # set by request_cancel(), consumed by _check_cancelled_for()
@@ -478,7 +485,7 @@ def start_pack_job(
         _jobs[job_id] = job
         _evict_old_finished_jobs()
     thread = threading.Thread(
-        target=_run, args=(job, project_path, no_cache, no_llm, selected_files or [], result_dir), daemon=True
+        target=_run, args=(job, project_path, no_cache, no_llm, selected_files or [], result_dir, lang), daemon=True
     )
     thread.start()
     return job_id
@@ -508,7 +515,7 @@ def get_job_status(job_id: str, since: int = 0) -> dict | None:
     log (potentially thousands of lines on a large project) on every poll.
 
     retry_params is start_pack_job()'s own argument shape (project_path/
-    output_path/no_cache/no_llm/selected_files) echoed straight back --
+    output_path/no_cache/no_llm/selected_files/lang) echoed straight back --
     always present, not just on "error", since it costs nothing to include
     and keeps this function's shape uniform. Its real purpose is the error
     state: a repeated LLM failure lands the job in "error" via
@@ -537,6 +544,7 @@ def get_job_status(job_id: str, since: int = 0) -> dict | None:
                 "no_cache": job["no_cache"],
                 "no_llm": job["no_llm"],
                 "selected_files": job["selected_files"],
+                "lang": job["lang"],
             },
         }
 

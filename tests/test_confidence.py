@@ -1,5 +1,5 @@
 from ziplex.confidence import estimate_confidence, confidence_level, triage, REVIEW_THRESHOLD
-from ziplex.summarizer import SUMMARY_FAILED_PLACEHOLDER
+from ziplex.summarizer import SUMMARY_FAILED_PLACEHOLDERS
 
 
 def test_estimate_confidence_high_when_summary_uses_signature_words():
@@ -42,7 +42,16 @@ def test_estimate_confidence_zero_for_failure_placeholder_even_with_no_signature
     # summary would otherwise fall into the "nothing to contradict" 1.0
     # shortcut above and never reach correct_aif()'s review -- exactly the
     # one case that fallback text needs to be caught, not skipped
-    assert estimate_confidence(SUMMARY_FAILED_PLACEHOLDER, []) == 0.0
+    assert estimate_confidence(SUMMARY_FAILED_PLACEHOLDERS["en"], []) == 0.0
+
+
+def test_estimate_confidence_zero_for_failure_placeholder_in_any_language():
+    # is_summary_failed_placeholder() must recognize every supported
+    # language's placeholder, not just the current pack's own `lang` --
+    # a cached previous-pack summary (freshness.load_previous_summaries())
+    # may have been written under a different language selection than the
+    # run checking it now.
+    assert estimate_confidence(SUMMARY_FAILED_PLACEHOLDERS["ko"], []) == 0.0
 
 
 def test_estimate_confidence_full_credit_capped_at_three_matches():

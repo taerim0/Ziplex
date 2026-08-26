@@ -133,6 +133,10 @@ const I18N = {
     "pack.form.outputPathLabel": "출력 경로 (선택)",
     "pack.form.noCacheLabel": "이전 pack 캐시 무시 (변경 없는 파일도 전체 재요약)",
     "pack.form.noLlmLabel": "LLM 사용 안 함 (GEMINI_API_KEY 불필요 -- 요약은 시그니처/의존성만으로 자동 생성, 코딩 룰/AI 가이드 생략)",
+    "pack.form.langLabel": "패킹 언어",
+    "pack.form.langHint": "파일별 summary/coding rules/AI 가이드가 작성될 언어입니다 (이 GUI 화면 자체의 언어와는 별개). 영어가 기본값이자 권장값입니다.",
+    "pack.form.langEnglish": "English (권장)",
+    "pack.form.langKorean": "한국어",
 
     "check.form.aifPlaceholder": "예: result/my-project.json",
     "check.form.projectPlaceholder": "예: C:\\path\\to\\my-project (선택, 최신 여부 확인용)",
@@ -288,6 +292,10 @@ const I18N = {
     "pack.form.outputPathLabel": "Output path (optional)",
     "pack.form.noCacheLabel": "Ignore previous pack cache (re-summarize every file, even unchanged ones)",
     "pack.form.noLlmLabel": "Don't use an LLM (no GEMINI_API_KEY needed -- summaries auto-generated from signatures/dependencies only, coding rules/AI guide skipped)",
+    "pack.form.langLabel": "Packing language",
+    "pack.form.langHint": "The language each file's summary/coding rules/AI guide will be written in (separate from this GUI screen's own language). English is the default and recommended choice.",
+    "pack.form.langEnglish": "English (recommended)",
+    "pack.form.langKorean": "Korean (한국어)",
 
     "check.form.aifPlaceholder": "e.g. result/my-project.json",
     "check.form.projectPlaceholder": "e.g. C:\\path\\to\\my-project (optional, for the freshness check)",

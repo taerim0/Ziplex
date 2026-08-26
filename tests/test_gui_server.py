@@ -328,7 +328,48 @@ def test_api_pack_no_llm_flag_reaches_pack_service(client, tmp_path, monkeypatch
     status = _wait_for_job(client, job_id)
     assert status["state"] == "reviewing"
     review = client.get("/api/pack/review", query_string={"job_id": job_id}).get_json()
-    assert review["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE
+    assert review["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE["en"]
+
+
+def test_api_pack_lang_flag_reaches_pack_service(client, tmp_path, monkeypatch):
+    # Route-level check that the pack form's "lang" value actually reaches
+    # packager.pack() and lands in the saved aif -- llm.py's own tests cover
+    # the prompt-construction detail, pack_service.py's the job-state
+    # plumbing; this just confirms the route wires them together.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+    start = client.post("/api/pack", json={
+        "project_path": str(project), "selected_files": ["main.py"], "lang": "ko",
+    })
+    job_id = start.get_json()["job_id"]
+
+    status = _wait_for_job(client, job_id)
+    assert status["state"] == "reviewing"
+    review = client.get("/api/pack/review", query_string={"job_id": job_id}).get_json()
+    assert review["project"]["language"] == "ko"
+
+
+def test_api_pack_unrecognized_lang_falls_back_to_english(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+    start = client.post("/api/pack", json={
+        "project_path": str(project), "selected_files": ["main.py"], "lang": "fr",
+    })
+    job_id = start.get_json()["job_id"]
+
+    status = _wait_for_job(client, job_id)
+    review = client.get("/api/pack/review", query_string={"job_id": job_id}).get_json()
+    assert review["project"]["language"] == "en"
 
 
 def test_api_pack_status_retry_params_can_resume_a_failed_job_over_http(client, tmp_path, monkeypatch):

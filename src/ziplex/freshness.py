@@ -134,7 +134,7 @@ def check_freshness(file_paths: list[str], root: str, manifest: dict[str, str]) 
     return FreshnessReport(changed=changed, added=added, removed=removed, unchanged=unchanged)
 
 
-def load_previous_summaries(root_path: str, selected: list[str], result_dir: Path) -> dict[str, str]:
+def load_previous_summaries(root_path: str, selected: list[str], result_dir: Path, lang: str = "en") -> dict[str, str]:
     """{relative key: summary} for files in `selected` whose content hash
     matches the last successful pack's manifest, at result_dir (the
     conventional path save_aif() writes to by default: <name>.json +
@@ -159,6 +159,18 @@ def load_previous_summaries(root_path: str, selected: list[str], result_dir: Pat
     committed and shared across machines (README's Team use section), so a
     teammate re-packing the *same* project from a different absolute path
     must still get cache hits.
+
+    lang (2026-08-26) also returns {} outright when the previous pack's own
+    `project.language` doesn't match this run's `lang` -- otherwise an
+    unchanged file's summary (written in the *previous* language) would get
+    reused verbatim under a `project.language` claiming a different one, a
+    real gap caught by code review: packing with `--lang en` then re-packing
+    the same unchanged project with `--lang ko` used to keep the English
+    summaries while still stamping `project.language: "ko"`. A previous
+    aif.json with no `language` field at all (packed before this feature
+    existed) is treated as `"en"`, the only language that existed then --
+    same default `packager.pack()`/`checkpoint.unpack_snapshot()` already
+    use for the same reason.
     """
     # .resolve() so root_path == "." (packing from inside the project's own
     # folder) doesn't collapse to "" -- Path(".").name has no name component
@@ -172,11 +184,15 @@ def load_previous_summaries(root_path: str, selected: list[str], result_dir: Pat
 
     try:
         with open(aif_path, "r", encoding="utf-8") as f:
-            previous_files = json.load(f).get("files", {})
+            previous_aif = json.load(f)
         with open(cache_path, "r", encoding="utf-8") as f:
             previous_manifest = json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
+
+    if previous_aif.get("project", {}).get("language", "en") != lang:
+        return {}
+    previous_files = previous_aif.get("files", {})
 
     report = check_freshness(selected, root_path, previous_manifest)
 
