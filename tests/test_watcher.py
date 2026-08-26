@@ -83,6 +83,31 @@ def test_watcher_detects_a_real_file_change(tmp_path, monkeypatch):
     assert report["changed"] == ["main.py"]
 
 
+def test_watcher_does_not_flag_a_previously_included_dangerous_file_as_removed(tmp_path, monkeypatch):
+    # Real bug reported directly: a file flagged sensitive by scan_files()
+    # but included in the pack anyway gets re-flagged as dangerous on every
+    # later scan regardless of that earlier decision, dropped from
+    # collect_and_scan()'s own "safe" list every time -- this watcher used
+    # to only ever look at "safe", so it reported this exact file as
+    # permanently removed (is_stale flipping true) even though it's
+    # unchanged and still on disk.
+    monkeypatch.setattr(watcher, "DEBOUNCE_SECONDS", 0.05)
+    project = tmp_path / "project"
+    _write(project / "config.py", 'API_KEY = "abc123"\n')
+    manifest = build_manifest([str(project / "config.py")], str(project))  # it WAS packed last time
+    aif_path = tmp_path / "out" / "project.json"
+    aif_path.parent.mkdir(parents=True, exist_ok=True)
+    aif_path.write_text("{}", encoding="utf-8")
+    (tmp_path / "out" / "project.cache.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    watcher.start_watch(str(project), str(aif_path))
+
+    report = watcher.get_status(str(project))
+    assert report is not None
+    assert report["is_stale"] is False
+    assert report["removed"] == []
+
+
 def test_watcher_ignores_changes_under_default_ignore_dirs(tmp_path, monkeypatch):
     # A .git-internal write shouldn't flip is_stale -- check_freshness()
     # only ever looks at collect_and_scan()'s already-filtered safe-file

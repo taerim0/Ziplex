@@ -23,7 +23,7 @@ from .file.relationship import (
     get_blast_radius as _get_blast_radius,
 )
 from .search import search_files, read_detail_range
-from .freshness import check_freshness as _check_freshness
+from .freshness import check_freshness as _check_freshness, freshness_candidate_files
 from .config import collect_and_scan
 
 
@@ -190,10 +190,21 @@ def check_freshness(project_path: str, aif_path: str) -> dict:
     patterns would get diffed against its *unscoped* full file tree here,
     reporting every out-of-scope file as spuriously "added" even
     immediately after a fresh pack.
+
+    freshness_candidate_files() (2026-08-26) folds a previously-included
+    dangerous file back into the comparison set -- without it, a file a
+    human opted to include anyway despite scan_files() flagging it
+    (file/selector.py's review_dangerous_files(), the GUI's "include
+    anyway" checkbox, or a `preselected` caller naming it directly) gets
+    re-flagged as dangerous on every later scan regardless of that earlier
+    decision, dropped from `collect_and_scan()`'s own "safe" list every
+    time, and reported here as permanently `removed` even though it's
+    unchanged and still on disk -- a real bug reported directly.
     """
     manifest = _load_json(str(_cache_path(aif_path)))
-    safe_files = collect_and_scan(project_path)["safe"]
-    report = _check_freshness(safe_files, project_path, manifest)
+    scan_result = collect_and_scan(project_path)
+    candidates = freshness_candidate_files(scan_result, project_path, manifest)
+    report = _check_freshness(candidates, project_path, manifest)
     return {
         "is_stale": report.is_stale,
         "changed": report.changed,

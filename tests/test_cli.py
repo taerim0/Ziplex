@@ -129,6 +129,33 @@ def test_freshness_main_exits_cleanly_when_unchanged(tmp_path, monkeypatch, caps
     assert "최신 상태" in capsys.readouterr().out
 
 
+def test_freshness_does_not_report_a_previously_included_dangerous_file_as_removed(tmp_path, monkeypatch, capsys):
+    # Real bug reported directly: a file flagged sensitive by scan_files()
+    # but included in the pack anyway (a human opted back in via
+    # review_dangerous_files()/the GUI's "include anyway" checkbox/a
+    # preselected caller) gets re-flagged as dangerous on every later scan
+    # regardless of that earlier decision -- `ziplex freshness` used to
+    # only ever look at collect_and_scan()'s "safe" list, so it reported
+    # this exact file as permanently removed even though it's unchanged
+    # and still on disk.
+    project = tmp_path / "project"
+    project.mkdir()
+    secret_path = project / "config.py"
+    secret_path.write_text('API_KEY = "abc123"\n', encoding="utf-8")
+
+    manifest = build_manifest([str(secret_path)], str(project))  # it WAS packed last time
+    cache_path = tmp_path / "out.cache.json"
+    cache_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "freshness", str(project), str(cache_path)])
+
+    cli.main()  # must not raise SystemExit -- must not report it as stale/removed
+
+    out = capsys.readouterr().out
+    assert "최신 상태" in out
+    assert "삭제됨" not in out
+
+
 def test_analyze_command_delegates_to_summarizer_and_shares_its_failure_placeholder(tmp_path, monkeypatch, capsys):
     # analyze used to call llm.analyze_file_summary() directly in its own
     # bespoke per-file loop -- no batching, no shared retry-once-then-

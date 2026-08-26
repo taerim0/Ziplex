@@ -40,6 +40,32 @@ def test_check_freshness_does_not_flag_ziplex_json_excluded_files_as_added(tmp_p
     assert report["removed"] == []
 
 
+def test_check_freshness_does_not_flag_a_previously_included_dangerous_file_as_removed(tmp_path, monkeypatch):
+    # Real bug reported directly: a file flagged sensitive by scan_files()
+    # but included in the pack anyway (here via `preselected`, the GUI's
+    # own mechanism -- see file/CLAUDE.md's selector.py section) gets
+    # re-flagged as dangerous on every later scan regardless of that
+    # earlier decision, dropped from collect_and_scan()'s own "safe" list
+    # every time -- check_freshness() used to only ever look at "safe", so
+    # it reported this exact file as permanently removed even though it's
+    # unchanged and still on disk.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "config.py", 'API_KEY = "abc123"\n')
+
+    aif = packager.pack(str(project), preselected=["config.py"], interactive=False)
+    aif_path = tmp_path / "out.json"
+    packager.save_aif(aif, str(aif_path))
+
+    report = query_service.check_freshness(str(project), str(aif_path))
+
+    assert report["is_stale"] is False
+    assert report["removed"] == []
+    assert report["unchanged"] == ["config.py"]
+
+
 def test_stale_warning_is_none_for_an_unchanged_scoped_project(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")

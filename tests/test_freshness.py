@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 
-from ziplex.freshness import hash_file, build_manifest, check_freshness, load_previous_summaries
+from ziplex.freshness import (
+    hash_file, build_manifest, check_freshness, load_previous_summaries, freshness_candidate_files,
+)
 
 
 def _write(path: Path, content: str):
@@ -93,6 +95,59 @@ def test_check_freshness_detects_added_and_removed_files(tmp_path):
     assert report.added == ["c.py"]
     assert report.removed == ["b.py"]
     assert report.unchanged == ["a.py"]
+
+
+def test_freshness_candidate_files_includes_a_previously_packed_dangerous_file(tmp_path):
+    # Real bug reported directly: a file flagged sensitive by scan_files()
+    # but included in the pack anyway (a human opted back in) gets
+    # re-flagged as dangerous on every later scan regardless of that
+    # earlier decision -- dropped from "safe" every time, so a freshness
+    # check that only ever looked at "safe" reported it as permanently
+    # `removed` even though it's unchanged and still on disk.
+    secret_path = tmp_path / ".env"
+    _write(secret_path, "API_KEY=abc123\n")
+    manifest = build_manifest([str(secret_path)], str(tmp_path))  # it WAS packed last time
+
+    scan_result = {"safe": [], "dangerous": [{"file": str(secret_path), "reason": "looks like a secret"}]}
+    candidates = freshness_candidate_files(scan_result, str(tmp_path), manifest)
+
+    assert candidates == [str(secret_path)]
+    report = check_freshness(candidates, str(tmp_path), manifest)
+    assert report.removed == []
+    assert report.unchanged == [".env"]
+
+
+def test_freshness_candidate_files_excludes_a_dangerous_file_never_packed(tmp_path):
+    # The other half of the same fix: a dangerous file that's never been
+    # packed (correctly, deliberately excluded every time) must NOT show up
+    # as spurious "added" noise just because it exists on disk.
+    secret_path = tmp_path / ".env"
+    _write(secret_path, "API_KEY=abc123\n")
+    manifest = {}  # nothing packed yet
+
+    scan_result = {"safe": [], "dangerous": [{"file": str(secret_path), "reason": "looks like a secret"}]}
+    candidates = freshness_candidate_files(scan_result, str(tmp_path), manifest)
+
+    assert candidates == []
+    report = check_freshness(candidates, str(tmp_path), manifest)
+    assert report.added == []
+    assert report.is_stale is False
+
+
+def test_freshness_candidate_files_combines_safe_and_included_dangerous_files(tmp_path):
+    safe_path = tmp_path / "main.py"
+    dangerous_path = tmp_path / "config.py"
+    _write(safe_path, "x = 1\n")
+    _write(dangerous_path, "SECRET = 1\n")
+    manifest = build_manifest([str(safe_path), str(dangerous_path)], str(tmp_path))
+
+    scan_result = {
+        "safe": [str(safe_path)],
+        "dangerous": [{"file": str(dangerous_path), "reason": "looks like a secret"}],
+    }
+    candidates = freshness_candidate_files(scan_result, str(tmp_path), manifest)
+
+    assert set(candidates) == {str(safe_path), str(dangerous_path)}
 
 
 def test_load_previous_summaries_returns_empty_when_no_previous_pack_exists(tmp_path):
