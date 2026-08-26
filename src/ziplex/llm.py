@@ -579,7 +579,9 @@ def analyze_batch_summaries(items: list[dict], lang: str = "en") -> str:
     packager.py's per-file fallback for what happens then.
     """
     parts = []
+    names = []
     for item in items:
+        names.append(item["file"])
         if item.get("signatures") or item.get("dependencies"):
             parts.append(
                 f"File: {item['file']}\n"
@@ -605,7 +607,7 @@ Respond with JSON only, nothing else.
 
 {{"summaries": {{"<file>": "...", "<file>": "..."}}}}
 """
-    return generate(prompt, label=", ".join(item["file"] for item in items))
+    return generate(prompt, label=", ".join(names))
 
 
 def analyze_rules(signatures_map: dict, lang: str = "en") -> str:
