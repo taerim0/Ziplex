@@ -522,4 +522,29 @@ pre {
 .muted { color: var(--muted); }
 .copy-row { margin-top: 8px; }
 .hidden { display: none; }
+
+/* app.js's showConfirmModal() -- an in-page, themed confirmation dialog
+   replacing window.confirm()'s native OS-styled box for choices that need
+   more than a bare Yes/No (pack.js's leave-an-active-pack-job guard needs
+   three: save & leave / discard & leave / stay), or that should just look
+   like part of the app rather than the browser's own chrome. */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-box {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 22px;
+  max-width: 420px;
+  width: 90%;
+}
+.modal-box p { margin: 0 0 18px; line-height: 1.5; }
+.modal-buttons { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 .loading { padding: 20px 0; }
