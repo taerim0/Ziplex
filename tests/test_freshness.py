@@ -3,6 +3,7 @@ from pathlib import Path
 
 from ziplex.freshness import (
     hash_file, build_manifest, check_freshness, load_previous_summaries, freshness_candidate_files,
+    check_freshness_scoped,
 )
 
 
@@ -148,6 +149,27 @@ def test_freshness_candidate_files_combines_safe_and_included_dangerous_files(tm
     candidates = freshness_candidate_files(scan_result, str(tmp_path), manifest)
 
     assert set(candidates) == {str(safe_path), str(dangerous_path)}
+
+
+def test_check_freshness_scoped_does_not_flag_a_previously_included_dangerous_file(tmp_path):
+    # check_freshness_scoped() is the single collect_and_scan() ->
+    # freshness_candidate_files() -> check_freshness() call every real
+    # caller (cli.py's freshness subcommand, query_service.check_freshness(),
+    # query_service._stale_warning(), gui/watcher.py's recompute()) now
+    # goes through instead of open-coding that sequence itself -- this
+    # exercises the whole thing end to end, including a real
+    # collect_and_scan() over files actually on disk (the other
+    # freshness_candidate_files tests above pass a hand-built scan_result).
+    project = tmp_path / "project"
+    dangerous_path = project / "config.py"
+    _write(dangerous_path, 'API_KEY = "abc123"\n')
+    manifest = build_manifest([str(dangerous_path)], str(project))  # it WAS packed last time
+
+    report = check_freshness_scoped(str(project), manifest)
+
+    assert report.removed == []
+    assert report.unchanged == ["config.py"]
+    assert report.is_stale is False
 
 
 def test_load_previous_summaries_returns_empty_when_no_previous_pack_exists(tmp_path):

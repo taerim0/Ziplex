@@ -23,7 +23,7 @@ from .file.relationship import (
     get_blast_radius as _get_blast_radius,
 )
 from .search import search_files, read_detail_range
-from .freshness import check_freshness as _check_freshness, freshness_candidate_files
+from .freshness import check_freshness_scoped
 from .config import collect_and_scan
 
 
@@ -70,23 +70,22 @@ def _stale_warning(project_path: str | None, aif_path: str) -> dict | None:
     except (OSError, json.JSONDecodeError):
         return None
 
-    # freshness_candidate_files(), not a bare collect_and_scan()["safe"] --
+    # check_freshness_scoped(), not a bare collect_and_scan()["safe"] --
     # a real bug reported directly (2026-08-26): a file scan_files() flags
     # as sensitive but a human included anyway re-flags as dangerous on
     # every later scan regardless of that earlier decision, so this used to
     # report it "removed" every time get_overview()/list_files() attached
-    # this warning, even though check_freshness() (the standalone
-    # `/api/freshness` route and this same file's own check_freshness())
-    # had already been fixed to not make that mistake -- a second call site
-    # of the identical bug, missed in that first pass because it lives in
-    # this private helper rather than the function the bug was originally
-    # reported against. Symptom that made it visible even after the first
-    # fix: opening a project showed "changed" for a beat, then the page's
-    # own live watcher (gui/watcher.py, fixed correctly the first time)
-    # caught up and corrected the badge a moment later.
-    scan_result = collect_and_scan(project_path)
-    candidates = freshness_candidate_files(scan_result, project_path, manifest)
-    report = _check_freshness(candidates, project_path, manifest)
+    # this warning, even though check_freshness() below (the standalone
+    # `/api/freshness` route) had already been fixed to not make that
+    # mistake -- a second call site of the identical bug, missed in that
+    # first pass because it lives in this private helper rather than the
+    # function the bug was originally reported against. Symptom that made it
+    # visible even after the first fix: opening a project showed "changed"
+    # for a beat, then the page's own live watcher (gui/watcher.py, fixed
+    # correctly the first time) caught up and corrected the badge a moment
+    # later. check_freshness_scoped() (freshness.py) now centralizes this
+    # exact sequence so a third missed call site can't happen again.
+    report = check_freshness_scoped(project_path, manifest)
     if not report.is_stale:
         return None
     return {"is_stale": True, "changed": report.changed, "added": report.added, "removed": report.removed}
@@ -206,20 +205,19 @@ def check_freshness(project_path: str, aif_path: str) -> dict:
     reporting every out-of-scope file as spuriously "added" even
     immediately after a fresh pack.
 
-    freshness_candidate_files() (2026-08-26) folds a previously-included
+    check_freshness_scoped() (freshness.py) folds a previously-included
     dangerous file back into the comparison set -- without it, a file a
     human opted to include anyway despite scan_files() flagging it
     (file/selector.py's review_dangerous_files(), the GUI's "include
     anyway" checkbox, or a `preselected` caller naming it directly) gets
     re-flagged as dangerous on every later scan regardless of that earlier
     decision, dropped from `collect_and_scan()`'s own "safe" list every
-    time, and reported here as permanently `removed` even though it's
-    unchanged and still on disk -- a real bug reported directly.
+    time, and would otherwise be reported here as permanently `removed`
+    even though it's unchanged and still on disk -- a real bug reported
+    directly (2026-08-26).
     """
     manifest = _load_json(str(_cache_path(aif_path)))
-    scan_result = collect_and_scan(project_path)
-    candidates = freshness_candidate_files(scan_result, project_path, manifest)
-    report = _check_freshness(candidates, project_path, manifest)
+    report = check_freshness_scoped(project_path, manifest)
     return {
         "is_stale": report.is_stale,
         "changed": report.changed,

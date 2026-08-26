@@ -23,6 +23,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .config import collect_and_scan
 from .file.media import is_media_file
 from .file.textutil import read_text, relative_key
 
@@ -166,6 +167,29 @@ def freshness_candidate_files(scan_result: dict, root: str, manifest: dict[str, 
     dangerous = scan_result.get("dangerous", [])
     included_before = [d["file"] for d in dangerous if relative_key(d["file"], root) in manifest]
     return safe + included_before
+
+
+def check_freshness_scoped(project_path: str, manifest: dict[str, str]) -> FreshnessReport:
+    """collect_and_scan() -> freshness_candidate_files() -> check_freshness(),
+    in one call. This is what every real freshness-check caller should use
+    instead of open-coding that exact 3-step sequence itself.
+
+    Flagged by code review (2026-08-26): before this existed, the sequence
+    was duplicated verbatim across four independent call sites (the
+    `freshness` CLI subcommand, query_service.check_freshness(),
+    query_service._stale_warning(), gui/watcher.py's recompute()) with no
+    shared helper at all -- which is exactly what let the
+    freshness_candidate_files() fix above land in the first of those (a bare
+    check_freshness() call) while _stale_warning()'s own copy of the same
+    sequence was missed until reported as a separate bug. Centralizing the
+    sequence here means a future change to how candidates are computed only
+    has to be made once -- the same reasoning config.py's own
+    collect_and_scan() already applies one level up (this function calls
+    that one, then the two functions above).
+    """
+    scan_result = collect_and_scan(project_path)
+    candidates = freshness_candidate_files(scan_result, project_path, manifest)
+    return check_freshness(candidates, project_path, manifest)
 
 
 def load_previous_summaries(root_path: str, selected: list[str], result_dir: Path, lang: str = "en") -> dict[str, str]:
