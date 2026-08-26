@@ -25,6 +25,27 @@ load_dotenv()
 # -- it flows straight into the existing transient-failure retry below.
 REQUEST_TIMEOUT = 60
 
+# Supported packed-content languages -- what a summary/rule/AI-guide value
+# actually gets *written in*, independent of the GUI's own display-language
+# switcher (js/i18n.js, a fixed dictionary translating the GUI's own chrome,
+# not anything an LLM produces). "en" is both the default and the
+# recommended choice (cli.py's --lang, the GUI pack form's language select)
+# -- these prompts, this docstring, and every other piece of Ziplex's own
+# documentation are written in English, so English output is what's actually
+# been exercised the most; "ko" is supported but newer. Deliberately just
+# these two for now, not a free-text field -- see the analyze_*() functions
+# below for where this is used, and packager.py's STRUCTURAL_ONLY_NOTE/
+# FORMAT_NOTES and summarizer.SUMMARY_FAILED_PLACEHOLDERS for the fixed
+# (non-LLM) strings that follow the same `lang` choice for consistency.
+LANGUAGE_NAMES: dict[str, str] = {"en": "English", "ko": "Korean"}
+
+
+def _lang_name(lang: str) -> str:
+    """Display name for a prompt's output-language instruction -- falls back
+    to English for anything not in LANGUAGE_NAMES (an unrecognized value
+    should never silently produce a prompt asking for no language at all)."""
+    return LANGUAGE_NAMES.get(lang, LANGUAGE_NAMES["en"])
+
 
 def _clean_json(text: str) -> str:
     # strip markdown code fences
@@ -410,9 +431,10 @@ def generate(prompt: str, retry: int = 5) -> str:
     return _active_provider().generate(prompt, retry=retry)
 
 
-def analyze_file_summary(file_path: str, signatures: list[str], dependencies: list[str]) -> str:
+def analyze_file_summary(file_path: str, signatures: list[str], dependencies: list[str], lang: str = "en") -> str:
     prompt = f"""
 Based on the file info below, summarize this file's role in one line.
+Write the "summary" value in {_lang_name(lang)}. Keep the JSON key itself in English.
 Respond with JSON only, nothing else.
 
 File: {file_path}
@@ -424,9 +446,10 @@ Dependencies: {dependencies}
     return generate(prompt)
 
 
-def analyze_text_summary(file_path: str, content: str) -> str:
+def analyze_text_summary(file_path: str, content: str, lang: str = "en") -> str:
     prompt = f"""
 Based on the file content below, summarize this file's role in one line.
+Write the "summary" value in {_lang_name(lang)}. Keep the JSON key itself in English.
 Respond with JSON only, nothing else.
 
 File: {file_path}
@@ -438,7 +461,7 @@ Content:
     return generate(prompt)
 
 
-def analyze_batch_summaries(items: list[dict]) -> str:
+def analyze_batch_summaries(items: list[dict], lang: str = "en") -> str:
     """Same one-line-per-file summary task as analyze_file_summary() /
     analyze_text_summary(), but for several files in a single request.
 
@@ -475,6 +498,9 @@ def analyze_batch_summaries(items: list[dict]) -> str:
 
     prompt = f"""
 Based on the file info below, summarize each file's role in one line.
+Write every summary value in {_lang_name(lang)}. Keep JSON keys (including each
+file name) in their original form -- only the summary text itself is
+translated.
 Respond with JSON only, nothing else.
 
 {joined}
@@ -484,10 +510,11 @@ Respond with JSON only, nothing else.
     return generate(prompt)
 
 
-def analyze_rules(signatures_map: dict) -> str:
+def analyze_rules(signatures_map: dict, lang: str = "en") -> str:
     prompt = f"""
 Analyze the function signature patterns of the project below
 and extract its implicit coding rules.
+Write each rule in {_lang_name(lang)}. Keep the JSON key itself in English.
 Respond with JSON only, nothing else.
 
 Signature list: {signatures_map}
@@ -497,10 +524,11 @@ Signature list: {signatures_map}
     return generate(prompt)
 
 
-def analyze_prompt(project_name: str, architecture: list[str], rules: list[str]) -> str:
+def analyze_prompt(project_name: str, architecture: list[str], rules: list[str], lang: str = "en") -> str:
     prompt = f"""
 Based on the project info below, write 2-3 sentences of core context
 that let an AI understand this project immediately on first look.
+Write the "prompt" value in {_lang_name(lang)}. Keep the JSON key itself in English.
 Respond with JSON only, nothing else.
 
 Project name: {project_name}

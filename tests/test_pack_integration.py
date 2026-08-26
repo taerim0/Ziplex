@@ -62,8 +62,8 @@ def test_pack_runs_end_to_end_with_mock_provider(tmp_path, monkeypatch):
     # field existed).
     assert aif["project"]["security_scan"] == {"flagged": 0, "included_anyway": 0, "excluded": 0}
     # format_notes is a fixed constant, identical on every pack -- not
-    # LLM-generated, so it's exactly packager.FORMAT_NOTES verbatim.
-    assert aif["project"]["format_notes"] == packager.FORMAT_NOTES
+    # LLM-generated, so it's exactly packager.FORMAT_NOTES["en"] verbatim.
+    assert aif["project"]["format_notes"] == packager.FORMAT_NOTES["en"]
 
     # no checkpoint should be left behind on a clean success
     assert not checkpoint._checkpoint_path(str(project)).exists()
@@ -158,7 +158,7 @@ def test_pack_use_llm_false_never_calls_the_llm_and_uses_structural_summaries(tm
     # README.md has no Tree-sitter grammar -> no signatures/dependencies at all
     assert "No signatures or dependencies detected" in aif["files"]["README.md"]["summary"]
     assert aif["rules"] == []
-    assert aif["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE
+    assert aif["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE["en"]
 
 
 def test_pack_use_llm_false_ignores_rules_and_prompt_from_an_earlier_llm_run_checkpoint(tmp_path, monkeypatch):
@@ -193,7 +193,7 @@ def test_pack_use_llm_false_ignores_rules_and_prompt_from_an_earlier_llm_run_che
     aif = packager.pack(str(project), auto=True, interactive=False, use_llm=False)
 
     assert aif["rules"] == []
-    assert aif["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE
+    assert aif["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE["en"]
 
 
 def test_pack_use_llm_false_still_reuses_a_cached_real_summary(tmp_path, monkeypatch):
@@ -242,7 +242,7 @@ class _EmptySummaryProvider(llm.MockProvider):
     """Answers rules/prompt/relationships normally (via MockProvider) but
     returns an empty payload for any summary-shaped prompt, so every file's
     summary comes back "" and generate_summaries() falls back to
-    SUMMARY_FAILED_PLACEHOLDER for each -- sets up "a previous pack already
+    SUMMARY_FAILED_PLACEHOLDERS["en"] for each -- sets up "a previous pack already
     cached a failure" without needing a real network failure.
     """
 
@@ -263,7 +263,7 @@ def test_pack_prompts_to_regenerate_a_cached_failed_summary_and_honors_yes(tmp_p
     # summary ends up being the literal failure placeholder
     monkeypatch.setattr(llm, "_provider", _EmptySummaryProvider())
     aif1 = packager.pack(str(project), auto=True, interactive=False)
-    assert aif1["files"]["main.py"]["summary"] == summarizer.SUMMARY_FAILED_PLACEHOLDER
+    assert aif1["files"]["main.py"]["summary"] == summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"]
     packager.save_aif(aif1)
 
     # second pack: file content unchanged (would normally reuse the cached
@@ -289,12 +289,12 @@ def test_pack_leaves_cached_failed_summary_when_declined(tmp_path, monkeypatch):
     # non-interactive: no prompt at all, placeholder stays cached as-is
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
     aif2 = packager.pack(str(project), auto=True, interactive=False)
-    assert aif2["files"]["main.py"]["summary"] == summarizer.SUMMARY_FAILED_PLACEHOLDER
+    assert aif2["files"]["main.py"]["summary"] == summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"]
 
     # interactive but declined ("2"): same result, by explicit choice
     monkeypatch.setattr(builtins, "input", lambda *a, **k: "2")
     aif3 = packager.pack(str(project), auto=True, interactive=True)
-    assert aif3["files"]["main.py"]["summary"] == summarizer.SUMMARY_FAILED_PLACEHOLDER
+    assert aif3["files"]["main.py"]["summary"] == summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"]
 
 
 class _EmptyRulesProvider(llm.MockProvider):
@@ -541,6 +541,80 @@ def test_pack_text_reference_does_not_hijack_the_summary_prompt(tmp_path, monkey
     assert not any("Dependencies: ['entities/player.gd']" in p for p in readme_prompts), (
         "the text-reference-derived dependency leaked into the summary-routing decision"
     )
+
+
+def test_pack_lang_threads_language_instruction_into_every_llm_prompt(tmp_path, monkeypatch):
+    # pack(..., lang="ko") must reach every LLM-facing prompt (summary,
+    # rules, and the AI guide/prompt) -- MockProvider ignores prompt content
+    # entirely (it only pattern-matches the JSON field name), so this needs
+    # a provider that records what it was actually asked, same pattern as
+    # test_pack_text_reference_does_not_hijack_the_summary_prompt above.
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    captured_prompts = []
+
+    class _CapturingMockProvider(llm.MockProvider):
+        def generate(self, prompt: str, retry: int = 5) -> str:
+            captured_prompts.append(prompt)
+            return super().generate(prompt, retry)
+
+    monkeypatch.setattr(llm, "_provider", _CapturingMockProvider())
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    aif = packager.pack(str(project), auto=True, interactive=False, lang="ko")
+
+    assert aif["project"]["language"] == "ko"
+    summary_prompts = [p for p in captured_prompts if '"summary"' in p or '"summaries"' in p]
+    rules_prompts = [p for p in captured_prompts if '"rules"' in p]
+    guide_prompts = [p for p in captured_prompts if '"prompt"' in p and '"rules"' not in p]
+    assert summary_prompts and all("Korean" in p for p in summary_prompts)
+    assert rules_prompts and all("Korean" in p for p in rules_prompts)
+    assert guide_prompts and all("Korean" in p for p in guide_prompts)
+
+
+def test_pack_lang_defaults_to_english(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+    assert aif["project"]["language"] == "en"
+
+
+def test_pack_lang_unrecognized_value_falls_back_to_english(tmp_path, monkeypatch):
+    # A stale GUI request or a hand-built API call naming an unsupported
+    # language must not raise or silently produce a prompt with no language
+    # instruction at all -- see pack()'s own `lang` docstring.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    aif = packager.pack(str(project), auto=True, interactive=False, lang="fr")
+    assert aif["project"]["language"] == "en"
+
+
+def test_pack_lang_no_llm_localizes_structural_note_and_summaries(tmp_path, monkeypatch):
+    # use_llm=False's fixed strings (STRUCTURAL_ONLY_NOTE, and each file's
+    # deterministic structural summary) are Ziplex's own text, never an LLM
+    # call -- they must still follow the chosen `lang` for consistency, not
+    # always ship in English regardless of the selection.
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    aif = packager.pack(str(project), auto=True, interactive=False, use_llm=False, lang="ko")
+
+    assert aif["project"]["language"] == "ko"
+    assert aif["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE["ko"]
+    assert aif["project"]["format_notes"] == packager.FORMAT_NOTES["ko"]
+    assert "정의" in aif["files"]["main.py"]["summary"]
 
 
 def test_pack_excludes_a_dangerous_file_non_interactively_with_no_prompt(tmp_path, monkeypatch):

@@ -130,6 +130,64 @@ def test_generate_retries_past_a_non_json_response(monkeypatch):
     assert calls["n"] == 2
 
 
+def _capture_generate(monkeypatch):
+    """Monkeypatches llm.generate() to record every prompt it's called with,
+    returning a fixed benign response so the caller doesn't need a real
+    provider -- for unit-testing prompt *construction* (analyze_*()) in
+    isolation from any provider's transport/retry logic.
+    """
+    captured = []
+
+    def fake_generate(prompt, retry=5):
+        captured.append(prompt)
+        return "{}"
+
+    monkeypatch.setattr(llm, "generate", fake_generate)
+    return captured
+
+
+def test_analyze_file_summary_default_lang_asks_for_english(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_file_summary("main.py", ["add(a, b)"], [])
+    assert "English" in captured[0]
+
+
+def test_analyze_file_summary_lang_ko_asks_for_korean(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_file_summary("main.py", ["add(a, b)"], [], lang="ko")
+    assert "Korean" in captured[0]
+
+
+def test_analyze_text_summary_lang_ko_asks_for_korean(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_text_summary("README.md", "hello", lang="ko")
+    assert "Korean" in captured[0]
+
+
+def test_analyze_batch_summaries_lang_ko_asks_for_korean(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_batch_summaries([{"file": "main.py", "signatures": ["add()"], "dependencies": []}], lang="ko")
+    assert "Korean" in captured[0]
+
+
+def test_analyze_rules_lang_ko_asks_for_korean(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_rules({"main.py": ["add()"]}, lang="ko")
+    assert "Korean" in captured[0]
+
+
+def test_analyze_prompt_lang_ko_asks_for_korean(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_prompt("myproj", [], [], lang="ko")
+    assert "Korean" in captured[0]
+
+
+def test_unrecognized_lang_falls_back_to_english_instruction(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_file_summary("main.py", ["add(a, b)"], [], lang="fr")
+    assert "English" in captured[0]
+
+
 def test_generate_gives_up_gracefully_after_repeated_transport_failures(monkeypatch):
     # Exhausting every retry on transport failures alone (never even
     # reaching a real HTTP response) must still return the same "{}"

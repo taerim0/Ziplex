@@ -133,8 +133,9 @@ def test_analyze_command_delegates_to_summarizer_and_shares_its_failure_placehol
     # analyze used to call llm.analyze_file_summary() directly in its own
     # bespoke per-file loop -- no batching, no shared retry-once-then-
     # placeholder logic, and its own separate failure string ("분석 실패")
-    # instead of summarizer.SUMMARY_FAILED_PLACEHOLDER ("요약 생성 실패"),
-    # the one confidence.py specifically recognizes. Refactored to delegate
+    # instead of summarizer.SUMMARY_FAILED_PLACEHOLDERS's default-language
+    # ("Summary generation failed"), the one confidence.py specifically
+    # recognizes via is_summary_failed_placeholder(). Refactored to delegate
     # to summarizer.generate_summaries() -- the same path pack() itself
     # uses -- so a future fix there (batching, retry, placeholder handling)
     # no longer silently misses this command.
@@ -152,5 +153,5 @@ def test_analyze_command_delegates_to_summarizer_and_shares_its_failure_placehol
     cli.main()
 
     out = capsys.readouterr().out
-    assert summarizer.SUMMARY_FAILED_PLACEHOLDER in out
+    assert summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"] in out
     assert "분석 실패" not in out

@@ -165,6 +165,7 @@ def test_get_job_status_includes_retry_params(tmp_path, monkeypatch):
         "no_cache": True,
         "no_llm": False,
         "selected_files": ["main.py"],
+        "lang": "en",
     }
     _wait(job_id)
 
@@ -256,7 +257,7 @@ def test_start_pack_job_no_llm_never_calls_the_llm_and_uses_structural_summaries
 
     assert status["state"] == "reviewing"
     review = pack_service.get_review(job_id)
-    assert review["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE
+    assert review["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE["en"]
     assert review["rules"] == []
     auto_kept = {e["file"]: e["summary"] for e in review["auto_kept"]}
     assert auto_kept["main.py"] == "Defines: add(a, b)"

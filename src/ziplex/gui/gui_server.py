@@ -60,6 +60,7 @@ from . import watcher
 from .. import query_service
 from .. import settings as app_settings
 from ..file.relationship import CycleError
+from ..llm import LANGUAGE_NAMES
 
 # static_folder="." -- not "gui" -- since index.html/the js/ module tree/
 # style.css are this file's own siblings now that gui_server.py itself
@@ -199,7 +200,11 @@ def api_pack_start():
     full interactive-parity picture.
 
     Optional `no_llm` mirrors CLI `pack --no-llm` -- see
-    pack_service.start_pack_job()'s docstring.
+    pack_service.start_pack_job()'s docstring. Optional `lang` mirrors CLI
+    `pack --lang` (llm.LANGUAGE_NAMES's keys -- "en"/"ko" as of this
+    writing); an unrecognized or missing value falls back to "en", the
+    default and recommended choice, same as packager.pack()'s own
+    defensive fallback.
     """
     data = request.get_json(silent=True) or {}
     project_path = (data.get("project_path") or "").strip()
@@ -216,8 +221,9 @@ def api_pack_start():
     output_path = (data.get("output_path") or "").strip() or None
     no_cache = bool(data.get("no_cache"))
     no_llm = bool(data.get("no_llm"))
+    lang = data.get("lang") if data.get("lang") in LANGUAGE_NAMES else "en"
     job_id = pack_service.start_pack_job(
-        project_path, output_path, no_cache=no_cache, no_llm=no_llm, selected_files=selected_files
+        project_path, output_path, no_cache=no_cache, no_llm=no_llm, selected_files=selected_files, lang=lang,
     )
     return jsonify({"job_id": job_id})
 

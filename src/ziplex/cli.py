@@ -12,7 +12,7 @@ from .file.textutil import relative_key as _rel_key
 from .text_references import find_text_references_for_file
 from .tokenizer import analyze_tokens, analyze_tokens_with_compression
 from .file.selector import select_files, review_dangerous_files
-from .llm import analyze_rules, analyze_prompt
+from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES
 from .summarizer import generate_summaries
 from .packager import pack, save_aif
 from .corrector import correct_aif
@@ -104,6 +104,8 @@ def main():
 
     an = sub.add_parser("analyze", help="LLM 분석")
     an.add_argument("path", help="프로젝트 폴더 경로")
+    an.add_argument("--lang", choices=list(LANGUAGE_NAMES), default="en",
+                     help="요약/코딩 룰/AI 가이드의 언어 (기본값 및 권장값: en)")
 
     p = sub.add_parser("pack", help="프로젝트 패킹")
     p.add_argument("path", help="프로젝트 폴더 경로")
@@ -119,6 +121,8 @@ def main():
                     help="패킹된 aif.json의 파일별 payload가 N 토큰을 넘으면 종료 코드 1로 실패 -- CI에서 컨텍스트 예산 초과를 막는 용도")
     p.add_argument("--max-tokens-model", default="GPT-4o", metavar="MODEL",
                     help="--max-tokens 판단 기준 모델 (기본값: GPT-4o, tokenizer.MODEL_ENCODINGS의 키 중 하나)")
+    p.add_argument("--lang", choices=list(LANGUAGE_NAMES), default="en",
+                    help="패킹 결과(파일별 summary/rules/AI 가이드)의 언어 (기본값 및 권장값: en)")
 
     tr = sub.add_parser("tree", help="의존성 트리 출력")
     tr.add_argument("path", help="프로젝트 폴더 경로")
@@ -233,7 +237,7 @@ def main():
         # the same batched/threaded/retry-once-then-placeholder path pack()
         # itself uses for its own per-file summaries, instead of a bespoke
         # one-call-per-file loop with its own separate failure placeholder
-        # ("분석 실패" vs summarizer.SUMMARY_FAILED_PLACEHOLDER). A future fix to
+        # ("분석 실패" vs summarizer.SUMMARY_FAILED_PLACEHOLDERS). A future fix to
         # batching/retry/placeholder handling there (see CLAUDE.md's
         # `summarizer.py` bullet) now applies here too, instead of silently
         # missing this command the way a hand-rolled duplicate would.
@@ -263,12 +267,12 @@ def main():
             signatures_map[file] = sigs
 
         print(f"  🔍 {len(pending)}개 파일 분석 중...")
-        summaries = generate_summaries(pending, Path(args.path))
+        summaries = generate_summaries(pending, Path(args.path), lang=args.lang)
         summaries.update(media_summaries)
 
         # 3. Extract rules
         print(f"\n  📋 코딩 룰 추출 중...")
-        rules_response = analyze_rules(signatures_map)
+        rules_response = analyze_rules(signatures_map, lang=args.lang)
         try:
             rules_data = json.loads(rules_response)
         except json.JSONDecodeError:
@@ -279,7 +283,8 @@ def main():
         prompt_response = analyze_prompt(
             project_name=Path(args.path).name,
             architecture=[],
-            rules=rules_data["rules"]
+            rules=rules_data["rules"],
+            lang=args.lang,
         )
         try:
             prompt_data = json.loads(prompt_response)
@@ -312,6 +317,7 @@ def main():
             use_llm=not args.no_llm,
             include=_split_patterns(args.include),
             ignore=_split_patterns(args.ignore),
+            lang=args.lang,
         )
         if aif:
             if args.auto_correct:

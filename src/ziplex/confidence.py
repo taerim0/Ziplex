@@ -20,7 +20,7 @@ difference. It's a triage signal, not a substitute for reading the file.
 
 import re
 
-from .summarizer import SUMMARY_FAILED_PLACEHOLDER
+from .summarizer import is_summary_failed_placeholder
 
 # Below this, a file's summary gets flagged for review in correct_aif();
 # at or above, it's auto-kept. Matches confidence_level()'s low/medium
@@ -92,7 +92,7 @@ def estimate_confidence(summary: str, signatures: list[str]) -> float:
     silently skipping the one review path (correct_aif(), see that
     placeholder's own docstring) that's actually supposed to catch it.
     """
-    if summary == SUMMARY_FAILED_PLACEHOLDER:
+    if is_summary_failed_placeholder(summary):
         return 0.0
 
     source_tokens = set()
