@@ -359,12 +359,6 @@ def pack(
         if included_anyway:
             safe_files = safe_files + included_anyway
 
-        excluded = [d["file"] for d in dangerous if d["file"] not in included_anyway]
-        if excluded:
-            print(f"  ⚠️  민감 파일 제외: {len(excluded)}개")
-            for f in excluded:
-                print(f"  ❌ {Path(f).name}")
-
     # 3. Select files
     if preselected is not None:
         # Trusts a name from `dangerous` too, not just safe_files: naming
@@ -391,6 +385,27 @@ def pack(
         print(f"  ✅ 전체 {len(selected)}개 파일 선택됨")
     else:
         selected = select_files(safe_files, root_path)
+
+    # Logged against the *actual* final outcome (dangerous file not in
+    # `selected`), not `included_anyway` -- a real bug reported directly:
+    # `included_anyway` only ever gets populated by the interactive
+    # CLI-prompt path (review_dangerous_files(), just above), so for a
+    # preselected (GUI) caller it stays [] regardless of what was actually
+    # checked, and the old version of this log printed every dangerous
+    # file as "excluded" unconditionally right after the scan -- before
+    # `preselected` ever got a chance to include one of them. The pack
+    # itself was never wrong (a checked "include anyway" box really did
+    # end up in `selected`), just this log message, confusingly claiming
+    # the opposite of what was about to happen. `security_scan` (the aif
+    # assembly step, further down) already computes its own counts from
+    # `selected` for the identical reason -- this log now matches it.
+    if dangerous:
+        selected_set = set(selected)
+        excluded = [d["file"] for d in dangerous if d["file"] not in selected_set]
+        if excluded:
+            print(f"  ⚠️  민감 파일 제외: {len(excluded)}개")
+            for f in excluded:
+                print(f"  ❌ {Path(f).name}")
 
     if not selected:
         print("선택된 파일 없음.")
