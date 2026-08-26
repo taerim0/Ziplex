@@ -140,7 +140,7 @@ class _EmptyRulesProvider(llm.MockProvider):
     "error"), exactly the scenario item 8's retry button exists for.
     """
 
-    def generate(self, prompt: str, retry: int = 5) -> str:
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         if '"rules"' in prompt:
             return "{}"
         return super().generate(prompt, retry=retry)
@@ -243,7 +243,7 @@ def test_start_pack_job_no_llm_never_calls_the_llm_and_uses_structural_summaries
     # immediately at the point it happens (same pattern as
     # test_pack_integration.py's use_llm=False coverage).
     class _RaisingProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5) -> str:
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
             raise AssertionError("no_llm=True must never call the LLM provider")
 
     monkeypatch.setattr(llm, "_provider", _RaisingProvider())
@@ -923,7 +923,7 @@ class _BlockingProvider(llm.MockProvider):
         self.started = started
         self.release = release
 
-    def generate(self, prompt: str, retry: int = 5) -> str:
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         self.started.set()
         self.release.wait(timeout=5)
         return super().generate(prompt, retry)

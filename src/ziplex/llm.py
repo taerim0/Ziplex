@@ -47,6 +47,40 @@ def _lang_name(lang: str) -> str:
     return LANGUAGE_NAMES.get(lang, LANGUAGE_NAMES["en"])
 
 
+# Applied to every provider's backoff wait between retries (5s, 10s, 15s,
+# ... capped here rather than growing unbounded) -- reported directly as
+# "어색한 로직": the printed "(attempt/max)" counter used to make the retry
+# loop's own cap look meaningless the moment a batch summary request
+# exhausted it and immediately handed off to a fresh per-file fallback call
+# with its own brand-new "(1/5)" counter, reading as if the loop had simply
+# ignored its own stated limit. Removing the counter from the message (see
+# _label_prefix() below, used instead to say *what's* being retried) and
+# capping the wait time here is the fix that was actually asked for -- with
+# today's retry=5 default this cap never engages (5*5=25s, under 50 either
+# way), but it's what keeps a possible future increase to `retry` from
+# producing an absurd wait (5*20=100s) for what's still meant to be "the
+# API is having a transient blip," not an hours-long stall.
+MAX_RETRY_WAIT_SECONDS = 50
+
+
+def _retry_wait(attempt: int) -> int:
+    return min(5 * (attempt + 1), MAX_RETRY_WAIT_SECONDS)
+
+
+def _label_prefix(label: str) -> str:
+    """Prefixes a retry/error log line with which item the call is actually
+    for -- a single file's relative name (analyze_file_summary/
+    analyze_text_summary), a batch's file list (analyze_batch_summaries),
+    or a fixed name for the two non-per-file calls ("코딩 룰"/"AI 가이드") --
+    reported directly as missing: watching a pack fail with no indication
+    of *which* file was the problem made it hard to tell whether one bad
+    file was blocking everything or the whole API was down. Empty string
+    (analyze_relationships, dead code with no caller today) means no
+    prefix at all, not a stray "[]".
+    """
+    return f"[{label}] " if label else ""
+
+
 def _clean_json(text: str) -> str:
     # strip markdown code fences
     text = text.strip()
@@ -70,7 +104,7 @@ class LLMProvider(Protocol):
     with very different error-handling/retry logic into this one file.
     """
 
-    def generate(self, prompt: str, retry: int = 5) -> str: ...
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str: ...
 
 
 class GeminiProvider:
@@ -150,8 +184,9 @@ class GeminiProvider:
             return stored
         return os.getenv("GEMINI_API_KEY")
 
-    def generate(self, prompt: str, retry: int = 5) -> str:
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         api_key = self._resolve_api_key()
+        prefix = _label_prefix(label)
         for attempt in range(retry):
             try:
                 response = requests.post(f"{self.url}?key={api_key}", json={
@@ -195,8 +230,8 @@ class GeminiProvider:
                 # calls, checkpoint.handle_llm_failure()) entirely, crashing
                 # the whole pack() run and losing all extraction work done
                 # so far instead of saving a resumable checkpoint first.
-                wait = 5 * (attempt + 1)  # 5s, 10s, 15s, ...
-                print(f"  ⚠️  네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도 ({attempt+1}/{retry})")
+                wait = _retry_wait(attempt)
+                print(f"  ⚠️  {prefix}네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도")
                 time.sleep(wait)
                 continue
 
@@ -208,12 +243,12 @@ class GeminiProvider:
             error_msg = data.get("error", {}).get("message", "unknown")
 
             if error_code in [503, 429]:
-                wait = 5 * (attempt + 1)  # 5s, 10s, 15s, ...
-                print(f"  ⚠️  서버 과부하, {wait}초 후 재시도 ({attempt+1}/{retry})")
+                wait = _retry_wait(attempt)
+                print(f"  ⚠️  {prefix}서버 과부하, {wait}초 후 재시도")
                 time.sleep(wait)
                 continue
 
-            print(f"  ❌ API 에러: {error_msg}")
+            print(f"  ❌ {prefix}API 에러: {error_msg}")
             break
 
         return "{}"
@@ -259,12 +294,13 @@ class OpenAIProvider:
             return stored
         return os.getenv("OPENAI_API_KEY")
 
-    def generate(self, prompt: str, retry: int = 5) -> str:
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         api_key = self._resolve_api_key()
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
         body = {"model": self.model, "messages": [{"role": "user", "content": prompt}]}
+        prefix = _label_prefix(label)
 
         for attempt in range(retry):
             try:
@@ -275,8 +311,8 @@ class OpenAIProvider:
             except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
                 # Same transient-failure treatment as GeminiProvider's own
                 # generate() -- see that method's comment for why.
-                wait = 5 * (attempt + 1)
-                print(f"  ⚠️  네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도 ({attempt+1}/{retry})")
+                wait = _retry_wait(attempt)
+                print(f"  ⚠️  {prefix}네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도")
                 time.sleep(wait)
                 continue
 
@@ -290,13 +326,13 @@ class OpenAIProvider:
             # not a numeric code, so the status line is the reliable signal
             # across every backend this class might be pointed at.
             if response.status_code in (429, 500, 502, 503, 504):
-                wait = 5 * (attempt + 1)
-                print(f"  ⚠️  서버 과부하, {wait}초 후 재시도 ({attempt+1}/{retry})")
+                wait = _retry_wait(attempt)
+                print(f"  ⚠️  {prefix}서버 과부하, {wait}초 후 재시도")
                 time.sleep(wait)
                 continue
 
             error_msg = data.get("error", {}).get("message", "unknown") if isinstance(data, dict) else "unknown"
-            print(f"  ❌ API 에러: {error_msg}")
+            print(f"  ❌ {prefix}API 에러: {error_msg}")
             break
 
         return "{}"
@@ -333,7 +369,7 @@ class ClaudeProvider:
             return stored
         return os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
 
-    def generate(self, prompt: str, retry: int = 5) -> str:
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         api_key = self._resolve_api_key()
         headers = {
             "x-api-key": api_key or "",
@@ -345,14 +381,15 @@ class ClaudeProvider:
             "max_tokens": self.MAX_TOKENS,
             "messages": [{"role": "user", "content": prompt}],
         }
+        prefix = _label_prefix(label)
 
         for attempt in range(retry):
             try:
                 response = requests.post(self.API_URL, headers=headers, json=body, timeout=REQUEST_TIMEOUT)
                 data = response.json()
             except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-                wait = 5 * (attempt + 1)
-                print(f"  ⚠️  네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도 ({attempt+1}/{retry})")
+                wait = _retry_wait(attempt)
+                print(f"  ⚠️  {prefix}네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도")
                 time.sleep(wait)
                 continue
 
@@ -363,13 +400,13 @@ class ClaudeProvider:
             # 529 is Anthropic's own overloaded_error status, alongside the
             # usual 429/5xx set every other provider here also retries on.
             if response.status_code in (429, 500, 502, 503, 504, 529):
-                wait = 5 * (attempt + 1)
-                print(f"  ⚠️  서버 과부하, {wait}초 후 재시도 ({attempt+1}/{retry})")
+                wait = _retry_wait(attempt)
+                print(f"  ⚠️  {prefix}서버 과부하, {wait}초 후 재시도")
                 time.sleep(wait)
                 continue
 
             error_msg = data.get("error", {}).get("message", "unknown") if isinstance(data, dict) else "unknown"
-            print(f"  ❌ API 에러: {error_msg}")
+            print(f"  ❌ {prefix}API 에러: {error_msg}")
             break
 
         return "{}"
@@ -392,7 +429,7 @@ class MockProvider:
     tests/test_pack_integration.py for how to select it.
     """
 
-    def generate(self, prompt: str, retry: int = 5) -> str:
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         if '"rules"' in prompt:
             return '{"rules": ["mock rule: methods use camelCase"]}'
         if '"relationships"' in prompt:
@@ -452,9 +489,15 @@ def _active_provider() -> LLMProvider:
     return _provider
 
 
-def generate(prompt: str, retry: int = 5) -> str:
-    """Delegates to the currently active LLM provider. Thread-safe (provider state is read-only)."""
-    return _active_provider().generate(prompt, retry=retry)
+def generate(prompt: str, retry: int = 5, label: str = "") -> str:
+    """Delegates to the currently active LLM provider. Thread-safe (provider state is read-only).
+
+    label identifies which item this call is for (a file's relative name, a
+    batch's file list, "코딩 룰", "AI 가이드") purely for the retry/error log
+    lines a provider's generate() prints -- reported directly as missing:
+    a failing pack gave no indication of *which* file was the problem.
+    """
+    return _active_provider().generate(prompt, retry=retry, label=label)
 
 
 def analyze_file_summary(file_path: str, signatures: list[str], dependencies: list[str], lang: str = "en") -> str:
@@ -469,7 +512,7 @@ Dependencies: {dependencies}
 
 {{"summary": "..."}}
 """
-    return generate(prompt)
+    return generate(prompt, label=file_path)
 
 
 def analyze_text_summary(file_path: str, content: str, lang: str = "en") -> str:
@@ -484,7 +527,7 @@ Content:
 
 {{"summary": "..."}}
 """
-    return generate(prompt)
+    return generate(prompt, label=file_path)
 
 
 def analyze_batch_summaries(items: list[dict], lang: str = "en") -> str:
@@ -533,7 +576,7 @@ Respond with JSON only, nothing else.
 
 {{"summaries": {{"<file>": "...", "<file>": "..."}}}}
 """
-    return generate(prompt)
+    return generate(prompt, label=", ".join(item["file"] for item in items))
 
 
 def analyze_rules(signatures_map: dict, lang: str = "en") -> str:
@@ -547,7 +590,7 @@ Signature list: {signatures_map}
 
 {{"rules": ["...", "...", "..."]}}
 """
-    return generate(prompt)
+    return generate(prompt, label="코딩 룰")
 
 
 def analyze_prompt(project_name: str, architecture: list[str], rules: list[str], lang: str = "en") -> str:
@@ -563,7 +606,7 @@ Coding rules: {rules}
 
 {{"prompt": "..."}}
 """
-    return generate(prompt)
+    return generate(prompt, label="AI 가이드")
 
 def analyze_relationships(file_summaries: dict) -> str:
     prompt = f"""
