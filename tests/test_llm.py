@@ -126,6 +126,60 @@ def test_generate_retries_past_a_transport_level_exception(monkeypatch):
     assert calls["n"] == 2
 
 
+def test_retry_wait_grows_by_5s_then_caps_at_the_max(monkeypatch):
+    # Reported directly as "어색한 로직" -- the retry backoff used to grow
+    # unbounded (5 * attempt), which combined with the old "(attempt/max)"
+    # display made the printed max look meaningless the moment a caller
+    # (e.g. summarizer.py's batch-then-per-file-fallback chain) started a
+    # fresh generate() call with its own new counter right after the first
+    # one's ran out. The counter is gone from the message entirely now (see
+    # the label test below); this is just the backoff formula itself.
+    assert [llm._retry_wait(a) for a in range(12)] == [
+        5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 50, 50,
+    ]
+
+
+def test_generate_retry_message_has_no_attempt_counter_and_names_the_item(monkeypatch):
+    # Two things reported directly: (1) the old "(attempt+1)/{retry}" counter
+    # read as broken the moment a fresh generate() call (e.g. summarizer.py's
+    # per-file fallback after a failed batch) started its own new count from
+    # 1 again -- removed entirely rather than trying to make it "honest"
+    # across calls that don't share state; (2) a failing pack gave no way to
+    # tell *which* file/item was the problem, just "네트워크 오류... 재시도".
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+
+    def fake_post(url, json, timeout=None):
+        raise requests.exceptions.ConnectionError("simulated network blip")
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.GeminiProvider(api_key="x")
+
+    messages = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: messages.append(" ".join(str(x) for x in a)))
+
+    provider.generate("prompt", retry=2, label="main.py")
+
+    assert any("[main.py]" in m for m in messages)
+    assert not any("/2)" in m or "(1/" in m or "(2/" in m for m in messages)
+
+
+def test_generate_omits_the_label_bracket_when_none_given(monkeypatch):
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+
+    def fake_post(url, json, timeout=None):
+        raise requests.exceptions.ConnectionError("simulated network blip")
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.GeminiProvider(api_key="x")
+
+    messages = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: messages.append(" ".join(str(x) for x in a)))
+
+    provider.generate("prompt", retry=1)
+
+    assert not any("[" in m for m in messages)
+
+
 def test_generate_retries_past_a_non_json_response(monkeypatch):
     # A proxy returning an HTML error page (not JSON at all) raises
     # JSONDecodeError from response.json() -- same treatment as a
@@ -160,7 +214,7 @@ def _capture_generate(monkeypatch):
     """
     captured = []
 
-    def fake_generate(prompt, retry=5):
+    def fake_generate(prompt, retry=5, label=""):
         captured.append(prompt)
         return "{}"
 
@@ -208,6 +262,55 @@ def test_unrecognized_lang_falls_back_to_english_instruction(monkeypatch):
     captured = _capture_generate(monkeypatch)
     llm.analyze_file_summary("main.py", ["add(a, b)"], [], lang="fr")
     assert "English" in captured[0]
+
+
+def _capture_generate_labels(monkeypatch):
+    """Like _capture_generate() but records the `label` each call was made
+    with -- for asserting analyze_*() passes through the right item name
+    for the retry/error log's [label] prefix (see llm._label_prefix()),
+    without touching the existing prompt-only tests above.
+    """
+    labels = []
+
+    def fake_generate(prompt, retry=5, label=""):
+        labels.append(label)
+        return "{}"
+
+    monkeypatch.setattr(llm, "generate", fake_generate)
+    return labels
+
+
+def test_analyze_file_summary_labels_the_retry_with_the_file_path(monkeypatch):
+    labels = _capture_generate_labels(monkeypatch)
+    llm.analyze_file_summary("src/main.py", ["add(a, b)"], [])
+    assert labels == ["src/main.py"]
+
+
+def test_analyze_text_summary_labels_the_retry_with_the_file_path(monkeypatch):
+    labels = _capture_generate_labels(monkeypatch)
+    llm.analyze_text_summary("README.md", "hello")
+    assert labels == ["README.md"]
+
+
+def test_analyze_batch_summaries_labels_the_retry_with_every_file_in_the_batch(monkeypatch):
+    labels = _capture_generate_labels(monkeypatch)
+    llm.analyze_batch_summaries([
+        {"file": "a.py", "signatures": [], "dependencies": []},
+        {"file": "b.py", "signatures": [], "dependencies": []},
+    ])
+    assert labels == ["a.py, b.py"]
+
+
+def test_analyze_rules_labels_the_retry_with_a_fixed_name(monkeypatch):
+    labels = _capture_generate_labels(monkeypatch)
+    llm.analyze_rules({"main.py": ["add()"]})
+    assert labels == ["코딩 룰"]
+
+
+def test_analyze_prompt_labels_the_retry_with_a_fixed_name(monkeypatch):
+    labels = _capture_generate_labels(monkeypatch)
+    llm.analyze_prompt("myproj", [], [])
+    assert labels == ["AI 가이드"]
 
 
 # Real bug reported directly: packing this same repo scored ~17 low-confidence

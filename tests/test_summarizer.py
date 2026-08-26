@@ -48,7 +48,7 @@ def test_request_batch_summaries_falls_back_entirely_on_a_garbled_response(monke
     assert summarizer.request_batch_summaries(batch) == {"a.py": "fallback for a.py"}
 
 
-def test_generate_summaries_returns_a_summary_per_pending_file_keyed_by_path(tmp_path, monkeypatch):
+def test_generate_summaries_returns_a_summary_per_pending_file_keyed_by_path(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         summarizer, "analyze_batch_summaries",
         lambda items, lang="en": json.dumps({"summaries": {"a.py": "does a"}}),
@@ -60,9 +60,13 @@ def test_generate_summaries_returns_a_summary_per_pending_file_keyed_by_path(tmp
     pending = {fp: {"signatures": [], "dependencies": []}}
 
     assert summarizer.generate_summaries(pending, root) == {fp: "does a"}
+    # A real summary is logged as a success, not a failure.
+    out = capsys.readouterr().out
+    assert "✅ a.py" in out
+    assert "❌" not in out
 
 
-def test_generate_summaries_placeholders_a_summary_that_never_comes_back(tmp_path, monkeypatch):
+def test_generate_summaries_placeholders_a_summary_that_never_comes_back(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(summarizer, "analyze_batch_summaries", lambda items, lang="en": json.dumps({"summaries": {}}))
     monkeypatch.setattr(summarizer, "request_summary", lambda name, data, lang="en": "")
 
@@ -72,6 +76,13 @@ def test_generate_summaries_placeholders_a_summary_that_never_comes_back(tmp_pat
     pending = {fp: {"signatures": [], "dependencies": []}}
 
     assert summarizer.generate_summaries(pending, root) == {fp: summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"]}
+    # Real bug reported directly: a placeholder-substituted summary used to
+    # print "✅" unconditionally, indistinguishable from a real success --
+    # nothing in the log pointed a human at the one file correct_aif()'s
+    # review is actually supposed to catch.
+    out = capsys.readouterr().out
+    assert "❌ a.py" in out
+    assert "✅" not in out
 
 
 def test_generate_summaries_placeholders_in_the_requested_language(tmp_path, monkeypatch):

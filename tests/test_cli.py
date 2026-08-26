@@ -167,7 +167,7 @@ def test_analyze_command_delegates_to_summarizer_and_shares_its_failure_placehol
     # uses -- so a future fix there (batching, retry, placeholder handling)
     # no longer silently misses this command.
     class _FailingProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5) -> str:
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
             return "not valid json"
 
     monkeypatch.setattr(llm, "_provider", _FailingProvider())

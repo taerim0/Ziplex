@@ -82,7 +82,7 @@ def test_pack_never_calls_the_llm_for_a_media_asset_even_with_use_llm_true(tmp_p
         def __init__(self):
             self.calls = 0
 
-        def generate(self, prompt: str, retry: int = 5) -> str:
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
             self.calls += 1
             return super().generate(prompt, retry)
 
@@ -142,7 +142,7 @@ def test_pack_use_llm_false_never_calls_the_llm_and_uses_structural_summaries(tm
     # immediately at the point it happens rather than only being caught by
     # a final assertion.
     class _RaisingProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5) -> str:
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
             raise AssertionError("use_llm=False must never call the LLM provider")
 
     monkeypatch.setattr(llm, "_provider", _RaisingProvider())
@@ -172,7 +172,7 @@ def test_pack_use_llm_false_ignores_rules_and_prompt_from_an_earlier_llm_run_che
     # aif.json with real coding rules alongside a prompt asserting no LLM
     # inference ever happened.
     class _RaisingProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5) -> str:
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
             raise AssertionError("use_llm=False must never call the LLM provider")
 
     monkeypatch.setattr(llm, "_provider", _RaisingProvider())
@@ -209,7 +209,7 @@ def test_pack_use_llm_false_still_reuses_a_cached_real_summary(tmp_path, monkeyp
     packager.save_aif(packager.pack(str(project), auto=True, interactive=False))
 
     class _RaisingProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5) -> str:
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
             raise AssertionError("use_llm=False must never call the LLM provider")
 
     monkeypatch.setattr(llm, "_provider", _RaisingProvider())
@@ -246,7 +246,7 @@ class _EmptySummaryProvider(llm.MockProvider):
     cached a failure" without needing a real network failure.
     """
 
-    def generate(self, prompt: str, retry: int = 5) -> str:
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         if '"summaries"' in prompt or '"summary"' in prompt:
             return "{}"
         return super().generate(prompt, retry=retry)
@@ -308,7 +308,7 @@ class _EmptyRulesProvider(llm.MockProvider):
     tests/test_checkpoint.py for that half).
     """
 
-    def generate(self, prompt: str, retry: int = 5) -> str:
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         if '"rules"' in prompt:
             return "{}"
         return super().generate(prompt, retry=retry)
@@ -323,7 +323,7 @@ class _FlakyRulesProvider(llm.MockProvider):
     def __init__(self):
         self.rules_calls = 0
 
-    def generate(self, prompt: str, retry: int = 5) -> str:
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         if '"rules"' in prompt:
             self.rules_calls += 1
             if self.rules_calls == 1:
@@ -338,7 +338,7 @@ class _EmptyPromptProvider(llm.MockProvider):
     prompt` loop.
     """
 
-    def generate(self, prompt: str, retry: int = 5) -> str:
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         if '"prompt"' in prompt:
             return "{}"
         return super().generate(prompt, retry=retry)
@@ -520,7 +520,7 @@ def test_pack_text_reference_does_not_hijack_the_summary_prompt(tmp_path, monkey
     captured_prompts = []
 
     class _CapturingMockProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5) -> str:
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
             captured_prompts.append(prompt)
             return super().generate(prompt, retry)
 
@@ -554,7 +554,7 @@ def test_pack_lang_threads_language_instruction_into_every_llm_prompt(tmp_path, 
     captured_prompts = []
 
     class _CapturingMockProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5) -> str:
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
             captured_prompts.append(prompt)
             return super().generate(prompt, retry)
 
@@ -850,7 +850,7 @@ class _CountingMockProvider(llm.MockProvider):
     def __init__(self):
         self.calls = 0
 
-    def generate(self, prompt: str, retry: int = 5) -> str:
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         self.calls += 1
         return super().generate(prompt, retry)
 
@@ -1071,7 +1071,7 @@ def test_pack_includes_a_checkpoint_restored_dependency_only_file_in_rules_input
     captured_prompts = []
 
     class _CapturingMockProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5) -> str:
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
             captured_prompts.append(prompt)
             return super().generate(prompt, retry)
 

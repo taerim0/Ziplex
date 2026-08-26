@@ -310,7 +310,7 @@ def test_api_pack_no_llm_flag_reaches_pack_service(client, tmp_path, monkeypatch
     # pack_service.start_pack_job() -- pack_service.py's own test suite
     # covers the resulting structural-summary behavior in detail.
     class _RaisingProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5) -> str:
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
             raise AssertionError("no_llm=True must never call the LLM provider")
 
     monkeypatch.setattr(llm, "_provider", _RaisingProvider())
@@ -380,7 +380,7 @@ def test_api_pack_status_retry_params_can_resume_a_failed_job_over_http(client, 
     # resumes from the checkpoint instead of starting over. pack_service.py's
     # own test suite covers the same behavior below the HTTP layer.
     class _EmptyRulesProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5) -> str:
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
             if '"rules"' in prompt:
                 return "{}"
             return super().generate(prompt, retry=retry)
@@ -501,7 +501,7 @@ class _BlockingProvider(llm.MockProvider):
         self.started = started
         self.release = release
 
-    def generate(self, prompt: str, retry: int = 5) -> str:
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         self.started.set()
         self.release.wait(timeout=5)
         return super().generate(prompt, retry)
