@@ -34,6 +34,7 @@ mcp = MCPServer("ziplex")
 for _fn in (
     query_service.get_overview,
     query_service.list_files,
+    query_service.get_folders,
     query_service.get_relationships,
     query_service.get_dependents,
     query_service.get_blast_radius,

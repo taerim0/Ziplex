@@ -132,6 +132,7 @@ A pack produces three files, each read differently:
     "format_notes": "..."  // fixed legend explaining confidence/⋮---- to a reader with no other Ziplex context
   },
   "rules": ["..."],
+  "folders": { "src": { "summary": "..." } },  // one sentence per folder describing its role
   "tokens": { "GPT-4o": { "original": 3100, "compressed": 749, "saved_pct": 75.8 } },
   "files": { "src/App.tsx": { "summary": "...", "confidence": 0.83 } },
   "relationships": { "src/App.tsx": { "internal": ["..."], "external": ["react"] } }
@@ -188,6 +189,7 @@ claude mcp add ziplex -- ziplex-mcp     # register with Claude Code
 |---|---|
 | `get_overview(aif_path, project_path?)` | Project guide, coding rules, token stats — call this first |
 | `list_files(aif_path, project_path?)` | Every file mapped to its summary + confidence score |
+| `get_folders(aif_path)` | Every folder mapped to a one-sentence summary of its role |
 | `get_relationships(aif_path)` | The whole dependency graph at once — every file's internal/external edges |
 | `get_dependents(aif_path, file)` | Files that directly depend on `file` |
 | `get_blast_radius(aif_path, file)` | Every file transitively affected by a change to `file` |

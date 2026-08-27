@@ -602,6 +602,27 @@ def test_api_files(client, tmp_path):
     }
 
 
+def test_api_folders(client, tmp_path):
+    aif_path = tmp_path / "sample.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "sample"},
+        "files": {"a.py": {"summary": "does a thing"}},
+        "folders": {".": {"summary": "Top-level project files."}},
+    }), encoding="utf-8")
+
+    res = client.get("/api/folders", query_string={"aif_path": str(aif_path)})
+    assert res.get_json() == {".": {"summary": "Top-level project files."}}
+
+
+def test_api_folders_missing_field_returns_empty_dict(client, tmp_path):
+    # A project packed before "folders" existed -- the route must degrade
+    # to {} rather than a 500, same backward-compat contract query_service.
+    # get_folders() itself already guarantees.
+    aif_path = _write_sample_aif(tmp_path)
+    res = client.get("/api/folders", query_string={"aif_path": aif_path})
+    assert res.get_json() == {}
+
+
 def test_api_files_attaches_stale_warning(client, tmp_path):
     aif_path = _write_sample_aif(tmp_path)
     project = tmp_path / "proj"

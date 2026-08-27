@@ -258,6 +258,27 @@ def test_analyze_prompt_lang_ko_asks_for_korean(monkeypatch):
     assert "Korean" in captured[0]
 
 
+def test_analyze_folder_summaries_lang_ko_asks_for_korean(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_folder_summaries({"src": ["a.py: does a"]}, lang="ko")
+    assert "Korean" in captured[0]
+
+
+def test_analyze_prompt_instructs_to_focus_on_purpose_not_style(monkeypatch):
+    # Real, reported bug: analyze_prompt() used to be called with an
+    # always-empty `architecture` list (packager.py), so the only real
+    # signal it ever had was a list of coding-style rules -- structurally
+    # guaranteed to read like a style blurb rather than a "what is this
+    # project" summary. Fixed at both the data level (packager.py now
+    # populates architecture for real) and the instruction level (this
+    # test) -- the prompt itself has to say not to center the summary on
+    # style, since a real architecture signal alone doesn't stop the model
+    # from still leaning on the rules list if nothing tells it not to.
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_prompt("myproj", ["src/main.py: entry point"], ["methods use camelCase"])
+    assert "do NOT center the summary on coding style" in captured[0]
+
+
 def test_unrecognized_lang_falls_back_to_english_instruction(monkeypatch):
     captured = _capture_generate(monkeypatch)
     llm.analyze_file_summary("main.py", ["add(a, b)"], [], lang="fr")
@@ -311,6 +332,12 @@ def test_analyze_prompt_labels_the_retry_with_a_fixed_name(monkeypatch):
     labels = _capture_generate_labels(monkeypatch)
     llm.analyze_prompt("myproj", [], [])
     assert labels == ["AI 가이드"]
+
+
+def test_analyze_folder_summaries_labels_the_retry_with_a_fixed_name(monkeypatch):
+    labels = _capture_generate_labels(monkeypatch)
+    llm.analyze_folder_summaries({"src": ["a.py: does a"]})
+    assert labels == ["폴더 요약"]
 
 
 # Real bug reported directly: packing this same repo scored ~17 low-confidence

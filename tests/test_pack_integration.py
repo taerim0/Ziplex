@@ -485,6 +485,74 @@ def test_pack_attaches_an_empty_tech_stack_when_no_manifest_present(tmp_path, mo
     assert aif["project"]["tech_stack"] == []
 
 
+def test_build_architecture_summary_includes_tech_stack_and_file_summaries():
+    # Regression for a real, reported bug: analyze_prompt() used to always
+    # be called with architecture=[] (a dead parameter, never populated
+    # anywhere), so the AI guide it wrote had no real project-understanding
+    # signal at all -- just the project name and a list of coding-style
+    # rules. This is the fix: real per-file summaries plus the free
+    # tech_stack fact block, not an empty list.
+    files_data = {
+        "main.py": {"summary": "Runs the Flask app."},
+        "no_summary.py": {"summary": ""},  # a file with no summary yet is skipped, not blanked
+    }
+    tech_stack = [{
+        "manifest": "requirements.txt", "language": "Python",
+        "package_manager": "pip", "dependencies": ["flask"], "dependencies_truncated": False,
+    }]
+
+    result = packager._build_architecture_summary(files_data, tech_stack)
+
+    assert any("flask" in line for line in result)
+    assert "main.py: Runs the Flask app." in result
+    assert not any("no_summary.py" in line for line in result)
+
+
+def test_build_architecture_summary_caps_and_notes_truncation():
+    files_data = {f"f{i}.py": {"summary": f"does {i}"} for i in range(packager.MAX_ARCHITECTURE_FILES + 5)}
+
+    result = packager._build_architecture_summary(files_data, [])
+
+    assert len(result) == packager.MAX_ARCHITECTURE_FILES + 1  # + the truncation note
+    assert result[-1] == "... (5 more files not shown)"
+
+
+def test_pack_attaches_folder_summaries(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "src" / "helper.py", "def helper():\n    pass\n")
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+
+    assert set(aif["folders"].keys()) == {".", "src"}
+    assert aif["folders"]["."]["summary"]
+    assert aif["folders"]["src"]["summary"]
+
+    # survives finalize_aif() the same way tech_stack does -- not a
+    # per-file field it prunes
+    from ziplex.edits import finalize_aif
+    assert finalize_aif(aif)["folders"] == aif["folders"]
+
+
+def test_pack_use_llm_false_generates_structural_folder_summaries(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    def _unexpected_call(*a, **k):
+        raise AssertionError("must not call the LLM for folder summaries under --no-llm")
+
+    monkeypatch.setattr(llm, "generate", _unexpected_call)
+
+    project = tmp_path / "project"
+    _write(project / "src" / "main.py", "def add(a, b):\n    return a + b\n")
+
+    aif = packager.pack(str(project), auto=True, interactive=False, use_llm=False)
+
+    assert "Contains 1 file(s): main.py" in aif["folders"]["src"]["summary"]
+
+
 def test_pack_captures_a_text_file_reference_to_a_code_file(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
@@ -866,20 +934,21 @@ def test_pack_reuses_summaries_for_unchanged_files_on_a_second_run(tmp_path, mon
     _write(project / "README.md", "# Sample\n\nA sample project.\n")
 
     # first pack: main.py + README.md need summarizing, but both fit in one
-    # batch (well under BATCH_SIZE) so that's 1 call, plus rules and the AI
-    # guide (1 call each) -- everything is new
+    # batch (well under BATCH_SIZE) so that's 1 call, plus rules, the AI
+    # guide, and the folder-summary call (1 call each) -- everything is new
     aif1 = packager.pack(str(project), auto=True, interactive=False)
     packager.save_aif(aif1)  # default path -> tmp_path/result/project.json, via the monkeypatched RESULT_DIR
     first_run_calls = provider.calls
-    assert first_run_calls == 3
+    assert first_run_calls == 4
 
     # second pack, nothing on disk changed: both summaries should be reused
-    # from result/project.json -- only rules + prompt regenerate (2 calls),
-    # since those aren't cached (see pack()'s use_cache docstring)
+    # from result/project.json -- only rules + prompt + folder summaries
+    # regenerate (3 calls), since none of those are cached (see pack()'s
+    # use_cache docstring and folder_summary.py's own module docstring)
     provider.calls = 0
     aif2 = packager.pack(str(project), auto=True, interactive=False)
 
-    assert provider.calls == 2
+    assert provider.calls == 3
     assert aif2["files"]["main.py"]["summary"] == aif1["files"]["main.py"]["summary"]
     assert aif2["files"]["README.md"]["summary"] == aif1["files"]["README.md"]["summary"]
 
@@ -907,10 +976,11 @@ def test_pack_result_dir_overrides_result_dir_for_cache_lookup(tmp_path, monkeyp
     provider.calls = 0
     aif2 = packager.pack(str(project), auto=True, interactive=False, result_dir=custom_dir)
 
-    # rules + prompt regenerate (2 calls); main.py's summary is reused from
-    # custom_dir, not re-summarized -- would be 3 calls if the cache lookup
-    # had silently fallen back to RESULT_DIR and found nothing there
-    assert provider.calls == 2
+    # rules + prompt + folder summaries regenerate (3 calls); main.py's
+    # summary is reused from custom_dir, not re-summarized -- would be 4
+    # calls if the cache lookup had silently fallen back to RESULT_DIR and
+    # found nothing there
+    assert provider.calls == 3
     assert aif2["files"]["main.py"]["summary"] == aif1["files"]["main.py"]["summary"]
 
 
@@ -921,9 +991,9 @@ def test_pack_lang_change_forces_full_resummarization_not_cross_language_reuse(t
     # different --lang kept the *previous* language's summaries while still
     # stamping the *new* language onto project.language -- the same
     # self-contradiction class this codebase already fixed once for
-    # rules/prompt vs. use_llm. 3 calls (summary + rules + prompt) on the
-    # second pack proves a real resummarization happened, not a silent
-    # reuse that would cost only 2 (rules + prompt).
+    # rules/prompt vs. use_llm. 4 calls (summary + rules + prompt + folder
+    # summaries) on the second pack proves a real resummarization happened,
+    # not a silent reuse that would cost only 3 (rules + prompt + folders).
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
@@ -939,7 +1009,7 @@ def test_pack_lang_change_forces_full_resummarization_not_cross_language_reuse(t
     provider.calls = 0
     aif2 = packager.pack(str(project), auto=True, interactive=False, result_dir=result_dir, lang="ko")
 
-    assert provider.calls == 3
+    assert provider.calls == 4
     assert aif2["project"]["language"] == "ko"
 
 
@@ -1018,8 +1088,9 @@ def test_pack_only_resummarizes_a_changed_file(tmp_path, monkeypatch):
     provider.calls = 0
     packager.pack(str(project), auto=True, interactive=False)
 
-    # 1 batch call (just main.py) + rules + prompt = 3; README.md's summary is reused
-    assert provider.calls == 3
+    # 1 batch call (just main.py) + rules + prompt + folder summaries = 4;
+    # README.md's summary is reused
+    assert provider.calls == 4
 
 
 def test_pack_splits_into_multiple_batches_past_batch_size(tmp_path, monkeypatch):
@@ -1036,7 +1107,8 @@ def test_pack_splits_into_multiple_batches_past_batch_size(tmp_path, monkeypatch
     packager.pack(str(project), auto=True, interactive=False)
 
     # 5 files at BATCH_SIZE=2 -> 3 batch calls (2, 2, 1), plus rules + prompt
-    assert provider.calls == 5
+    # + folder summaries
+    assert provider.calls == 6
 
 
 def test_pack_use_cache_false_resummarizes_everything(tmp_path, monkeypatch):
@@ -1053,8 +1125,9 @@ def test_pack_use_cache_false_resummarizes_everything(tmp_path, monkeypatch):
     provider.calls = 0
     packager.pack(str(project), auto=True, interactive=False, use_cache=False)
 
-    # 1 batch call + rules + prompt = 3, same as an unseen project -- nothing reused
-    assert provider.calls == 3
+    # 1 batch call + rules + prompt + folder summaries = 4, same as an
+    # unseen project -- nothing reused
+    assert provider.calls == 4
 
 
 def test_pack_includes_a_checkpoint_restored_dependency_only_file_in_rules_input(tmp_path, monkeypatch):

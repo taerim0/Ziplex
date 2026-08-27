@@ -35,7 +35,7 @@ def test_all_tools_are_registered():
     tools = asyncio.run(mcp_server.mcp.list_tools())
     names = {t.name for t in tools}
     assert names == {
-        "get_overview", "list_files", "get_relationships", "get_dependents",
+        "get_overview", "list_files", "get_folders", "get_relationships", "get_dependents",
         "get_blast_radius", "get_detail", "check_freshness", "search_project",
     }
 
@@ -55,6 +55,9 @@ def _write_sample_aif(tmp_path):
         "files": {
             "a.py": {"summary": "does a thing"},
             "b.py": {"summary": "uses a.py"},
+        },
+        "folders": {
+            ".": {"summary": "Top-level project files."},
         },
         "relationships": {
             "a.py": {"internal": [], "external": []},
@@ -88,6 +91,15 @@ def test_list_files_via_call_tool(tmp_path):
         "a.py": {"summary": "does a thing", "confidence": 1.0},
         "b.py": {"summary": "uses a.py", "confidence": 1.0},
     }
+
+
+def test_get_folders_via_call_tool(tmp_path):
+    aif_path = _write_sample_aif(tmp_path)
+    result = _call("get_folders", {"aif_path": aif_path})
+
+    assert result.is_error is False
+    data = _json_result(result)
+    assert data == {".": {"summary": "Top-level project files."}}
 
 
 def test_get_overview_omits_stale_field_when_project_path_not_given(tmp_path):

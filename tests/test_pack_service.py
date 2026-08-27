@@ -296,12 +296,13 @@ def test_retrying_a_full_repack_job_with_resume_does_not_rebill_summaries(tmp_pa
 
     assert retry_status["state"] == "reviewing"
     assert any("체크포인트에서 복원" in line for line in retry_status["log"])
-    # Only rules + prompt (neither had succeeded yet when the checkpoint was
-    # saved, so both still need a real call) should happen on retry -- if
-    # the checkpoint had been discarded instead, this would be 4 (2
-    # summaries re-billed + rules + prompt), the exact bug being guarded
-    # against here.
-    assert retry_provider.calls == 2
+    # Only rules + prompt + folder summaries (neither of the first two had
+    # succeeded yet when the checkpoint was saved, so both still need a real
+    # call; folder summaries are never checkpoint-restored at all, see
+    # folder_summary.py) should happen on retry -- if the checkpoint had
+    # been discarded instead, this would be 5 (2 summaries re-billed + rules
+    # + prompt + folder summaries), the exact bug being guarded against here.
+    assert retry_provider.calls == 3
 
 
 def test_fresh_pack_with_no_cache_still_discards_a_stale_leftover_checkpoint(tmp_path, monkeypatch):
