@@ -1225,6 +1225,41 @@ def test_pack_discard_checkpoint_false_still_discards_a_checkpoint_from_a_differ
     assert not checkpoint._checkpoint_path(str(project)).exists()
 
 
+def test_pack_discard_checkpoint_false_discards_a_mismatch_even_with_use_cache_true(tmp_path, monkeypatch):
+    # Regression for a second real gap a later code review pass caught in
+    # the mismatch guard above: it fell back to `should_discard_checkpoint =
+    # not use_cache` on mismatch, which is False whenever use_cache=True
+    # (the default -- i.e. "완전히 재패킹" unchecked) and therefore silently
+    # un-does the very mismatch detection that just ran, resuming the
+    # foreign checkpoint's rules/prompt anyway. "does this checkpoint
+    # belong to me" and "should I trust my own summary cache" are
+    # independent questions -- a positively-identified mismatch must be
+    # discarded unconditionally, regardless of use_cache.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    checkpoint.save_checkpoint(
+        str(project),
+        {
+            "project": {"name": "project", "prompt": "restored prompt"},
+            "rules": ["Rule A"],
+            # A different (unrelated) job's own checkpoint.
+            "files_data": {"other.py": {"signatures": [], "dependencies": [], "api": [], "compressed": "", "summary": "x"}},
+        },
+    )
+
+    aif = packager.pack(
+        str(project), auto=True, interactive=False, use_cache=True,
+        preselected=["main.py"], discard_checkpoint=False,
+    )
+
+    assert aif["rules"] == ["mock rule: methods use camelCase"]
+    assert "other.py" not in aif["files"]
+    assert not checkpoint._checkpoint_path(str(project)).exists()
+
+
 def test_pack_use_cache_false_never_prompts_to_resume(tmp_path, monkeypatch):
     # use_cache=False must short-circuit before resume_checkpoint_choice()
     # even when interactive=True -- asking "resume or discard?" makes no

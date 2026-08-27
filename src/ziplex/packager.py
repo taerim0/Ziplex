@@ -346,12 +346,17 @@ def pack(
     # silently resume a *different* attempt's partial progress instead of
     # its own -- a real gap caught by code review. A checkpoint whose own
     # restored file set isn't a subset of what this retry is actually about
-    # to select clearly belongs to a different run; fall back to the normal
-    # use_cache-driven decision instead of blindly trusting it in that case.
+    # to select clearly belongs to a different run; discard it unconditionally
+    # in that case -- "does this checkpoint belong to me" and "should I trust
+    # my own summary cache" (use_cache) are independent questions, so falling
+    # back to `not use_cache` here (a second code-review pass caught this:
+    # with use_cache=True, `not use_cache` is False, silently un-doing the
+    # very mismatch this check just detected and resuming the foreign
+    # checkpoint's rules/prompt anyway) is wrong regardless of use_cache.
     if checkpoint and discard_checkpoint is False and preselected is not None:
         _, _, candidate_files_data, _ = ckpt.unpack_snapshot(checkpoint)
         if not set(candidate_files_data.keys()) <= set(preselected):
-            should_discard_checkpoint = not use_cache
+            should_discard_checkpoint = True
     if checkpoint and (should_discard_checkpoint or not ckpt.resume_checkpoint_choice(interactive)):
         checkpoint = None
         ckpt.delete_checkpoint(root_path)
