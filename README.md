@@ -156,7 +156,7 @@ A pack produces three files, each read differently:
 
 ## Features
 
-- **Multi-language, structure-aware compression** — Python, Java, TypeScript, JavaScript, Lua, GDScript, Go, C++, Rust, C#, PHP, Ruby via Tree-sitter, plus dedicated JSON/YAML/Markdown/plain-text compressors, all preserving structure while cutting tokens. Works on any collection of local files with cross-file relationships, not just git repos — game mods and asset projects included.
+- **Multi-language, structure-aware compression** — Python, Java, TypeScript, JavaScript, Lua, GDScript, Go, C++, Rust, C#, PHP, Ruby, Bash via Tree-sitter, plus dedicated JSON/YAML/Markdown/plain-text compressors, all preserving structure while cutting tokens. Works on any collection of local files with cross-file relationships, not just git repos — game mods and asset projects included.
 - **Security scanning built in** — every file is checked for secrets (`secretlint`, regex fallback) before it ever enters the pipeline.
 - **Human-in-the-loop, but it scales** — every LLM output (summaries, rules, project guide, dependency tree) is reviewable and editable, or skippable entirely with `--auto-correct`. Only low-confidence summaries get flagged for review — review time doesn't grow with project size.
 - **Three ways to consume the result** — an [MCP server](#mcp-server) for Claude Code/Cursor/etc., a local [GUI](#gui) for packing and browsing without a terminal, or a [Claude Agent Skill export](#claude-agent-skill-export) that needs no server at all.
@@ -240,7 +240,7 @@ Ziplex packs one person's local snapshot — there's no shared server or live sy
 
 ## Tech stack
 
-Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby grammars, GDScript via `tree-sitter-language-pack`) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · plain REST via `requests` against Gemini (`gemini-flash-latest` by default, overridable via `GEMINI_MODEL`), any OpenAI-compatible endpoint (real OpenAI, Ollama, LM Studio, vLLM, OpenRouter, ...), or Claude — see [Other AI providers](#quick-start) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
+Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby/Bash grammars, GDScript via `tree-sitter-language-pack`) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · plain REST via `requests` against Gemini (`gemini-flash-latest` by default, overridable via `GEMINI_MODEL`), any OpenAI-compatible endpoint (real OpenAI, Ollama, LM Studio, vLLM, OpenRouter, ...), or Claude — see [Other AI providers](#quick-start) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
 
 ## License
 

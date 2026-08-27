@@ -9,6 +9,7 @@ tree-sitter-rust
 tree-sitter-c-sharp
 tree-sitter-php
 tree-sitter-ruby
+tree-sitter-bash
 tree-sitter-language-pack
 tiktoken
 pathspec

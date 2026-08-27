@@ -647,6 +647,65 @@ def test_extract_dependencies_ignores_ruby_call_with_receiver(tmp_path):
     assert extract_dependencies(str(file_path)) == []
 
 
+def test_extract_signatures_from_bash_file(tmp_path):
+    # function_definition covers both of Bash's two equivalent
+    # declaration forms (`function deploy() { ... }` and the
+    # POSIX-compatible `deploy() { ... }`), both with "name"/"body" as
+    # direct fields. A shell function's "()" is fixed syntax, never a
+    # real parameter list (arguments are read via $1/$2/$@ inside the
+    # body) -- this grammar has no "parameters" field at all for any
+    # function, ever, so zero_arg_types substitutes "()" unconditionally
+    # rather than for one specific parens-omitted spelling like Ruby's.
+    file_path = tmp_path / "deploy.sh"
+    file_path.write_text(
+        "function build_app() {\n    npm run build\n}\n\n"
+        "deploy() {\n    build_app\n}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert "build_app()" in sigs
+    assert "deploy()" in sigs
+
+
+def test_extract_dependencies_from_bash_file(tmp_path):
+    # `source file.sh` / `. file.sh` are ordinary commands, not a
+    # dedicated import-statement node -- matched by command name the same
+    # way Lua's require()/Ruby's require() are. Both forms normalize to
+    # their bare Path stem, and a quoted path resolves the same way a
+    # bare word does.
+    file_path = tmp_path / "deploy.sh"
+    file_path.write_text(
+        'source ./lib/helpers.sh\n. "./lib/other.sh"\n',
+        encoding="utf-8",
+    )
+
+    deps = extract_dependencies(str(file_path))
+    assert "helpers" in deps
+    assert "other" in deps
+
+
+def test_extract_dependencies_bash_source_ignores_extra_positional_args(tmp_path):
+    # A source'd script's own extra positional arguments (passed through
+    # as $1/$2 inside it) aren't part of the sourced path -- only the
+    # first argument counts.
+    file_path = tmp_path / "deploy.sh"
+    file_path.write_text(". lib/other.sh extra_arg1 extra_arg2\n", encoding="utf-8")
+
+    deps = extract_dependencies(str(file_path))
+    assert deps == ["other"]
+
+
+def test_extract_dependencies_bash_ignores_unrelated_commands(tmp_path):
+    # A plain command that happens to reference a ".sh"-looking string
+    # (inside a command substitution, or just an unrelated argument)
+    # isn't a source/. statement and must not be captured.
+    file_path = tmp_path / "deploy.sh"
+    file_path.write_text('echo "not sourcing anything.sh"\n', encoding="utf-8")
+
+    assert extract_dependencies(str(file_path)) == []
+
+
 def test_extract_signatures_from_typescript_arrow_functions(tmp_path):
     # arrow_function/function_expression have no "name" field of their own
     # when anonymous -- extract_signatures() has to recover a readable name
@@ -767,6 +826,7 @@ def test_extract_api_returns_empty_for_languages_with_no_routing_convention(tmp_
         (".lua", "local function greet(name)\n    return name\nend\n"),
         (".php", "<?php\nfunction greet($name) {\n    return $name;\n}\n"),
         (".rb", "def greet(name)\n  name\nend\n"),
+        (".sh", "greet() {\n    echo \"hi\"\n}\n"),
     ):
         file_path = tmp_path / f"mod{suffix}"
         file_path.write_text(code, encoding="utf-8")

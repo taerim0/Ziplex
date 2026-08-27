@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. Kept intentionally lean (current-state map, not a change log) — see `docs/HISTORY.md` for the detailed decision/bug-fix history behind anything below. That file is never auto-loaded; open it only when the "why did we end up doing it this way" story actually matters for what you're about to change.
 
 Directory-scoped detail lives in nested CLAUDE.md files, loaded automatically when you're working in that subtree:
-- `src/ziplex/extract/code/CLAUDE.md` — Tree-sitter code compression/extraction, one language per bullet (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby).
+- `src/ziplex/extract/code/CLAUDE.md` — Tree-sitter code compression/extraction, one language per bullet (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby/Bash).
 - `src/ziplex/extract/text/CLAUDE.md` — the non-Tree-sitter text compressors (json/yaml/markdown/txt).
 - `src/ziplex/file/CLAUDE.md` — file collection, security scanning, and the dependency-graph API.
 - `src/ziplex/gui/CLAUDE.md` — the local GUI (Flask + pywebview backend, ES-module frontend).
