@@ -2,6 +2,11 @@ import json
 
 from ruamel.yaml import YAML
 
+from ziplex.extract.text.dockerfile import (
+    compress_dockerfile,
+    MARKER,
+    MAX_LINE_LEN as DOCKERFILE_MAX_LINE_LEN,
+)
 from ziplex.extract.text.json import compress_json, MAX_STRING_LEN, MAX_ARRAY_ITEMS
 from ziplex.extract.text.markdown import compress_markdown, MAX_PARAGRAPH_LEN, MAX_LIST_ITEMS
 from ziplex.extract.text.txt import compress_txt, MAX_LINE_LEN, MAX_BLOCK_LINES
@@ -200,3 +205,56 @@ def test_yaml_compresses_each_document_and_rejoins_multi_document_files():
 def test_yaml_single_document_has_no_leading_separator():
     result = compress_yaml("kind: Pod\n")
     assert not result.startswith("---")
+
+
+def test_dockerfile_keeps_short_instructions_untouched():
+    text = "FROM node:20-alpine\nWORKDIR /app\nCOPY . .\nCMD [\"node\", \"index.js\"]\n"
+    result = compress_dockerfile(text)
+    assert result == text.rstrip("\n")
+
+
+def test_dockerfile_elides_a_long_multiline_run_instruction():
+    # A RUN's shell command chained across several `\`-continued physical
+    # lines is one logical instruction, judged as a whole against
+    # MAX_INSTRUCTION_LINES -- not blindly line-by-line the way a generic
+    # block-length check with no idea where the instruction ends would.
+    lines = ["RUN apt-get update && \\"] + [f"    pkg{i} \\" for i in range(10)] + ["    && rm -rf /var/lib/apt/lists/*"]
+    text = "FROM alpine\n" + "\n".join(lines) + "\nCMD [\"true\"]\n"
+
+    result = compress_dockerfile(text)
+
+    assert "FROM alpine" in result
+    assert MARKER.strip() in result
+    assert "pkg9" not in result
+    assert 'CMD ["true"]' in result
+    # kept lines: the RUN instruction's own MAX_INSTRUCTION_LINES leading
+    # lines, not the whole 12-line block.
+    assert result.count("pkg") < 10
+
+
+def test_dockerfile_truncates_an_individually_long_line():
+    long_label = "LABEL description=" + '"' + ("x" * (DOCKERFILE_MAX_LINE_LEN + 50)) + '"'
+    text = f"FROM alpine\n{long_label}\n"
+
+    result = compress_dockerfile(text)
+
+    assert MARKER.strip() in result
+    assert long_label not in result
+
+
+def test_dockerfile_recognizes_multi_stage_builds():
+    text = (
+        "FROM node:20-alpine AS builder\n"
+        "WORKDIR /app\n"
+        "FROM node:20-alpine\n"
+        "COPY --from=builder /app/dist ./dist\n"
+    )
+    result = compress_dockerfile(text)
+    assert result == text.rstrip("\n")
+
+
+def test_dockerfile_invalid_input_returned_unchanged():
+    # A parse failure (or anything else going wrong) must never corrupt
+    # the file -- same "don't guess, don't corrupt" contract every other
+    # text compressor here already has.
+    assert compress_dockerfile("") == ""

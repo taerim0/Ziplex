@@ -1,4 +1,4 @@
-from ziplex.extract.code.compressor import compress_code, MARKER
+from ziplex.extract.code.compressor import compress_code, compress_file, MARKER
 
 
 def test_python_function_body_is_stripped():
@@ -341,6 +341,72 @@ def test_bash_one_liner_body_is_left_alone():
 
 def test_unsupported_extension_returns_none():
     assert compress_code("whatever content", ".xyz") is None
+
+
+def test_compress_file_recognizes_a_bare_dockerfile_by_name(tmp_path):
+    # A real Dockerfile is almost always named with NO extension at all --
+    # compress_file() has to recognize it by filename, not Path.suffix
+    # (which is "" for a bare "Dockerfile"), or it would silently fall
+    # through to the raw-passthrough branch instead of ever reaching the
+    # dedicated Dockerfile text compressor.
+    file_path = tmp_path / "Dockerfile"
+    lines = ["RUN apt-get update && \\"] + [f"    pkg{i} \\" for i in range(10)] + ["    && true"]
+    file_path.write_text("FROM alpine\n" + "\n".join(lines) + "\n", encoding="utf-8")
+
+    result = compress_file(str(file_path))
+
+    assert "FROM alpine" in result
+    assert MARKER.strip() in result
+    assert "pkg9" not in result
+
+
+def test_compress_file_recognizes_a_stage_suffixed_dockerfile_by_name(tmp_path):
+    file_path = tmp_path / "Dockerfile.prod"
+    file_path.write_text("FROM alpine\nCMD [\"true\"]\n", encoding="utf-8")
+
+    result = compress_file(str(file_path))
+
+    assert result == "FROM alpine\nCMD [\"true\"]"
+
+
+def test_compress_file_recognizes_a_literal_dockerfile_extension(tmp_path):
+    file_path = tmp_path / "backend.dockerfile"
+    file_path.write_text("FROM alpine\nCMD [\"true\"]\n", encoding="utf-8")
+
+    result = compress_file(str(file_path))
+
+    assert result == "FROM alpine\nCMD [\"true\"]"
+
+
+def test_compress_file_does_not_misroute_a_real_source_file_named_dockerfile_dot_ext(tmp_path):
+    # Regression for a real gap code review caught: a file genuinely named
+    # "Dockerfile.py"/"dockerfile.js" (unusual, but real -- e.g. a helper
+    # script that generates a Dockerfile) is NOT a stage-suffixed
+    # Dockerfile variant ("Dockerfile.dev"/"Dockerfile.prod") -- the
+    # naive "starts with dockerfile." check misrouted it to the
+    # Dockerfile text compressor instead of its own real language,
+    # silently losing that file's actual compression/signature
+    # extraction. A recognized extension must win over the guess.
+    file_path = tmp_path / "Dockerfile.py"
+    file_path.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+    result = compress_file(str(file_path))
+
+    assert "def add(a, b):" in result
+    assert MARKER.strip() in result
+    assert "return a + b" not in result
+
+
+def test_compress_file_still_recognizes_a_stage_suffix_that_looks_like_nothing_real(tmp_path):
+    # Sanity check that the fix above doesn't regress the original
+    # feature: an actual stage suffix (never a real registered
+    # extension) still resolves to the Dockerfile compressor.
+    file_path = tmp_path / "Dockerfile.arm64"
+    file_path.write_text("FROM alpine\nCMD [\"true\"]\n", encoding="utf-8")
+
+    result = compress_file(str(file_path))
+
+    assert result == "FROM alpine\nCMD [\"true\"]"
 
 
 def test_function_with_no_body_content_is_left_alone():

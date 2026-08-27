@@ -1,6 +1,6 @@
 # src/ziplex/extract/code/ — Tree-sitter extraction & compression
 
-Scoped notes for `languages.py`/`parser.py`/`extractor.py`/`compressor.py`. See the root `CLAUDE.md` for how these fit into the overall `pack` pipeline, and `src/ziplex/extract/text/CLAUDE.md` for the sibling non-Tree-sitter (JSON/YAML/Markdown/plain-text) compressors. Detailed per-language history (why each `LanguageConfig` field exists, every real bug found adding a language): `docs/HISTORY.md`.
+Scoped notes for `languages.py`/`parser.py`/`extractor.py`/`compressor.py`. See the root `CLAUDE.md` for how these fit into the overall `pack` pipeline, and `src/ziplex/extract/text/CLAUDE.md` for the sibling non-Tree-sitter (JSON/YAML/Markdown/plain-text/Dockerfile) compressors. Detailed per-language history (why each `LanguageConfig` field exists, every real bug found adding a language): `docs/HISTORY.md`.
 
 ## languages.py
 
@@ -46,3 +46,5 @@ Walks the parsed AST for three things, each its own traversal:
 ## compressor.py
 
 `compress_code(code, ext)` strips function bodies, replacing each with a single marker line (`"    ⋮----"`), keeping signatures/imports/decorators verbatim. Two brace-language subtleties: if the body's opening `{` sits on the same line as the signature (JS/TS/Java), the marker starts on the *next* line; the body's closing `}` (if present as the body's last child) is excluded from the stripped range. Returns `None` for an unsupported extension so callers (`compress_file()` here, and Markdown code-block compression in `extract/text/markdown.py`) can fall back to something else — both share this function, so a fix here fixes Markdown-embedded code too (see `src/ziplex/extract/text/CLAUDE.md`'s circular-import note for why that import lives inside a function body). `_collect_bodies` only needs a matched node's `"body"` field, no name. A concise (brace-less, single-line) arrow needs no special-casing — its body sits on the same source line as the signature, so the "same line" check already leaves it untouched.
+
+`compress_file()`'s own extension lookup goes through `_effective_ext(file_path)`, not a bare `Path(file_path).suffix` — a real Dockerfile is almost always named with no extension at all (`Dockerfile`, `Dockerfile.dev`) rather than something Ziplex's purely suffix-based dispatch could ever match on its own. `_effective_ext()` recognizes that shape by filename (case-insensitive `dockerfile`/`dockerfile.*`/`*.dockerfile`) and maps it to the fixed `.dockerfile` key, which resolves through `get_text_compressor()` in `extract/text/registry.py` — a file already spelled with a literal `.dockerfile` extension needs no help from this function at all, since `Path.suffix` already produces the same key.

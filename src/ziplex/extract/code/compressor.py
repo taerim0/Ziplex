@@ -5,13 +5,54 @@ from pathlib import Path
 
 MARKER = "    ⋮----"
 
+def _effective_ext(file_path: str) -> str:
+    """Path(file_path).suffix normally -- except a Dockerfile, which by
+    convention is almost always named with NO extension at all (a bare
+    "Dockerfile", or a "Dockerfile.dev"/"Dockerfile.prod" stage-suffixed
+    variant), not something Ziplex's purely suffix-based dispatch could
+    ever match on its own. Recognized by filename instead (case-
+    insensitive): exactly "dockerfile", a "<something>.dockerfile" shape
+    (already resolves to this same key via Path.suffix alone -- kept
+    here only for the docstring's sake, not a separate code path), or a
+    "dockerfile.<something>" shape -- mapped to the fixed ".dockerfile"
+    key so it fits every other registry's existing dot-prefixed key
+    format rather than becoming a special case downstream.
+
+    A real, non-hypothetical trap the "dockerfile.<something>" branch
+    has to avoid: a source file that's genuinely named e.g. "Dockerfile
+    .py" or "dockerfile.js" (unusual, but real -- a helper script for
+    generating a Dockerfile is a plausible name for exactly that) is
+    NOT a stage-suffixed Dockerfile variant at all, and misrouting it to
+    the Dockerfile text compressor would silently lose that file's real
+    language compression/signature extraction (caught by code review,
+    not written defensively up front). Resolved by checking the part
+    after the first "." against the *actual* registries a real
+    extension would resolve through -- a recognized language/text
+    extension always wins over the Dockerfile guess, since a stage
+    suffix like "dev"/"prod"/"ci"/"arm64" is deliberately never going to
+    collide with a real code/text extension anyway.
+    """
+    name = Path(file_path).name.lower()
+    if name == "dockerfile" or name.endswith(".dockerfile"):
+        return ".dockerfile"
+    if name.startswith("dockerfile."):
+        suffix = Path(file_path).suffix
+        # Deferred import: see compress_file()'s own comment for why --
+        # this breaks the same extract.code <-> extract.text import cycle.
+        from ..text.registry import get_text_compressor
+        if get_language_config(suffix) or get_text_compressor(suffix):
+            return suffix
+        return ".dockerfile"
+    return Path(file_path).suffix
+
+
 def compress_file(file_path: str) -> str:
     code = read_text(file_path)
     if code is None:
         # binary or otherwise unreadable as text -> not something to compress
         return ""
 
-    ext = Path(file_path).suffix
+    ext = _effective_ext(file_path)
     compressed = compress_code(code, ext)
     if compressed is not None:
         return compressed
