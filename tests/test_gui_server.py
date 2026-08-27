@@ -416,6 +416,52 @@ def test_api_pack_status_retry_params_can_resume_a_failed_job_over_http(client, 
     assert any("체크포인트에서 복원" in line for line in full_log)
 
 
+def test_api_pack_retry_with_no_cache_only_resumes_when_resume_flag_is_sent(client, tmp_path, monkeypatch):
+    # Real bug reported directly: a job started with no_cache=True
+    # ("완전히 재패킹" checked) that failed during rules generation still
+    # checkpointed its already-generated summaries -- but retrying it
+    # discarded that checkpoint outright, since no_cache=True alone made
+    # packager.pack() treat any leftover checkpoint as stale regardless of
+    # how fresh it actually was, re-billing every summary again on every
+    # retry. /api/pack's `resume` field (only ever sent by js/pack.js's
+    # retry button, never a fresh pack-form submission) is the fix -- this
+    # is the route-level proof, on top of pack_service.py's own test for
+    # the same fix below the HTTP layer.
+    class _EmptyRulesProvider(llm.MockProvider):
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
+            if '"rules"' in prompt:
+                return "{}"
+            return super().generate(prompt, retry=retry)
+
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+    monkeypatch.setattr(llm, "_provider", _EmptyRulesProvider())
+    start = client.post("/api/pack", json={
+        "project_path": str(project), "selected_files": ["main.py"], "no_cache": True,
+    })
+    job_id = start.get_json()["job_id"]
+    status = _wait_for_job(client, job_id)
+    assert status["state"] == "error"
+    retry_params = status["retry_params"]
+    assert retry_params["no_cache"] is True
+
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    retry = client.post("/api/pack", json={**retry_params, "resume": True})
+    assert retry.status_code == 200
+    retry_job_id = retry.get_json()["job_id"]
+    retry_status = _wait_for_job(client, retry_job_id)
+    assert retry_status["state"] == "reviewing"
+
+    full_log = client.get(
+        "/api/pack/status", query_string={"job_id": retry_job_id, "since": 0}
+    ).get_json()["log"]
+    assert any("체크포인트에서 복원" in line for line in full_log)
+
+
 def test_api_pack_link_adds_an_edge_and_rejects_cycles(client, tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")

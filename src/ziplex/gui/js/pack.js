@@ -183,7 +183,14 @@ export async function renderPackJob(jobId) {
       const retryButton = el("button", { text: t("pack.retry"), onclick: async () => {
         retryButton.disabled = true;
         try {
-          const { job_id } = await apiPost("/api/pack", retryParams);
+          // resume: true tells packager.pack() (via start_pack_job()) to
+          // always resume whatever checkpoint this same job's own failure
+          // just saved, regardless of retryParams.no_cache -- without it,
+          // retrying a job that started with "완전히 재패킹" checked would
+          // discard that checkpoint and re-bill every file's summary from
+          // scratch on every retry. See pack_service.start_pack_job()'s
+          // own docstring for the full story.
+          const { job_id } = await apiPost("/api/pack", { ...retryParams, resume: true });
           location.hash = `#/pack/${job_id}`;
         } catch (e) {
           retryButton.disabled = false;

@@ -363,7 +363,7 @@ def request_cancel(job_id: str, save: bool) -> bool:
 
 def _run(
     job: dict, project_path: str, no_cache: bool, no_llm: bool, selected_files: list[str],
-    result_dir: Path | None = None, lang: str = "en",
+    result_dir: Path | None = None, lang: str = "en", resume: bool = False,
 ) -> None:
     try:
         with _capture_for_job(job):
@@ -371,6 +371,13 @@ def _run(
                 project_path, interactive=False, use_cache=not no_cache, use_llm=not no_llm,
                 preselected=selected_files, check_cancelled=_check_cancelled_for(job),
                 result_dir=result_dir, lang=lang,
+                # resume (only ever True for the error screen's "다시 시도"
+                # button, see start_pack_job()'s own docstring) forces a
+                # leftover checkpoint to always be resumed regardless of
+                # no_cache -- a fresh "패킹 시작" submission leaves this
+                # False, so use_cache's own "완전히 재패킹 discards a stale
+                # checkpoint" behavior is unaffected there.
+                discard_checkpoint=False if resume else None,
             )
             if not aif:
                 with job["lock"]:
@@ -401,7 +408,7 @@ def _run(
 
 def start_pack_job(
     project_path: str, output_path: str | None = None, no_cache: bool = False, no_llm: bool = False,
-    selected_files: list[str] | None = None, lang: str = "en",
+    selected_files: list[str] | None = None, lang: str = "en", resume: bool = False,
 ) -> str:
     """Kicks off one pack() run in a background thread and returns its job id
     immediately. selected_files (relative names, from list_selectable_files()'s
@@ -441,6 +448,18 @@ def start_pack_job(
 
     The job pauses in state "reviewing" once analysis finishes; see
     get_review()/submit_review().
+
+    resume (default False) is set only by the error screen's "다시 시도"
+    button reposting a failed job's own retry_params -- see get_job_status()
+    -- to force packager.pack()'s discard_checkpoint=False, so a retry
+    always resumes whatever checkpoint that same job's own failure just
+    saved, regardless of what no_cache says. A fresh "패킹 시작" submission
+    never sets this, so "완전히 재패킹" still discards a genuinely stale
+    leftover checkpoint from an unrelated earlier run the normal way -- see
+    packager.pack()'s own discard_checkpoint docstring for the full story
+    (a real bug reported directly: retrying a job that started with
+    "완전히 재패킹" checked used to re-bill every file's summary on every
+    single retry, discarding the very checkpoint the retry existed to use).
     """
     # Exactly what the caller passed, before output_path gets resolved into
     # a concrete path below -- get_job_status()'s retry_params echoes this
@@ -485,7 +504,8 @@ def start_pack_job(
         _jobs[job_id] = job
         _evict_old_finished_jobs()
     thread = threading.Thread(
-        target=_run, args=(job, project_path, no_cache, no_llm, selected_files or [], result_dir, lang), daemon=True
+        target=_run, args=(job, project_path, no_cache, no_llm, selected_files or [], result_dir, lang, resume),
+        daemon=True,
     )
     thread.start()
     return job_id
