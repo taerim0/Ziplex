@@ -18,6 +18,7 @@ from .config import collection_kwargs
 from .tech_stack import detect_tech_stack
 from . import checkpoint as ckpt
 from . import summarizer
+from . import folder_summary
 
 RESULT_DIR = Path(__file__).parent.parent.parent / "result"
 
@@ -84,6 +85,47 @@ FORMAT_NOTES: dict[str, str] = {
         "import, 데코레이터)는 그대로 남아 있습니다."
     ),
 }
+
+
+# Cap on how many per-file summaries feed analyze_prompt()'s own
+# "architecture" context -- keeps a genuinely large project's prompt from
+# growing unbounded (every other capped list in this codebase -- tech_stack's
+# MAX_DEPENDENCIES, the relationship editor's REL_GRAPH_MAX_NEIGHBORS -- takes
+# the same "enough real signal, not a full dump" stance). Ziplex's own stated
+# audience (solo/personal-GitHub/small-team, see the roadmap's scope note)
+# means most real projects stay well under this anyway.
+MAX_ARCHITECTURE_FILES = 80
+
+
+def _build_architecture_summary(files_data: dict, tech_stack: list[dict]) -> list[str]:
+    """Real project-understanding signal for analyze_prompt() -- what it used
+    to always receive as an empty list (a dead parameter, never actually
+    populated anywhere), which is the confirmed root cause of a real,
+    reported problem: an AI guide reading like a coding-style blurb rather
+    than a "what is this project" summary, since project_name plus a list of
+    naming-convention rules is *all* analyze_prompt() ever had to work with.
+
+    Built from each file's own already-generated `summary` (this runs after
+    the summary-generation step, so every file_data entry has one) plus the
+    free tech_stack fact block -- both already paid for or free, no new LLM
+    call needed to gather this. Capped at MAX_ARCHITECTURE_FILES, keeping
+    dict insertion order (roughly collection order) rather than sorting,
+    since this is prompt input, not a displayed list a human reads in order.
+    """
+    lines = []
+    for stack in tech_stack:
+        # tech_stack.detect_tech_stack()'s own shape -- one dict per
+        # manifest found, not a flat list of dependency-name strings.
+        deps = ", ".join(stack.get("dependencies", []))
+        lines.append(f"Tech stack ({stack.get('language', '?')}, {stack.get('manifest', '?')}): {deps}")
+
+    file_lines = [f"{name}: {data['summary']}" for name, data in files_data.items() if data.get("summary")]
+    if len(file_lines) > MAX_ARCHITECTURE_FILES:
+        remaining = len(file_lines) - MAX_ARCHITECTURE_FILES
+        file_lines = file_lines[:MAX_ARCHITECTURE_FILES]
+        file_lines.append(f"... ({remaining} more files not shown)")
+    lines.extend(file_lines)
+    return lines
 
 
 def _confirm_regenerate_failed_summaries(failed_names: list[str], interactive: bool) -> bool:
@@ -634,6 +676,19 @@ def pack(
     if _maybe_stop(check_cancelled, root_path, root, files_data, restored_rules, restored_prompt, lang):
         return {}
 
+    # Computed once here (not just at final assembly, where this used to be
+    # the only place it ran) so analyze_prompt() below can use it as real
+    # architecture context too -- reused, not recomputed, at assembly time.
+    tech_stack = detect_tech_stack(root_path)
+
+    # A relative-keyed view of files_data for the two consumers below
+    # (_build_architecture_summary()/folder_summary's functions) -- files_data
+    # itself is still keyed by absolute path at this point in the pipeline
+    # (final assembly's own _rel_key() conversion happens later, in step 7),
+    # and an LLM prompt (or a shipped aif.json field) should never leak a
+    # local absolute filesystem path.
+    rel_files_data = {_rel_key(fp, root): data for fp, data in files_data.items()}
+
     # extract rules (restored from checkpoint if available)
     # use_llm=False ignores restored_rules outright, even if a checkpoint
     # left over from an earlier use_llm=True run has real inferred rules --
@@ -690,7 +745,7 @@ def pack(
         while not prompt:
             prompt_response = analyze_prompt(
                 project_name=project_name,
-                architecture=[],
+                architecture=_build_architecture_summary(rel_files_data, tech_stack),
                 rules=rules,
                 lang=lang,
             )
@@ -718,6 +773,17 @@ def pack(
     else:
         print("  ✍️  AI 가이드 생성 건너뜀 (--no-llm)")
         prompt = STRUCTURAL_ONLY_NOTE.get(lang, STRUCTURAL_ONLY_NOTE["en"])
+
+    # Per-folder summaries -- see folder_summary.py's own module docstring
+    # for why this is a single best-effort call (structural fallback per
+    # folder on any failure), not wired into the checkpoint/resume system
+    # rules/prompt/per-file summaries all get.
+    print("  🗂️  폴더 요약 생성 중..." if use_llm else "  🗂️  폴더 요약 생성 중 (구조 정보 기반)...")
+    folders = (
+        folder_summary.generate_folder_summaries(rel_files_data, lang=lang)
+        if use_llm
+        else folder_summary.generate_structural_folder_summaries(rel_files_data, lang=lang)
+    )
 
     # 6. Token counting
     # Compares raw project text against the actual per-file aif.json payload
@@ -758,8 +824,10 @@ def pack(
             "prompt": prompt,
             # Free (no LLM call), manifest-based fact block -- see
             # tech_stack.py's own docstring for why this exists alongside
-            # `rules` rather than folding into it.
-            "tech_stack": detect_tech_stack(root_path),
+            # `rules` rather than folding into it. Computed once, earlier
+            # above (analyze_prompt() also uses it as architecture context),
+            # not recomputed here.
+            "tech_stack": tech_stack,
             "security_scan": security_scan,
             "format_notes": FORMAT_NOTES.get(lang, FORMAT_NOTES["en"]),
             # What language every LLM-written value (summaries/rules/prompt)
@@ -769,6 +837,12 @@ def pack(
             "language": lang,
         },
         "rules": rules,
+        # {folder path: {"summary": "..."}}, one entry per folder that
+        # directly contains at least one collected file -- see
+        # folder_summary.py for how each summary is generated. Read-only:
+        # unlike per-file summaries/rules/prompt, there's no correction-flow
+        # setter for this yet (deliberately scoped out of this pass).
+        "folders": {folder: {"summary": summary} for folder, summary in folders.items()},
         "tokens": {
             model: {
                 "original": data["original"],

@@ -109,6 +109,23 @@ def test_stale_warning_is_none_for_an_unchanged_scoped_project(tmp_path, monkeyp
     assert "_stale" not in overview
 
 
+def test_get_folders_reads_the_folders_field_from_aif_json(tmp_path):
+    aif_path = tmp_path / "out.json"
+    aif_path.write_text(
+        json.dumps({"project": {}, "files": {}, "folders": {"src": {"summary": "Core logic."}}}),
+        encoding="utf-8",
+    )
+
+    assert query_service.get_folders(str(aif_path)) == {"src": {"summary": "Core logic."}}
+
+
+def test_get_folders_returns_empty_dict_for_an_aif_json_packed_before_this_field_existed(tmp_path):
+    aif_path = tmp_path / "out.json"
+    aif_path.write_text(json.dumps({"project": {}, "files": {}}), encoding="utf-8")
+
+    assert query_service.get_folders(str(aif_path)) == {}
+
+
 def test_search_project_does_not_search_ziplex_json_ignored_files(tmp_path):
     project = tmp_path / "project"
     _write(project / "src" / "main.py", "TARGET_TOKEN = 1\n")

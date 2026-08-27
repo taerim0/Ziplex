@@ -186,11 +186,12 @@ const I18N = {
 
     "overview.untitled": "(제목 없음)",
     "overview.fileCount": (v) => `파일 ${v.n}개`,
+    "overview.techStackHeading": "기술 스택",
+    "overview.techStackDeps": (v) => `(${v.n}개)`,
 
     "files.searchPlaceholder": "파일명/요약 검색...",
-    "files.nameHeader": (v) => `파일${v.arrow}`,
-    "files.confidenceHeader": (v) => `신뢰도${v.arrow}`,
-    "files.summaryHeader": "요약",
+    "files.rootFolder": "(최상위)",
+    "files.noResults": "일치하는 파일이 없습니다.",
 
     "relationships.help": "▶ 를 클릭해 하위 트리를 접거나 펼치세요. 수정하고 싶은 파일 이름을 클릭하면 편집 화면이 열립니다 -- 변경 사항은 즉시 aif.json에 저장됩니다.",
 
@@ -351,11 +352,12 @@ const I18N = {
 
     "overview.untitled": "(untitled)",
     "overview.fileCount": (v) => `${v.n} files`,
+    "overview.techStackHeading": "Tech Stack",
+    "overview.techStackDeps": (v) => `(${v.n})`,
 
     "files.searchPlaceholder": "Search filename/summary...",
-    "files.nameHeader": (v) => `File${v.arrow}`,
-    "files.confidenceHeader": (v) => `Confidence${v.arrow}`,
-    "files.summaryHeader": "Summary",
+    "files.rootFolder": "(root)",
+    "files.noResults": "No matching files.",
 
     "relationships.help": "Click ▶ to expand/collapse a subtree. Click a file's name you want to edit to open its editor -- changes save to aif.json immediately.",
 

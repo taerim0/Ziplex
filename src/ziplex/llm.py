@@ -469,6 +469,12 @@ class MockProvider:
             # real batched Gemini response would.
             names = re.findall(r"^File: (.+)$", prompt, re.MULTILINE)
             return json.dumps({"summaries": {name: "Mock summary for local testing." for name in names}})
+        if re.search(r"^Folder: ", prompt, re.MULTILINE):
+            # analyze_folder_summaries() -- same "echo back the real keys the
+            # prompt wrote in" idea as the batch-summaries case above, since
+            # packager.py looks up this response by each real folder path.
+            folders = re.findall(r"^Folder: (.+)$", prompt, re.MULTILINE)
+            return json.dumps({folder: "Mock folder summary for local testing." for folder in folders})
         # analyze_file_summary and analyze_text_summary both want this shape
         return '{"summary": "Mock summary for local testing."}'
 
@@ -627,17 +633,62 @@ Signature list: {signatures_map}
 def analyze_prompt(project_name: str, architecture: list[str], rules: list[str], lang: str = "en") -> str:
     prompt = f"""
 Based on the project info below, write 2-3 sentences of core context
-that let an AI understand this project immediately on first look.
+that let an AI (or a human skimming this project for the first time)
+understand this project immediately on first look.
+
+Focus on WHAT this project is and WHAT PROBLEM it solves -- its purpose,
+its main components, and how they fit together. The "Coding rules" list
+below is naming/style convention only (e.g. "methods use camelCase") --
+do NOT center the summary on coding style or conventions; mention a
+rule only if it's genuinely load-bearing context, not as the main point.
+
 Write the "prompt" value in {_lang_name(lang)}. Keep the JSON key itself in English.
 Respond with JSON only, nothing else.
 
 Project name: {project_name}
-Architecture: {architecture}
-Coding rules: {rules}
+Architecture (tech stack + each file's own summary): {architecture}
+Coding rules (style/naming only, secondary context): {rules}
 
 {{"prompt": "..."}}
 """
     return generate(prompt, label="AI 가이드")
+
+
+def analyze_folder_summaries(folders: dict[str, list[str]], lang: str = "en") -> str:
+    """folders: {folder path: ["filename: summary", ...]} -- every file
+    directly inside that folder (not recursive/nested subfolders) paired
+    with its own already-generated summary, so the model can describe each
+    folder's role without re-reading any file content itself. One call
+    covers every folder in the project at once (a project's folder count is
+    always far smaller than its file count, so this never needs the
+    batching/chunking summarizer.py's own per-file summaries need).
+
+    Built as an explicit "Folder: <path>" text block per folder (same
+    convention analyze_batch_summaries() uses for its own per-item blocks),
+    not a raw dict repr -- both so a real folder path containing characters
+    that would look odd mid-Python-repr renders cleanly, and so
+    MockProvider can regex-extract the same real folder-path keys a batch
+    summary's "File: <name>" lines already let it extract for files.
+    """
+    parts = [
+        "Folder: {}\nFiles:\n{}".format(folder, "\n".join(f"- {entry}" for entry in entries))
+        for folder, entries in folders.items()
+    ]
+    joined = "\n\n".join(parts)
+
+    prompt = f"""
+Based on the folders below (each folder's directly-contained files and
+their own one-line summaries), write ONE short sentence per folder
+describing that folder's role in the project -- what kind of code lives
+there and why, not a restatement of the file list.
+Write each summary value in {_lang_name(lang)}. Keep the JSON keys (folder paths) unchanged, exactly as given.
+Respond with JSON only, nothing else.
+
+{joined}
+
+{{"<folder path>": "...", "<another folder path>": "..."}}
+"""
+    return generate(prompt, label="폴더 요약")
 
 def analyze_relationships(file_summaries: dict) -> str:
     prompt = f"""

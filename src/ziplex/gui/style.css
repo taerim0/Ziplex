@@ -378,6 +378,14 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
 .tree-row.tree-flagged .tree-name { color: var(--danger); }
 .tree-row.muted { cursor: default; }
 .tree-row.muted:hover { background: none; }
+/* Files page's folder tree: a folder/file's own name should never itself
+   wrap mid-word (unlike the dependency tree above, this row's own trailing
+   .tree-desc summary text is what should absorb overflow instead) -- an
+   additional class, not a change to .tree-name itself, so the dependency
+   tree's existing "a genuinely very long lone name still has to break
+   somewhere" behavior is untouched. */
+.tree-name-fixed { flex-shrink: 0; white-space: nowrap; overflow-wrap: normal; }
+.tree-desc { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; }
 
 .rel-master-detail {
   display: flex;
@@ -517,13 +525,8 @@ button.secondary {
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { color: var(--muted); font-weight: 500; font-size: 0.85em; }
-th.sortable { cursor: pointer; user-select: none; }
-th.sortable:hover { color: var(--text); }
-tr.file-row { cursor: pointer; }
-tr.file-row:hover { background: rgba(255,255,255,0.04); }
-tr.low-confidence td:first-child { border-left: 3px solid var(--danger); }
 
-.confidence { font-family: var(--mono); font-size: 0.85em; }
+.confidence { font-family: var(--mono); font-size: 0.85em; margin-left: 4px; }
 .confidence.low { color: var(--danger); }
 .confidence.medium { color: #e2c14b; }
 .confidence.high { color: #7fd08a; }

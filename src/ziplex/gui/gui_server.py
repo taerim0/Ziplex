@@ -370,6 +370,12 @@ def api_files():
     return jsonify(query_service.list_files(aif_path, project_path))
 
 
+@app.route("/api/folders")
+def api_folders():
+    aif_path = request.args["aif_path"]
+    return jsonify(query_service.get_folders(aif_path))
+
+
 @app.route("/api/relationships")
 def api_relationships():
     aif_path = request.args["aif_path"]

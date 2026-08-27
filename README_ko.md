@@ -132,6 +132,7 @@ pack 한 번에 파일 세 개가 나오고, 각각 읽히는 방식이 다릅�
     "format_notes": "..."  // confidence/⋮---- 등을 다른 맥락 없이 이 파일만 보는 사람에게 설명해주는 고정 문구
   },
   "rules": ["..."],
+  "folders": { "src": { "summary": "..." } },  // 각 폴더의 역할을 설명하는 한 문장
   "tokens": { "GPT-4o": { "original": 3100, "compressed": 749, "saved_pct": 75.8 } },
   "files": { "src/App.tsx": { "summary": "...", "confidence": 0.83 } },
   "relationships": { "src/App.tsx": { "internal": ["..."], "external": ["react"] } }
@@ -187,6 +188,7 @@ claude mcp add ziplex -- ziplex-mcp     # Claude Code에 등록
 |---|---|
 | `get_overview(aif_path, project_path?)` | 프로젝트 가이드, 코딩 룰, 토큰 통계 — 가장 먼저 호출하면 됩니다 |
 | `list_files(aif_path, project_path?)` | 모든 파일을 요약 + 신뢰도 점수와 함께 매핑 |
+| `get_folders(aif_path)` | 모든 폴더를 그 역할을 설명하는 한 문장과 함께 매핑 |
 | `get_relationships(aif_path)` | 전체 의존성 그래프를 한 번에 — 모든 파일의 내부/외부 엣지 |
 | `get_dependents(aif_path, file)` | `file`을 직접 의존하는 파일들 |
 | `get_blast_radius(aif_path, file)` | `file`이 바뀌면 직간접적으로 영향받는 모든 파일 |
