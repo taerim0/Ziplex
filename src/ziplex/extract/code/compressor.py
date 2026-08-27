@@ -5,13 +5,33 @@ from pathlib import Path
 
 MARKER = "    ⋮----"
 
+def _effective_ext(file_path: str) -> str:
+    """Path(file_path).suffix normally -- except a Dockerfile, which by
+    convention is almost always named with NO extension at all (a bare
+    "Dockerfile", or a "Dockerfile.dev"/"Dockerfile.prod" stage-suffixed
+    variant), not something Ziplex's purely suffix-based dispatch could
+    ever match on its own. Recognized by filename instead (case-
+    insensitive): exactly "dockerfile", or a "dockerfile.<something>"/
+    "<something>.dockerfile" shape -- mapped to the fixed ".dockerfile"
+    key so it fits every other registry's existing dot-prefixed key
+    format rather than becoming a special case downstream. A file
+    already named with a literal ".dockerfile" extension (e.g.
+    "backend.dockerfile") already resolves to this same key via
+    Path.suffix alone, with no help needed from this function at all.
+    """
+    name = Path(file_path).name.lower()
+    if name == "dockerfile" or name.startswith("dockerfile.") or name.endswith(".dockerfile"):
+        return ".dockerfile"
+    return Path(file_path).suffix
+
+
 def compress_file(file_path: str) -> str:
     code = read_text(file_path)
     if code is None:
         # binary or otherwise unreadable as text -> not something to compress
         return ""
 
-    ext = Path(file_path).suffix
+    ext = _effective_ext(file_path)
     compressed = compress_code(code, ext)
     if compressed is not None:
         return compressed

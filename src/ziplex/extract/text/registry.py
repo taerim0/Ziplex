@@ -8,12 +8,14 @@ TEXT_COMPRESSORS.
 
 from typing import Callable
 
+from .dockerfile import compress_dockerfile
 from .json import compress_json
 from .markdown import compress_markdown
 from .txt import compress_txt
 from .yaml import compress_yaml
 
 TEXT_COMPRESSORS: dict[str, Callable[[str], str]] = {
+    ".dockerfile": compress_dockerfile,
     ".json": compress_json,
     ".md": compress_markdown,
     ".txt": compress_txt,

@@ -155,7 +155,7 @@ pack 한 번에 파일 세 개가 나오고, 각각 읽히는 방식이 다릅�
 
 ## 주요 기능
 
-- **다국어 구조 인식 압축** — Python, Java, TypeScript, JavaScript, Lua, GDScript, Go, C++, Rust, C#, PHP, Ruby, Bash를 Tree-sitter로, JSON/YAML/Markdown/일반 텍스트는 전용 압축기로 처리합니다. 구조는 남기고 토큰만 줄입니다. git 저장소가 아니어도, 여러 확장자 파일이 서로 얽혀 있는 로컬 파일 모음이면 뭐든 동작합니다 — 게임 모드, 에셋 프로젝트 포함.
+- **다국어 구조 인식 압축** — Python, Java, TypeScript, JavaScript, Lua, GDScript, Go, C++, Rust, C#, PHP, Ruby, Bash를 Tree-sitter로, JSON/YAML/Markdown/일반 텍스트/Dockerfile은 전용 압축기로 처리합니다. 구조는 남기고 토큰만 줄입니다. git 저장소가 아니어도, 여러 확장자 파일이 서로 얽혀 있는 로컬 파일 모음이면 뭐든 동작합니다 — 게임 모드, 에셋 프로젝트 포함.
 - **내장 보안 스캔** — 모든 파일이 파이프라인에 들어오기 전에 `secretlint`(정규식 폴백)로 민감 정보를 검사합니다.
 - **검토는 선택 사항, 규모에 안 밀림** — LLM 결과물(요약, 룰, 가이드, 의존성 트리)은 저장 전에 검토·수정할 수 있고, `--auto-correct`로 통째로 건너뛸 수도 있습니다. 신뢰도 낮은 요약만 검토 대상으로 표시되니, 프로젝트가 커져도 검토 시간이 그만큼 늘진 않습니다.
 - **결과물을 쓰는 세 가지 방법** — Claude Code/Cursor 등을 위한 [MCP 서버](#mcp-서버), 터미널 없이 패킹/탐색하는 로컬 [GUI](#gui), 서버 없이도 되는 [Claude Agent Skill 내보내기](#claude-agent-skill-내보내기).
