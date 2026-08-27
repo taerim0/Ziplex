@@ -525,11 +525,6 @@ button.secondary {
 table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { color: var(--muted); font-weight: 500; font-size: 0.85em; }
-th.sortable { cursor: pointer; user-select: none; }
-th.sortable:hover { color: var(--text); }
-tr.file-row { cursor: pointer; }
-tr.file-row:hover { background: rgba(255,255,255,0.04); }
-tr.low-confidence td:first-child { border-left: 3px solid var(--danger); }
 
 .confidence { font-family: var(--mono); font-size: 0.85em; margin-left: 4px; }
 .confidence.low { color: var(--danger); }

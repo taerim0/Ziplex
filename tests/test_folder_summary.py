@@ -84,6 +84,23 @@ def test_generate_folder_summaries_falls_back_structurally_on_invalid_json(monke
     assert result == {"src": "Contains 1 file(s): a.py"}
 
 
+def test_generate_folder_summaries_falls_back_structurally_on_any_exception(monkeypatch):
+    # Regression for a real gap code review caught: the except clause used
+    # to only catch json.JSONDecodeError, so anything else
+    # analyze_folder_summaries() could raise (an unexpected response
+    # shape, a provider raising instead of returning "{}") would abort the
+    # whole pack() run instead of degrading -- with no checkpoint safety
+    # net for this step at all, unlike rules/prompt.
+    def _raises(folders, lang="en"):
+        raise RuntimeError("unexpected provider failure")
+
+    monkeypatch.setattr(folder_summary, "analyze_folder_summaries", _raises)
+    files_data = {"src/a.py": {"summary": "does a"}}
+
+    result = folder_summary.generate_folder_summaries(files_data)
+    assert result == {"src": "Contains 1 file(s): a.py"}
+
+
 def test_generate_folder_summaries_returns_empty_dict_for_no_files(monkeypatch):
     def _unexpected_call(*a, **k):
         raise AssertionError("must not call the LLM when there are no files at all")

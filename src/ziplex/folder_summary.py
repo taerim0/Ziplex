@@ -109,6 +109,16 @@ def generate_folder_summaries(files_data: dict, lang: str = "en") -> dict[str, s
     response, or the model not echoing the exact key -- rather than a
     retry loop or checkpoint escalation; see this module's own docstring
     for why that's an acceptable trade-off here specifically.
+
+    The except clause is deliberately broad (`Exception`, not just
+    `json.JSONDecodeError`) -- code review caught that a narrower one
+    would leave this module's own "best-effort, never blocks the run"
+    promise unmet for anything else `analyze_folder_summaries()` could
+    raise (an unexpected response shape, a future provider that raises
+    instead of returning `"{}"` on a non-retryable error, ...). Unlike
+    rules/prompt, a failure here has no checkpoint safety net at all --
+    letting it propagate would abort the whole `pack()` run and lose
+    every already-completed (and already paid for) file summary too.
     """
     folder_files = group_files_by_folder(files_data)
     if not folder_files:
@@ -119,7 +129,7 @@ def generate_folder_summaries(files_data: dict, lang: str = "en") -> dict[str, s
         folder_summaries = json.loads(response)
         if not isinstance(folder_summaries, dict):
             folder_summaries = {}
-    except json.JSONDecodeError:
+    except Exception:
         folder_summaries = {}
 
     return {
