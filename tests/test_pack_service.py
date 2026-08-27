@@ -221,6 +221,119 @@ def test_retrying_a_failed_job_resumes_from_checkpoint(tmp_path, monkeypatch):
     assert any("체크포인트에서 복원" in line for line in retry_status["log"])
 
 
+class _EmptyRulesCountingProvider(llm.MockProvider):
+    """_EmptyRulesProvider's always-fail-rules behavior plus a call counter --
+    MockProvider's fixed responses can't tell a checkpoint-reuse test whether
+    a summary was actually re-billed or just regenerated identically, since
+    the text comes back the same either way (same reasoning as test_pack_
+    integration.py's own _CountingMockProvider). A plain call count is the
+    only reliable signal.
+    """
+
+    def __init__(self):
+        self.calls = 0
+
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
+        self.calls += 1
+        if '"rules"' in prompt:
+            return "{}"
+        return super().generate(prompt, retry=retry)
+
+
+class _CountingMockProvider(llm.MockProvider):
+    """Plain MockProvider (rules succeed normally) plus a call counter --
+    used for the "LLM starts behaving again" half of a retry test, once the
+    always-fails-rules provider above has already done its job of forcing
+    the initial failure/checkpoint.
+    """
+
+    def __init__(self):
+        self.calls = 0
+
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
+        self.calls += 1
+        return super().generate(prompt, retry=retry)
+
+
+def test_retrying_a_full_repack_job_with_resume_does_not_rebill_summaries(tmp_path, monkeypatch):
+    # Real bug reported directly: a job started with no_cache=True
+    # ("완전히 재패킹" checked) that fails during rules generation
+    # checkpoints its already-generated per-file summaries exactly like any
+    # other job -- but retrying it used to discard that checkpoint outright,
+    # since use_cache=False (from the *original* no_cache=True) made
+    # packager.pack() unconditionally discard any leftover checkpoint
+    # regardless of how fresh it was, re-billing every file's summary again
+    # on every single retry. resume=True (only ever sent by the error
+    # screen's own "다시 시도" button, see start_pack_job()'s docstring) is
+    # the fix -- this proves it by call count, not just by re-checking the
+    # "체크포인트에서 복원" log line test_retrying_a_failed_job_resumes_
+    # from_checkpoint above already covers for the *default* no_cache=False
+    # case (which never actually exercised this bug, since use_cache=True
+    # there never discarded the checkpoint in the first place).
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "a.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "b.py", "def sub(a, b):\n    return a - b\n")
+
+    provider = _EmptyRulesCountingProvider()
+    monkeypatch.setattr(llm, "_provider", provider)
+    job_id = pack_service.start_pack_job(str(project), no_cache=True, selected_files=["a.py", "b.py"])
+    status = _wait(job_id)
+    assert status["state"] == "error"
+    assert provider.calls > 0  # both summaries (at least) were generated before rules failed
+
+    retry_params = pack_service.get_job_status(job_id)["retry_params"]
+    assert retry_params["no_cache"] is True  # confirms this is exactly the "완전히 재패킹" case
+
+    # The LLM starts behaving again (rules no longer come back empty) --
+    # swapped to a provider with no such failure, same as test_retrying_a_
+    # failed_job_resumes_from_checkpoint above does.
+    retry_provider = _CountingMockProvider()
+    monkeypatch.setattr(llm, "_provider", retry_provider)
+    retry_job_id = pack_service.start_pack_job(**retry_params, resume=True)
+    retry_status = _wait(retry_job_id)
+
+    assert retry_status["state"] == "reviewing"
+    assert any("체크포인트에서 복원" in line for line in retry_status["log"])
+    # Only rules + prompt (neither had succeeded yet when the checkpoint was
+    # saved, so both still need a real call) should happen on retry -- if
+    # the checkpoint had been discarded instead, this would be 4 (2
+    # summaries re-billed + rules + prompt), the exact bug being guarded
+    # against here.
+    assert retry_provider.calls == 2
+
+
+def test_fresh_pack_with_no_cache_still_discards_a_stale_leftover_checkpoint(tmp_path, monkeypatch):
+    # Regression guard for the *original* fix the resume=True override above
+    # must not undo: a genuinely fresh "패킹 시작" submission (resume
+    # defaults False) with "완전히 재패킹" checked must still discard an
+    # unrelated leftover checkpoint from some earlier, already-abandoned
+    # run -- only an actual retry (resume=True) should ever preserve one.
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+
+    project = tmp_path / "project"
+    _write(project / "a.py", "def add(a, b):\n    return a + b\n")
+
+    # Hand-built as if left over from an unrelated earlier run of this same
+    # project -- build_snapshot()'s files_data is keyed by absolute path.
+    checkpoint.save_checkpoint(
+        str(project),
+        checkpoint.build_snapshot(project, {
+            str(project / "a.py"): {
+                "signatures": ["add(a, b)"], "dependencies": [], "api": [], "compressed": "", "summary": "old",
+            },
+        }),
+    )
+
+    job_id = pack_service.start_pack_job(str(project), no_cache=True, selected_files=["a.py"])
+    status = _wait(job_id)
+
+    assert status["state"] == "reviewing"
+    assert not any("체크포인트에서 복원" in line for line in status["log"])
+
+
 def test_start_pack_job_pauses_in_reviewing_state(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")

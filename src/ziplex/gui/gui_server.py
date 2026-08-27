@@ -204,7 +204,9 @@ def api_pack_start():
     `pack --lang` (llm.LANGUAGE_NAMES's keys -- "en"/"ko" as of this
     writing); an unrecognized or missing value falls back to "en", the
     default and recommended choice, same as packager.pack()'s own
-    defensive fallback.
+    defensive fallback. Optional `resume` (default False) is set only by
+    the error screen's "다시 시도" button, never by a fresh pack-form
+    submission -- see start_pack_job()'s own docstring for what it changes.
     """
     data = request.get_json(silent=True) or {}
     project_path = (data.get("project_path") or "").strip()
@@ -222,8 +224,10 @@ def api_pack_start():
     no_cache = bool(data.get("no_cache"))
     no_llm = bool(data.get("no_llm"))
     lang = data.get("lang") if data.get("lang") in LANGUAGE_NAMES else "en"
+    resume = bool(data.get("resume"))
     job_id = pack_service.start_pack_job(
         project_path, output_path, no_cache=no_cache, no_llm=no_llm, selected_files=selected_files, lang=lang,
+        resume=resume,
     )
     return jsonify({"job_id": job_id})
 

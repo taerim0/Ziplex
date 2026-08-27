@@ -157,6 +157,7 @@ def pack(
     check_cancelled: Callable[[], str | None] | None = None,
     result_dir: str | Path | None = None,
     lang: str = "en",
+    discard_checkpoint: bool | None = None,
 ) -> dict:
     """include/ignore are extra glob patterns (gitignore syntax -- see
     collect_files()'s own docstring for exactly how each is applied),
@@ -208,6 +209,22 @@ def pack(
     use_cache, which read as a bug from the outside (a "완전히 재패킹"
     checkbox not actually starting fresh) even though each half worked as
     designed in isolation.
+
+    discard_checkpoint overrides just that second half of use_cache's
+    effect, independent of the first: `None` (every CLI call, and the GUI's
+    own fresh "패킹 시작") keeps today's behavior (`not use_cache` decides
+    it); an explicit `False` forces a leftover checkpoint to always be
+    resumed regardless of what use_cache says. This exists specifically for
+    the GUI's "다시 시도" (retry-after-failure) button, which reposts a
+    failed job's own original settings verbatim -- including whatever
+    use_cache value that job started with. Without this override, retrying
+    a job that started with "완전히 재패킹" checked would discard the very
+    checkpoint that same job had just saved seconds earlier on its own LLM
+    failure, silently re-billing every file's summary from scratch on every
+    retry -- a real bug reported directly, and a case use_cache was never
+    meant to cover: "완전히 재패킹" is about distrusting an *old, unrelated*
+    prior pack's cache, not about discarding a checkpoint this exact retry
+    exists to resume.
 
     use_llm=False (CLI: `pack --no-llm`) skips every LLM call entirely --
     no GEMINI_API_KEY, no network, no Gemini rate limits -- for the
@@ -312,9 +329,30 @@ def pack(
     # before ever calling resume_checkpoint_choice() in that case, so a
     # non-cached run never gets an interactive resume-or-discard prompt (or
     # a silent auto-resume, non-interactively) for something the caller
-    # already said to ignore.
+    # already said to ignore. discard_checkpoint (see this function's own
+    # docstring) lets a caller override just this half of use_cache's
+    # effect -- the GUI's retry-after-failure flow forces False here so
+    # retrying a job that started with "완전히 재패킹" checked doesn't
+    # discard the checkpoint that same job just saved on its own failure.
+    should_discard_checkpoint = (not use_cache) if discard_checkpoint is None else discard_checkpoint
     checkpoint = ckpt.load_checkpoint(root_path)
-    if checkpoint and (not use_cache or not ckpt.resume_checkpoint_choice(interactive)):
+    # A forced resume (discard_checkpoint is False, only ever the GUI retry
+    # flow) still has to actually be *this* job's own checkpoint before it's
+    # trusted -- checkpoints are keyed by project path only
+    # (checkpoint._checkpoint_path()), never by which job produced them, so
+    # two overlapping pack attempts for the same project (a second browser
+    # tab, or a fresh "패킹 시작" left open while an earlier failed job's
+    # error screen never got retried) could otherwise let this retry
+    # silently resume a *different* attempt's partial progress instead of
+    # its own -- a real gap caught by code review. A checkpoint whose own
+    # restored file set isn't a subset of what this retry is actually about
+    # to select clearly belongs to a different run; fall back to the normal
+    # use_cache-driven decision instead of blindly trusting it in that case.
+    if checkpoint and discard_checkpoint is False and preselected is not None:
+        _, _, candidate_files_data, _ = ckpt.unpack_snapshot(checkpoint)
+        if not set(candidate_files_data.keys()) <= set(preselected):
+            should_discard_checkpoint = not use_cache
+    if checkpoint and (should_discard_checkpoint or not ckpt.resume_checkpoint_choice(interactive)):
         checkpoint = None
         ckpt.delete_checkpoint(root_path)
 
