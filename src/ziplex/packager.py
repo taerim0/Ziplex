@@ -336,6 +336,22 @@ def pack(
     # discard the checkpoint that same job just saved on its own failure.
     should_discard_checkpoint = (not use_cache) if discard_checkpoint is None else discard_checkpoint
     checkpoint = ckpt.load_checkpoint(root_path)
+    # A forced resume (discard_checkpoint is False, only ever the GUI retry
+    # flow) still has to actually be *this* job's own checkpoint before it's
+    # trusted -- checkpoints are keyed by project path only
+    # (checkpoint._checkpoint_path()), never by which job produced them, so
+    # two overlapping pack attempts for the same project (a second browser
+    # tab, or a fresh "패킹 시작" left open while an earlier failed job's
+    # error screen never got retried) could otherwise let this retry
+    # silently resume a *different* attempt's partial progress instead of
+    # its own -- a real gap caught by code review. A checkpoint whose own
+    # restored file set isn't a subset of what this retry is actually about
+    # to select clearly belongs to a different run; fall back to the normal
+    # use_cache-driven decision instead of blindly trusting it in that case.
+    if checkpoint and discard_checkpoint is False and preselected is not None:
+        _, _, candidate_files_data, _ = ckpt.unpack_snapshot(checkpoint)
+        if not set(candidate_files_data.keys()) <= set(preselected):
+            should_discard_checkpoint = not use_cache
     if checkpoint and (should_discard_checkpoint or not ckpt.resume_checkpoint_choice(interactive)):
         checkpoint = None
         ckpt.delete_checkpoint(root_path)
