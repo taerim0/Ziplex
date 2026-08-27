@@ -310,6 +310,35 @@ def test_ruby_endless_method_is_left_alone():
     assert result == code.rstrip("\n")
 
 
+def test_bash_function_body_is_stripped_and_closing_brace_kept():
+    # Same brace-language shape as JS/TS/Java: "{" sits on the signature's
+    # own line (skip that line so the signature survives) and "}" is the
+    # body node's own last child (excluded from the stripped range).
+    code = "deploy() {\n    echo deploying\n    build_app\n}\n"
+    result = compress_code(code, ".sh")
+
+    assert "deploy() {" in result
+    assert MARKER.strip() in result
+    assert "echo deploying" not in result
+    assert result.rstrip("\n").endswith("}")
+
+
+def test_bash_function_keyword_form_body_is_stripped():
+    code = "function build_app() {\n    npm run build\n}\n"
+    result = compress_code(code, ".sh")
+
+    assert "function build_app() {" in result
+    assert MARKER.strip() in result
+    assert "npm run build" not in result
+
+
+def test_bash_one_liner_body_is_left_alone():
+    code = "noop() { :; }\n"
+    result = compress_code(code, ".sh")
+
+    assert result == code.rstrip("\n")
+
+
 def test_unsupported_extension_returns_none():
     assert compress_code("whatever content", ".xyz") is None
 

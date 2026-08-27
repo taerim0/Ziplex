@@ -21,6 +21,7 @@ import tree_sitter_rust as tsrust
 import tree_sitter_c_sharp as tscsharp
 import tree_sitter_php as tsphp
 import tree_sitter_ruby as tsruby
+import tree_sitter_bash as tsbash
 
 # GDScript has no dedicated tree-sitter-gdscript PyPI package (as of this
 # writing) the way the languages above do -- only a community grammar
@@ -724,6 +725,52 @@ def _ruby_dependency_handler(node: Node, results: list) -> bool:
     return True
 
 
+_BASH_SOURCE_COMMANDS = {"source", "."}
+
+
+def _bash_dependency_handler(node: Node, results: list) -> bool:
+    """`source file.sh` / `. file.sh` are ordinary commands, not a
+    dedicated import-statement node -- the same shape Lua's require()/
+    Ruby's require() are, matched by command name rather than a distinct
+    node type. This grammar's "name" field on a `command` node is the
+    command_name sub-node (its own raw text is the command word itself,
+    e.g. "source" or "."), and "argument" is always just the *first*
+    argument regardless of how many follow -- confirmed directly against
+    the real grammar (`. lib/other.sh extra_arg1 extra_arg2` still yields
+    exactly one "argument" child), which is exactly what's wanted here:
+    a `source`d script's own extra positional args (passed through as
+    $1/$2 inside it) aren't part of the sourced path.
+
+    Only a literal word or quoted string counts as a resolvable path -- a
+    dynamically computed one (a variable, command substitution) has no
+    literal text worth capturing, the same "only capture what's
+    statically resolvable" restraint every other handler here already
+    takes for its own language's dynamic import shape.
+
+    Normalized to the bare stem (Path(path).stem), the same restrained
+    normalization GDScript's preload()/C++'s #include/PHP's require/
+    Ruby's require_relative already apply for their own relative
+    file-path dependencies -- a sourced script's path is relative to
+    wherever it's actually invoked from, which won't generally match the
+    project's own collected relative-key path exactly.
+    """
+    if node.type != "command":
+        return False
+    command_name = node.child_by_field_name("name")
+    if command_name is None or command_name.text.decode() not in _BASH_SOURCE_COMMANDS:
+        return False
+    argument = node.child_by_field_name("argument")
+    if argument is not None:
+        if argument.type == "word":
+            results.append(Path(argument.text.decode()).stem)
+        elif argument.type == "string":
+            for child in argument.children:
+                if child.type == "string_content":
+                    results.append(Path(child.text.decode()).stem)
+                    break
+    return True
+
+
 @dataclass(frozen=True)
 class LanguageConfig:
     language: Language
@@ -796,6 +843,29 @@ _cpp_config = LanguageConfig(
     language=Language(tscpp.language()),
     function_types=["function_definition"],
     dependency_handler=_cpp_dependency_handler,
+)
+
+# `.sh`/`.bash` share this exact config object, same as .cpp/.cc/.cxx
+# above -- both extensions parse with the identical grammar, no
+# per-extension difference to justify separate instances.
+#
+# function_definition covers both of Bash's two equivalent function-
+# declaration forms uniformly (`function deploy() { ... }` and the
+# POSIX-compatible `deploy() { ... }`) -- both parse as the same node
+# type, with "name"/"body" as direct fields (the same convention
+# Python/TS/GDScript/PHP/Ruby already use). Genuinely new here: a shell
+# function's `()` is fixed syntax, never an actual parameter list
+# (arguments are read dynamically via $1/$2/$@ inside the body, not
+# declared) -- this grammar therefore has NO "parameters" field at all,
+# for any function, ever. zero_arg_types opts function_definition into
+# the empty-"()" substitution the same way Ruby's parens-less `def foo`
+# does, except here it's true unconditionally rather than only for a
+# specific parens-omitted spelling.
+_sh_config = LanguageConfig(
+    language=Language(tsbash.language()),
+    function_types=["function_definition"],
+    dependency_handler=_bash_dependency_handler,
+    zero_arg_types=frozenset({"function_definition"}),
 )
 
 
@@ -984,6 +1054,10 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         # safe here specifically (real zero arity, not an unresolved one).
         zero_arg_types=frozenset({"method", "singleton_method"}),
     ),
+    # See _sh_config's own definition above for what .sh/.bash share and
+    # why they're both one config object.
+    ".sh": _sh_config,
+    ".bash": _sh_config,
 }
 
 
