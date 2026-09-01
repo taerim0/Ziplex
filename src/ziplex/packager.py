@@ -48,7 +48,7 @@ STRUCTURAL_ONLY_NOTE: dict[str, str] = {
 # STRUCTURAL_ONLY_NOTE above (explains one specific mode), this always ships,
 # since aif.json is meant to survive outside any one tool session: committed
 # to a repo, handed to a colleague, pasted cold into a web chat with none of
-# Ziplex's own docs (this CLAUDE.md, the MCP tool descriptions, the GUI's
+# Ziplex's own docs (this AGENTS.md, the MCP tool descriptions, the GUI's
 # color-coded confidence badges) loaded alongside it. Without this, a reader
 # in that position has no way to know what "confidence" means, what
 # threshold is worth worrying about, or what the compressed body's own

@@ -43,7 +43,7 @@ def test_check_freshness_does_not_flag_ziplex_json_excluded_files_as_added(tmp_p
 def test_check_freshness_does_not_flag_a_previously_included_dangerous_file_as_removed(tmp_path, monkeypatch):
     # Real bug reported directly: a file flagged sensitive by scan_files()
     # but included in the pack anyway (here via `preselected`, the GUI's
-    # own mechanism -- see file/CLAUDE.md's selector.py section) gets
+    # own mechanism -- see file/AGENTS.md's selector.py section) gets
     # re-flagged as dangerous on every later scan regardless of that
     # earlier decision, dropped from collect_and_scan()'s own "safe" list
     # every time -- check_freshness() used to only ever look at "safe", so

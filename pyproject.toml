@@ -58,7 +58,7 @@ Homepage = "https://github.com/taerim0/Ziplex"
 Repository = "https://github.com/taerim0/Ziplex"
 
 # `ziplex` covers pack/collect/tokens/tree/search/detail/freshness/skill/init
-# (cli.py's own subcommands -- see the root CLAUDE.md's Commands section);
+# (cli.py's own subcommands -- see the root AGENTS.md's Commands section);
 # ziplex-gui and ziplex-mcp are separate entry points, not `ziplex`
 # subcommands, since each starts its own long-running process (a local
 # server, a stdio MCP loop) instead of running once and exiting.
@@ -76,8 +76,8 @@ where = ["src"]
 # The GUI's frontend (index.html/js/**/style.css) ships as package data --
 # gui_server.py's Flask app serves these straight off disk next to itself
 # (static_folder="."), so they need to actually be installed alongside the
-# .py files, not left behind as source-only assets. CLAUDE.md files are
-# Claude Code's own working notes for this repo, not runtime assets --
+# .py files, not left behind as source-only assets. CLAUDE.md/AGENTS.md files
+# are AI coding agents' own working notes for this repo, not runtime assets --
 # deliberately excluded from the built package.
 [tool.setuptools.package-data]
 "ziplex.gui" = ["index.html", "style.css", "js/*.js", "js/pages/*.js"]

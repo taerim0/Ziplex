@@ -1,5 +1,5 @@
 """Live filesystem watching for the GUI's staleness badge -- see
-src/gui/CLAUDE.md for the fuller design rationale. Backs gui_server.py's
+src/gui/AGENTS.md for the fuller design rationale. Backs gui_server.py's
 /api/watch/start and /api/watch/status routes.
 
 Before this existed, freshness (_stale_warning() in query_service.py) was

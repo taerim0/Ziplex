@@ -93,7 +93,7 @@ def _label_prefix(label: str) -> str:
 # "input") for the same meaning -- there's no shared-vocabulary overlap to
 # find regardless of how accurate the summary is, unless the LLM happens to
 # quote the identifier verbatim. Reported directly: packing this repo's own
-# CLAUDE.md-documented codebase flagged ~17 low-confidence files in English
+# AGENTS.md-documented codebase flagged ~17 low-confidence files in English
 # but ~63 in Korean, not because the Korean summaries were worse but because
 # the scoring heuristic's whole signal (shared vocabulary) structurally
 # doesn't exist across languages. This instruction asks the model to keep
@@ -451,7 +451,7 @@ class MockProvider:
     generation, token counting -- without ever making a network call or
     waiting out a retry/backoff loop. Content is fixed and not meant to be
     realistic; this validates that the pipeline is wired together correctly,
-    not that any particular project's summaries read well. See CLAUDE.md /
+    not that any particular project's summaries read well. See AGENTS.md /
     tests/test_pack_integration.py for how to select it.
     """
 

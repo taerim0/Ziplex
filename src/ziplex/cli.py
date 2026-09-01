@@ -238,7 +238,7 @@ def main():
         # itself uses for its own per-file summaries, instead of a bespoke
         # one-call-per-file loop with its own separate failure placeholder
         # ("분석 실패" vs summarizer.SUMMARY_FAILED_PLACEHOLDERS). A future fix to
-        # batching/retry/placeholder handling there (see CLAUDE.md's
+        # batching/retry/placeholder handling there (see AGENTS.md's
         # `summarizer.py` bullet) now applies here too, instead of silently
         # missing this command the way a hand-rolled duplicate would.
         pending = {}

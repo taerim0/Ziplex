@@ -61,7 +61,7 @@ def test_index_serves_static_shell(client):
 
 def test_static_assets_are_served(client):
     # app.js used to be one flat file, then split into six flat app-*.js
-    # files, then (see src/gui/CLAUDE.md's Frontend section) into real ES
+    # files, then (see src/gui/AGENTS.md's Frontend section) into real ES
     # modules under js/ -- index.html now loads only js/router.js, but
     # every module it transitively imports still has to be independently
     # servable, since the browser fetches each one as its own request.
