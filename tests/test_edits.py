@@ -7,6 +7,7 @@ from ziplex.edits import (
     remove_rule,
     set_rules,
     set_file_summary,
+    set_folder_summary,
     finalize_aif,
 )
 
@@ -15,6 +16,7 @@ def _make_aif():
     return {
         "project": {"name": "old-name", "prompt": "old prompt"},
         "rules": ["rule one"],
+        "folders": {".": {"summary": "old folder summary"}},
         "files": {
             "a.py": {
                 "summary": "old summary",
@@ -79,6 +81,18 @@ def test_set_file_summary_unknown_file_raises():
     aif = _make_aif()
     with pytest.raises(KeyError):
         set_file_summary(aif, "missing.py", "summary")
+
+
+def test_set_folder_summary():
+    aif = _make_aif()
+    set_folder_summary(aif, ".", "new folder summary")
+    assert aif["folders"]["."]["summary"] == "new folder summary"
+
+
+def test_set_folder_summary_unknown_folder_raises():
+    aif = _make_aif()
+    with pytest.raises(KeyError):
+        set_folder_summary(aif, "missing/folder", "summary")
 
 
 def test_finalize_aif_builds_relationships_and_prunes_working_fields():

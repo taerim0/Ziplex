@@ -15,11 +15,14 @@ Deliberately much lighter-weight than summarizer.py's own machinery:
   feed confidence scoring and the human review flow directly -- losing
   progress on those on an interrupted run is a real cost worth a resumable
   checkpoint. A folder summary is a pure orientation aid layered on top of
-  already-generated file summaries, read-only in the GUI (not part of
-  corrector.py's per-file review loop); falling back to a free structural
-  sentence for just the folders a single LLM call happened to miss is an
-  acceptable degrade that keeps this feature from growing its own
-  checkpoint-schema footprint for a comparatively low-stakes step.
+  already-generated file summaries -- editable via the same corrector.py/
+  edits.py review flow as per-file summaries (edits.set_folder_summary()),
+  but with no confidence-based triage of its own (no per-folder confidence
+  signal exists, so every folder is shown for review rather than only a
+  flagged subset); falling back to a free structural sentence for just the
+  folders a single LLM call happened to miss is an acceptable degrade that
+  keeps this feature from growing its own checkpoint-schema footprint for a
+  comparatively low-stakes step.
 """
 
 import json

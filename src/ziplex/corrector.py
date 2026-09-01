@@ -15,6 +15,7 @@ from .edits import (
     add_rule,
     remove_rule,
     set_file_summary,
+    set_folder_summary,
     finalize_aif,
 )
 from .file.relationship import build_stem_map, resolve_dependency, move_file, CycleError
@@ -184,6 +185,20 @@ def correct_aif(aif: dict) -> dict:
         print(f"\n  ✅ 신뢰도 높은 요약 {len(auto_kept)}개는 자동 유지됩니다 (필요하면 aif.json에서 직접 수정 가능):")
         for file_name in auto_kept:
             print(f"     {file_name}")
+
+    # 5. Correct per-folder summaries -- lighter-weight than per-file
+    # summaries above: folder_summary.py has no confidence signal of its
+    # own, so every folder is shown (not just low-confidence ones), but a
+    # project's folder count is always far smaller than its file count.
+    folders = aif.get("folders", {})
+    if folders:
+        print(f"\n🗂️  폴더 Summary:")
+        for folder_path, data in folders.items():
+            display = folder_path if folder_path != "." else "(최상위)"
+            print(f"\n  📁 {display}: {data.get('summary', '')}")
+            new_summary = input("  수정 (엔터=유지): ").strip()
+            if new_summary:
+                set_folder_summary(aif, folder_path, new_summary)
 
     aif = correct_relationships(aif)
     aif = finalize_aif(aif)

@@ -313,6 +313,7 @@ def api_pack_finalize():
             project_prompt=data.get("project_prompt"),
             rules=data.get("rules"),
             summaries=data.get("summaries"),
+            folder_summaries=data.get("folder_summaries"),
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 404

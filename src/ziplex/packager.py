@@ -839,9 +839,11 @@ def pack(
         "rules": rules,
         # {folder path: {"summary": "..."}}, one entry per folder that
         # directly contains at least one collected file -- see
-        # folder_summary.py for how each summary is generated. Read-only:
-        # unlike per-file summaries/rules/prompt, there's no correction-flow
-        # setter for this yet (deliberately scoped out of this pass).
+        # folder_summary.py for how each summary is generated. Editable via
+        # edits.set_folder_summary() the same way per-file summaries/rules/
+        # prompt are (corrector.py's terminal flow, pack_service.py's GUI
+        # review flow) -- but without confidence-based triage of its own,
+        # since folder_summary.py has no per-folder confidence signal.
         "folders": {folder: {"summary": summary} for folder, summary in folders.items()},
         "tokens": {
             model: {

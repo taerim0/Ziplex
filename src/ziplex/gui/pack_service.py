@@ -77,7 +77,14 @@ from .. import packager
 from .. import settings as app_settings
 from ..config import collect_and_scan
 from ..confidence import triage
-from ..edits import finalize_aif, set_file_summary, set_project_name, set_project_prompt, set_rules
+from ..edits import (
+    finalize_aif,
+    set_file_summary,
+    set_folder_summary,
+    set_project_name,
+    set_project_prompt,
+    set_rules,
+)
 from ..file.relationship import add_dependency as _add_dependency
 from ..file.relationship import add_relationship as _add_relationship
 from ..file.relationship import build_tree
@@ -310,6 +317,14 @@ def _build_review(aif: dict) -> dict:
         # add_dependency_in_job()/remove_dependency_in_job() below) so the
         # GUI can render/edit it before the aif is saved.
         "tree": build_tree(aif["files"]),
+        # No confidence.triage() equivalent for folders -- folder_summary.py
+        # has no per-folder confidence signal, so every folder is shown for
+        # review rather than only a flagged subset (a project's folder count
+        # is always far smaller than its file count, so that's cheap).
+        "folders": [
+            {"folder": folder, "summary": data.get("summary", "")}
+            for folder, data in aif.get("folders", {}).items()
+        ],
     }
 
 
@@ -745,6 +760,7 @@ def submit_review(
     project_prompt: str | None = None,
     rules: list[str] | None = None,
     summaries: dict[str, str] | None = None,
+    folder_summaries: dict[str, str] | None = None,
 ) -> dict:
     """Applies GUI-submitted corrections to a "reviewing" job's paused aif,
     then finalizes and saves it -- the non-terminal equivalent of
@@ -770,6 +786,9 @@ def submit_review(
         for name, summary in (summaries or {}).items():
             if summary and name in aif["files"]:
                 set_file_summary(aif, name, summary)
+        for folder, summary in (folder_summaries or {}).items():
+            if summary and folder in aif.get("folders", {}):
+                set_folder_summary(aif, folder, summary)
 
         # From here on `aif` is a reference this call alone owns.
         # finalize_aif()/save_aif() below do real I/O (save_aif() prints,

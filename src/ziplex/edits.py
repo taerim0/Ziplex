@@ -59,6 +59,18 @@ def set_file_summary(aif: dict, file_name: str, summary: str) -> dict:
     return aif
 
 
+def set_folder_summary(aif: dict, folder: str, summary: str) -> dict:
+    """The `aif["folders"]` (see folder_summary.py) counterpart to
+    set_file_summary() above -- same shape (`{folder: {"summary": ...}}`),
+    same one-field setter. Raises KeyError if folder isn't in
+    aif["folders"].
+    """
+    if folder not in aif.get("folders", {}):
+        raise KeyError(folder)
+    aif["folders"][folder]["summary"] = summary
+    return aif
+
+
 def finalize_aif(aif: dict) -> dict:
     """Builds `relationships` and prunes now-redundant working-state fields.
 

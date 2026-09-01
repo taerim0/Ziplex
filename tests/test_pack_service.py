@@ -566,6 +566,38 @@ def test_review_includes_a_tree(tmp_path, monkeypatch):
     assert review["tree"]["b.py"] == {"internal": [], "external": []}
 
 
+def test_review_includes_every_folder_untriaged(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    job_id = pack_service.start_pack_job(str(project), selected_files=["main.py"])
+    _wait(job_id)
+
+    review = pack_service.get_review(job_id)
+    assert [f["folder"] for f in review["folders"]] == ["."]
+    assert review["folders"][0]["summary"]
+
+
+def test_submit_review_applies_folder_summary_edits(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    output_path = tmp_path / "out" / "project.json"
+
+    job_id = pack_service.start_pack_job(str(project), str(output_path), selected_files=["main.py"])
+    _wait(job_id)
+
+    pack_service.submit_review(job_id, folder_summaries={".": "Custom folder summary."})
+
+    saved = json.loads(output_path.read_text(encoding="utf-8"))
+    assert saved["folders"]["."]["summary"] == "Custom folder summary."
+
+
 def test_add_dependency_in_job_links_and_returns_updated_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")

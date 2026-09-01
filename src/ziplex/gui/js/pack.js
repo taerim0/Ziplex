@@ -239,6 +239,21 @@ export async function renderPackJob(jobId) {
     return el("div", { class: `file-edit-row${flagged ? " needs-review" : ""}` }, children);
   }
 
+  // Same shape as fileEditor() above, minus confidence/signatures --
+  // folder_summary.py has no per-folder confidence signal, so every folder
+  // is shown for review rather than a triaged subset.
+  function folderEditor(entry, folderInputs) {
+    const input = el("textarea", { rows: "2" });
+    input.value = entry.summary || "";
+    folderInputs[entry.folder] = input;
+
+    const display = entry.folder === "." ? t("files.rootFolder") : entry.folder;
+    const header = el("div", { class: "file-edit-header" }, [
+      el("span", { class: "file-edit-name", text: display }),
+    ]);
+    return el("div", { class: "file-edit-row" }, [header, input]);
+  }
+
   async function showReviewState() {
     statusBadge.className = "pack-status reviewing";
     statusBadge.textContent = t("pack.status.reviewing");
@@ -378,6 +393,9 @@ export async function renderPackJob(jobId) {
       : [el("p", { class: "muted", text: t("pack.review.noNeedsReview") })]);
     const autoKeptBox = el("div", {}, review.auto_kept.map(entry => fileEditor(entry, false, summaryInputs)));
 
+    const folderInputs = {};
+    const foldersBox = el("div", {}, (review.folders || []).map(entry => folderEditor(entry, folderInputs)));
+
     const submitError = el("div", { class: "error hidden" });
     const submitButton = el("button", { text: t("pack.review.submit") });
     const cancelButton = el("button", { class: "secondary", text: t("pack.review.cancel") });
@@ -388,6 +406,8 @@ export async function renderPackJob(jobId) {
       cancelButton.disabled = true;
       const summaries = {};
       for (const [file, input] of Object.entries(summaryInputs)) summaries[file] = input.value.trim();
+      const folder_summaries = {};
+      for (const [folder, input] of Object.entries(folderInputs)) folder_summaries[folder] = input.value.trim();
       try {
         const result = await apiPost("/api/pack/finalize", {
           job_id: jobId,
@@ -395,6 +415,7 @@ export async function renderPackJob(jobId) {
           project_prompt: promptInput.value.trim(),
           rules,
           summaries,
+          folder_summaries,
         });
         window.removeEventListener("beforeunload", beforeUnload);
         body.innerHTML = "";
@@ -427,6 +448,7 @@ export async function renderPackJob(jobId) {
       el("h3", { text: t("pack.review.aiGuide") }), promptInput,
       el("h3", { text: t("pack.review.codingRules") }), rulesList,
       el("div", { class: "toolbar" }, [newRuleInput, addRuleButton]),
+      el("h3", { text: t("pack.review.folderSummariesHeader") }), foldersBox,
       el("h3", { text: t("pack.review.fileRelations") }),
       el("p", { class: "muted", text: t("pack.review.relationsHelp") }),
       relSection, treeError,
