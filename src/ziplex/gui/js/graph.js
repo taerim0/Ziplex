@@ -178,15 +178,32 @@ export function renderMiniGraph(name, parents, children, onSelect) {
 // toggle for clicks on the row itself, while a click on the actual triangle
 // (part of <summary>, not this row) still expands/collapses normally, the
 // same split VS Code's own file tree uses (chevron toggles, label opens).
+//
+// A true cycle (buildNode()'s `ancestors.has(dep)` branch -- the same file
+// reappearing on the current root-to-here path) is visually distinct from
+// the far more common, non-cyclic "already shown" row (a file merely shared
+// by two dependents, deduped via `seen`): a 🔁 flag + accent-colored name,
+// same visual language as the existing ⚠️ confidence flag, plus a one-line
+// "N circular references found" banner prepended once the whole tree is
+// built -- without this, both cases previously read as identical muted
+// text, so a genuine mutual-import cycle (worth fixing) was indistinguishable
+// from ordinary sharing (not a problem) unless you read the parenthetical.
 export function renderDependencyTreeOverview(tree, allFiles, flaggedFiles, onSelectFile) {
   const flagged = new Set(flaggedFiles);
+  // Counts true cycles (buildNode()'s `ancestors.has(dep)` branch below) as
+  // they're found during the walk, purely to drive the summary banner
+  // prepended once the whole tree is built -- distinct from `seen`, which
+  // counts a much more common, non-cyclic case (a file shared by two
+  // dependents) that isn't a problem worth flagging.
+  let cycleCount = 0;
 
-  function fileRow(name, note) {
-    const row = el("div", { class: `tree-row${flagged.has(name) ? " tree-flagged" : ""}` }, [
+  function fileRow(name, note, isCycle) {
+    const row = el("div", { class: `tree-row${flagged.has(name) ? " tree-flagged" : ""}${isCycle ? " tree-cycle" : ""}` }, [
       el("span", { text: "📄 " }),
       flagged.has(name) ? el("span", { class: "tree-flag", text: "⚠️ " }) : null,
+      isCycle ? el("span", { class: "tree-flag", text: "🔁 " }) : null,
       el("span", { class: "tree-name", text: name }),
-      note ? el("span", { class: "muted", text: ` ${note}` }) : null,
+      note ? el("span", { class: `${isCycle ? "tree-cycle-note" : "muted"}`, text: ` ${note}` }) : null,
     ]);
     row.addEventListener("click", (e) => { e.preventDefault(); onSelectFile(name); });
     return row;
@@ -219,7 +236,8 @@ export function renderDependencyTreeOverview(tree, allFiles, flaggedFiles, onSel
     const children = [];
     for (const dep of deps.internal) {
       if (ancestors.has(dep)) {
-        children.push(fileRow(dep, t("graph.tree.cycleSkipped")));
+        cycleCount++;
+        children.push(fileRow(dep, t("graph.tree.cycleSkipped"), true));
         continue;
       }
       if (seen.has(dep)) {
@@ -276,6 +294,11 @@ export function renderDependencyTreeOverview(tree, allFiles, flaggedFiles, onSel
     box.appendChild(buildNode(name, new Set([name]), seen));
   }
   if (!roots.length) box.appendChild(el("p", { class: "muted", text: t("graph.tree.empty") }));
+  // Prepended after the walk, not built up front -- cycleCount is only
+  // fully known once every buildNode() call above has run.
+  if (cycleCount > 0) {
+    box.prepend(el("div", { class: "tree-cycles-banner", text: t("graph.tree.cyclesSummary", { n: cycleCount }) }));
+  }
   return box;
 }
 
