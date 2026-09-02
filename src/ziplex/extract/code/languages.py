@@ -248,6 +248,22 @@ def _append_if_not_stdlib(text: str, results: list) -> None:
         results.append(text)
 
 
+def _normalize_field_value_text(node: Node) -> str:
+    """Collapses a captured field-registration value's raw text to a single
+    line (including inside a string-literal argument -- a documented,
+    accepted imprecision, not a correctness concern for what this exists to
+    capture: the registration shape and its own identifier, not an
+    argument's exact literal formatting). A real registration call is
+    routinely wrapped across several indented source lines (a lambda/arrow
+    argument), and every other signature this shares a results list with is
+    single-line -- a raw multi-line entry would otherwise break
+    corrector.py's one-line-per-signature review display. Shared by every
+    field_handler (Java/Python/TS/JS) rather than duplicated per-language:
+    the normalization rule itself has nothing language-specific about it.
+    """
+    return " ".join(node.text.decode().split())
+
+
 def _py_dependency_handler(node: Node, results: list) -> bool:
     if node.type == "import_from_statement":
         module = node.child_by_field_name("module_name")
@@ -262,6 +278,56 @@ def _py_dependency_handler(node: Node, results: list) -> bool:
         return True
 
     return False
+
+
+def _python_field_handler(node: Node, results: list) -> None:
+    """Captures a module- or class-level assignment whose value is itself a
+    call (`RUBY_TOOL = register("ruby_tool", ToolItem())`) -- the same
+    registry-style pattern _java_field_handler closes for Java, applied to
+    Python's own equivalent shape (a class attribute or module-level
+    constant defined via a factory/registration call, invisible to
+    extract_signatures()'s function_definition-only traversal on its own).
+
+    Scoped to `left` being a plain `identifier` -- excludes tuple/pattern
+    unpacking (`A, B = register("a"), register("b")`, where `left` is a
+    pattern_list, not an identifier) as a different, noisier shape not
+    worth handling here. `right` must eventually be a `call` node --
+    excludes a plain literal (`count = 0`) and any other non-call
+    expression. A chained assignment (`RUBY_TOOL = EMERALD_TOOL =
+    register(...)`) parses as nested assignment nodes, each one's own
+    `right` being the next link in the chain rather than the call itself --
+    the chain is followed all the way to its real final value before
+    checking whether that's a call, so every name in the chain gets its own
+    entry (this handler is invoked on each nested assignment node
+    independently by the same traversal, not just the outermost one).
+
+    No recursion-scoping check of its own is needed to keep this off a
+    local variable buried inside a function body: `assignment` nodes exist
+    at every nesting level in this grammar (there's no distinct "local
+    variable declaration" node type the way Java's grammar has one), but
+    _traverse_signatures() already stops recursing the moment it matches a
+    function_definition (Python's only function_types entry) -- so this
+    handler is structurally never invoked on anything inside a function
+    body, only at true module level or directly inside a class body. A
+    conditional block (`if`/`try` at module level) is not itself a
+    function_types node, so an assignment inside one is still visited --
+    deliberately, since a conditionally-defined module-level constant is
+    still a module-level constant.
+
+    No return value -- see _java_field_handler's own comment on why a
+    field-style handler never signals "stop recursing" the way
+    dependency_handler/api_handler do.
+    """
+    if node.type != "assignment":
+        return
+    left = node.child_by_field_name("left")
+    if left is None or left.type != "identifier":
+        return
+    value = node.child_by_field_name("right")
+    while value is not None and value.type == "assignment":
+        value = value.child_by_field_name("right")
+    if value is not None and value.type == "call":
+        results.append(f"{left.text.decode()} = {_normalize_field_value_text(value)}")
 
 
 def _java_dependency_handler(node: Node, results: list) -> bool:
@@ -319,16 +385,11 @@ def _java_field_handler(node: Node, results: list) -> None:
     fully handled" return would silently miss -- confirmed against the real
     grammar, not just a theoretical concern.
 
-    The value's own text is whitespace-normalized (collapsed to single
-    spaces) before appending -- a real registration call is routinely
+    The value's own text is whitespace-normalized before appending (see
+    _normalize_field_value_text()) -- a real registration call is routinely
     wrapped across several indented source lines (a lambda argument, e.g.
     `ITEMS.register("ruby",\n    () -> new Item(...))`), and every other
-    signature this function produces is a single line; a raw multi-line
-    entry would otherwise break corrector.py's one-line-per-signature
-    review display. This collapses whitespace inside a string-literal
-    argument too (a documented, accepted imprecision, not a correctness
-    concern for what this exists to capture: the registration shape and
-    its own identifier, not an argument's exact literal formatting).
+    signature this function produces is a single line.
     """
     if node.type != "field_declaration":
         return
@@ -336,8 +397,7 @@ def _java_field_handler(node: Node, results: list) -> None:
         name = declarator.child_by_field_name("name")
         value = declarator.child_by_field_name("value")
         if name and value is not None and value.type == "method_invocation":
-            value_text = " ".join(value.text.decode().split())
-            results.append(f"{name.text.decode()} = {value_text}")
+            results.append(f"{name.text.decode()} = {_normalize_field_value_text(value)}")
 
 
 def _ts_dependency_handler(node: Node, results: list) -> bool:
@@ -348,6 +408,56 @@ def _ts_dependency_handler(node: Node, results: list) -> bool:
         return True
 
     return False
+
+
+def _ts_field_handler(node: Node, results: list) -> None:
+    """Captures a module-level `const`/`let` declarator or a class field
+    whose value is itself a call (`const RUBY_TOOL = register("ruby_tool",
+    ...)`, `static EMERALD = register("emerald")`) -- the same registry-
+    style pattern _java_field_handler closes for Java, applied to TS/JS's
+    own two equivalent shapes. Both node types share the same "name"/
+    "value" field pair despite being otherwise differently shaped
+    (variable_declarator sits inside a lexical_declaration; a class field
+    is a public_field_definition directly under class_body) -- one handler
+    covers both rather than two near-identical ones. Shared by both `.ts`
+    and `.js` (the latter parsed via the same TSX-family grammar, so class
+    fields take the identical public_field_definition shape).
+
+    `name` must be a plain `identifier`/`property_identifier`/
+    `private_property_identifier` (a `#foo`-style class-private field --
+    an increasingly common way to hold a module's internal registry) --
+    excludes destructuring (`const { a, b } = getStuff()`, where `name` is
+    an object_pattern/array_pattern) as a different, noisier shape not
+    worth handling here. `value` must itself be a `call_expression` --
+    excludes a plain literal, and (unlike Java, which needs an explicit
+    object-creation-expression exclusion) `new Foo()` already parses as a
+    distinct new_expression in this grammar, so it's excluded for free
+    with no extra check needed.
+
+    No scoping check of its own is needed to stay off a local variable
+    inside a function/method body: _traverse_signatures() already stops
+    recursing the moment it matches any of TS/JS's four function_types
+    entries (function_declaration/method_definition/arrow_function/
+    function_expression), so this handler is structurally never invoked on
+    anything inside one of their bodies. A variable_declarator whose value
+    is itself an arrow_function/function_expression (`const add = (a, b)
+    => ...`) is likewise never matched here -- that shape is already
+    extract_signatures()'s own function-signature case (see
+    _resolve_signature_name()'s parent-fallback), not this one.
+
+    No return value -- see _java_field_handler's own comment on why a
+    field-style handler never signals "stop recursing" the way
+    dependency_handler/api_handler do.
+    """
+    if node.type not in ("variable_declarator", "public_field_definition"):
+        return
+    name = node.child_by_field_name("name")
+    value = node.child_by_field_name("value")
+    if (
+        name is not None and name.type in ("identifier", "property_identifier", "private_property_identifier")
+        and value is not None and value.type == "call_expression"
+    ):
+        results.append(f"{name.text.decode()} = {_normalize_field_value_text(value)}")
 
 
 def _lua_dependency_handler(node: Node, results: list) -> bool:
@@ -962,6 +1072,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         function_types=["function_definition"],
         dependency_handler=_py_dependency_handler,
         api_handler=_py_api_handler,
+        field_handler=_python_field_handler,
     ),
     ".java": LanguageConfig(
         language=Language(tsjava.language()),
@@ -989,12 +1100,14 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         function_types=["function_declaration", "method_definition", "arrow_function", "function_expression"],
         dependency_handler=_ts_dependency_handler,
         api_handler=_js_api_handler,
+        field_handler=_ts_field_handler,
     ),
     ".js": LanguageConfig(
         language=Language(tstypescript.language_tsx()),
         function_types=["function_declaration", "method_definition", "arrow_function", "function_expression"],
         dependency_handler=_ts_dependency_handler,
         api_handler=_js_api_handler,
+        field_handler=_ts_field_handler,
     ),
     ".lua": LanguageConfig(
         language=Language(tslua.language()),
