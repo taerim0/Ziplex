@@ -10,6 +10,7 @@ from .file.textutil import relative_key as _rel_key
 from .extract.code.extractor import extract_signatures, extract_dependencies, extract_api
 from .extract.code.compressor import compress_file
 from .text_references import find_text_references_for_file
+from .go_packages import read_go_module_path, build_go_package_index, expand_go_dependencies
 from .tokenizer import analyze_tokens_with_payload
 from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES
 from .freshness import build_manifest, load_previous_summaries
@@ -520,6 +521,14 @@ def pack(
     # match a non-code file's content against, not just file_path itself.
     all_names = [_rel_key(fp, root) for fp in selected]
 
+    # Go's import paths name a *package* (a directory), not a file -- see
+    # go_packages.py's own docstring. Resolved once per pack(), not per
+    # file: None (no go.mod, or no `module` line) means there's nothing to
+    # resolve, so every .go file's raw import strings pass through
+    # untouched below at zero extra cost for a non-Go project.
+    go_module_path = read_go_module_path(root_path)
+    go_package_index = build_go_package_index(all_names) if go_module_path else {}
+
     # Text-reference matches (see text_references.py), kept separate from
     # files_data[fp]["dependencies"] until *after* step 5's LLM summary
     # loop below, not merged in here -- summarizer.request_summary()/
@@ -605,6 +614,8 @@ def pack(
 
         sigs = extract_signatures(file_path)
         deps = extract_dependencies(file_path)
+        if go_module_path and file_path.endswith(".go"):
+            deps = expand_go_dependencies(deps, name, go_module_path, go_package_index)
         apis = extract_api(file_path)
         compressed = compress_file(file_path)
         reused_summary = previous_summaries.get(name, "")
