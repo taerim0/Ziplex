@@ -88,7 +88,9 @@ def finalize_aif(aif: dict) -> dict:
     `relationships` (deduped, split into internal/external), and
     signatures/api duplicate what's already visible inline in `compressed`
     (only function bodies are stripped -- signatures, imports, and decorators
-    stay in place).
+    stay in place). `text_dependencies` (packager.py's text_references.py
+    provenance tag) is fully represented too, folded into `relationships`
+    itself as each file's `internal_text_refs`.
     """
     aif["relationships"] = build_tree(aif["files"])
 
@@ -96,5 +98,6 @@ def finalize_aif(aif: dict) -> dict:
         data.pop("signatures", None)
         data.pop("dependencies", None)
         data.pop("api", None)
+        data.pop("text_dependencies", None)
 
     return aif

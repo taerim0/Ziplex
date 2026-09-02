@@ -388,8 +388,15 @@ def main():
         files_data = {}
         for file_path in safe_files:
             name = _rel_key(file_path, args.path)
-            deps = extract_dependencies(file_path) + find_text_references_for_file(file_path, name, all_names)
-            files_data[name] = {"dependencies": deps}
+            text_refs = find_text_references_for_file(file_path, name, all_names)
+            # text_dependencies recorded separately, same as packager.py's
+            # own merge step -- this is what lets build_tree() tag a text
+            # reference apart from a real import as internal_text_refs
+            # instead of always coming back empty for this command.
+            files_data[name] = {
+                "dependencies": extract_dependencies(file_path) + text_refs,
+                "text_dependencies": text_refs,
+            }
 
         tree = build_tree(files_data)
         print_dependency_tree(tree)

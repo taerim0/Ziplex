@@ -658,6 +658,18 @@ def pack(
     for fp, data in files_data.items():
         if text_refs_by_path.get(fp):
             data["dependencies"] = data["dependencies"] + text_refs_by_path[fp]
+            # Recorded separately (a subset of `dependencies`, exact
+            # collected file names only) so build_tree() can tell a
+            # text-reference-derived edge apart from a real Tree-sitter-
+            # resolved import once both reach `relationships` -- closes the
+            # limitation text_references.py's own docstring documents.
+            # Assigned, not appended: this loop can re-run its merge against
+            # an already-merged `dependencies` restored from a checkpoint
+            # saved past this same step (see text_refs_by_path's comment
+            # above), and a plain reassignment stays correct either way,
+            # unlike appending twice into `dependencies` itself -- a
+            # pre-existing, harmless duplicate build_tree() already dedupes.
+            data["text_dependencies"] = list(text_refs_by_path[fp])
 
     # Confidence signal for every summary (reused, checkpoint-restored, or
     # freshly generated) -- free, no LLM call: just how much of the file's
@@ -859,6 +871,13 @@ def pack(
                 "confidence": data["confidence"],
                 "signatures": data["signatures"],
                 "dependencies": data["dependencies"],
+                # Present only for a file text_references.py actually found
+                # a match for (packager.py's earlier merge step never adds
+                # the key otherwise) -- working state, same as
+                # signatures/dependencies/api, pruned by finalize_aif() once
+                # build_tree() has folded it into `relationships` as
+                # internal_text_refs.
+                **({"text_dependencies": data["text_dependencies"]} if "text_dependencies" in data else {}),
                 "api": data["api"],
                 "compressed": data["compressed"]
             }

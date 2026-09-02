@@ -156,6 +156,29 @@ def test_freshness_does_not_report_a_previously_included_dangerous_file_as_remov
     assert "삭제됨" not in out
 
 
+def test_tree_command_tags_a_text_reference_edge(tmp_path, monkeypatch, capsys):
+    # Regression test for a real bug caught by code review: the `tree`
+    # subcommand has its own independent copy of packager.py's "merge
+    # text_references.py matches into dependencies" loop, and the first
+    # version of that copy merged into `dependencies` only, never recording
+    # `text_dependencies` -- so build_tree()'s internal_text_refs tagging
+    # silently came back empty for this command specifically, even though
+    # the exact same feature worked correctly through `pack`.
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "config.py").write_text("x = 1\n", encoding="utf-8")
+    # README.md has no Tree-sitter grammar, so extract_dependencies() alone
+    # never connects it to config.py -- only text_references.py can.
+    (project / "README.md").write_text("See config.py for settings.\n", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "tree", str(project)])
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "config.py" in out
+    assert "텍스트 언급" in out  # file/relationship.py's print_tree() marker
+
+
 def test_analyze_command_delegates_to_summarizer_and_shares_its_failure_placeholder(tmp_path, monkeypatch, capsys):
     # analyze used to call llm.analyze_file_summary() directly in its own
     # bespoke per-file loop -- no batching, no shared retry-once-then-

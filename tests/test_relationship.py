@@ -13,8 +13,58 @@ def test_build_tree_splits_internal_and_external():
         "b.py": {"dependencies": []},
     }
     tree = build_tree(files)
-    assert tree["a.py"] == {"internal": ["b.py"], "external": ["os"]}
-    assert tree["b.py"] == {"internal": [], "external": []}
+    assert tree["a.py"] == {"internal": ["b.py"], "external": ["os"], "internal_text_refs": []}
+    assert tree["b.py"] == {"internal": [], "external": [], "internal_text_refs": []}
+
+
+def test_build_tree_tags_a_text_reference_edge_as_internal_text_refs():
+    # README.md mentions b.py by name (text_references.py), with no real
+    # import behind it -- packager.py records that as text_dependencies, a
+    # subset of dependencies.
+    files = {
+        "README.md": {"dependencies": ["b.py"], "text_dependencies": ["b.py"]},
+        "b.py": {"dependencies": []},
+    }
+    tree = build_tree(files)
+    assert tree["README.md"]["internal"] == ["b.py"]
+    assert tree["README.md"]["internal_text_refs"] == ["b.py"]
+
+
+def test_build_tree_does_not_tag_an_edge_backed_by_a_real_import_too():
+    # a.py imports b (raw import syntax) *and* separately text-mentions
+    # "b.py" by its exact name -- both resolve to the same target, so the
+    # edge is a genuine import, not merely a text reference, even though one
+    # of the two raw dependency strings is flagged in text_dependencies.
+    files = {
+        "a.py": {"dependencies": ["b", "b.py"], "text_dependencies": ["b.py"]},
+        "b.py": {"dependencies": []},
+    }
+    tree = build_tree(files)
+    assert tree["a.py"]["internal"] == ["b.py"]
+    assert tree["a.py"]["internal_text_refs"] == []
+
+
+def test_get_dependents_can_exclude_text_reference_only_edges():
+    relationships = {
+        "a.py": {"internal": [], "external": [], "internal_text_refs": []},
+        "readme.md": {"internal": ["a.py"], "external": [], "internal_text_refs": ["a.py"]},
+        "b.py": {"internal": ["a.py"], "external": [], "internal_text_refs": []},
+    }
+    assert get_dependents(relationships, "a.py") == ["b.py", "readme.md"]
+    assert get_dependents(relationships, "a.py", include_text_refs=False) == ["b.py"]
+
+
+def test_get_blast_radius_excludes_a_dependent_reached_only_through_a_text_reference():
+    # readme.md -> b.py is a text reference; b.py -> a.py is a real import.
+    # Excluding text refs should drop readme.md from a.py's blast radius
+    # entirely, not just its own edge.
+    relationships = {
+        "a.py": {"internal": [], "external": [], "internal_text_refs": []},
+        "b.py": {"internal": ["a.py"], "external": [], "internal_text_refs": []},
+        "readme.md": {"internal": ["b.py"], "external": [], "internal_text_refs": ["b.py"]},
+    }
+    assert get_blast_radius(relationships, "a.py") == ["b.py", "readme.md"]
+    assert get_blast_radius(relationships, "a.py", include_text_refs=False) == ["b.py"]
 
 
 def test_build_tree_dedupes_and_excludes_self_reference():
@@ -131,6 +181,21 @@ def test_move_file_reparents_and_removes_from_old_parent():
     assert files["c.py"]["dependencies"] == ["b.py"]
 
 
+def test_move_file_strips_the_moved_file_from_text_dependencies_too():
+    files = {
+        "a.py": {"dependencies": ["b"], "text_dependencies": []},
+        "readme.md": {"dependencies": ["b.py"], "text_dependencies": ["b.py"]},
+        "b.py": {"dependencies": []},
+        "c.py": {"dependencies": []},
+    }
+    move_file(files, "b.py", "c.py")
+
+    assert files["readme.md"]["text_dependencies"] == []
+    assert files["c.py"]["dependencies"] == ["b.py"]
+    # the new edge under c.py is a real reparent, not a text reference
+    assert "text_dependencies" not in files["c.py"] or files["c.py"]["text_dependencies"] == []
+
+
 def test_move_file_raises_on_cycle():
     files = {
         "a.py": {"dependencies": []},
@@ -172,6 +237,20 @@ def test_add_dependency_is_a_noop_when_the_edge_already_exists():
     assert files["a.py"]["dependencies"] == ["c"]  # not duplicated
 
 
+def test_add_dependency_upgrades_an_existing_text_reference_to_a_certain_edge():
+    # b.py's dependency on c is already there, but only via a text
+    # reference -- a human explicitly linking the same edge in the GUI
+    # should confirm it, not leave it flagged as a weaker prose mention.
+    files = {
+        "b.py": {"dependencies": ["c.py"], "text_dependencies": ["c.py"]},
+        "c.py": {"dependencies": []},
+    }
+    add_dependency(files, "b.py", "c.py")
+
+    assert files["b.py"]["dependencies"] == ["c.py"]  # still a no-op on the edge itself
+    assert files["b.py"]["text_dependencies"] == []  # but no longer flagged as text-only
+
+
 def test_add_dependency_raises_on_cycle():
     files = {
         "a.py": {"dependencies": []},
@@ -199,6 +278,18 @@ def test_remove_dependency_removes_only_that_edge():
     remove_dependency(files, "a.py", "b.py")
 
     assert files["a.py"]["dependencies"] == ["c"]
+
+
+def test_remove_dependency_also_clears_a_matching_text_dependency():
+    files = {
+        "a.py": {"dependencies": ["b", "c"], "text_dependencies": ["c"]},
+        "b.py": {"dependencies": []},
+        "c.py": {"dependencies": []},
+    }
+    remove_dependency(files, "a.py", "c.py")
+
+    assert files["a.py"]["dependencies"] == ["b"]
+    assert files["a.py"]["text_dependencies"] == []
 
 
 def test_remove_dependency_is_a_noop_when_no_such_edge():
@@ -274,6 +365,18 @@ def test_remove_relationship_removes_only_that_edge():
     remove_relationship(relationships, "a.py", "b.py")
 
     assert relationships["a.py"]["internal"] == ["c.py"]
+
+
+def test_remove_relationship_also_clears_a_matching_internal_text_ref():
+    relationships = {
+        "readme.md": {"internal": ["a.py", "b.py"], "external": [], "internal_text_refs": ["a.py"]},
+        "a.py": {"internal": [], "external": [], "internal_text_refs": []},
+        "b.py": {"internal": [], "external": [], "internal_text_refs": []},
+    }
+    remove_relationship(relationships, "readme.md", "a.py")
+
+    assert relationships["readme.md"]["internal"] == ["b.py"]
+    assert relationships["readme.md"]["internal_text_refs"] == []
 
 
 def test_remove_relationship_is_a_noop_when_no_such_edge():
