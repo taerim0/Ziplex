@@ -247,11 +247,31 @@ def check_freshness(project_path: str, aif_path: str) -> dict:
         "changed": report.changed,
         "added": report.added,
         "removed": report.removed,
-        "unchanged": report.unchanged,
+        # A count, not the full file list: report.unchanged has no caller
+        # here that actually needs the names (freshness.py's own
+        # load_previous_summaries() reads FreshnessReport.unchanged
+        # directly for its cache-reuse logic -- a completely separate,
+        # internal consumer this dict has nothing to do with), and the GUI
+        # never rendered it either -- measured directly against a real
+        # 107-file project: the full list was 65% of this whole response
+        # (556 of 850 tokens) for zero actual use on the receiving end.
+        "unchanged_count": len(report.unchanged),
     }
 
 
-def search_project(project_path: str, pattern: str, context_lines: int = 0, ignore_case: bool = False) -> list[dict]:
+# Default cap for search_project()'s match count -- see its own docstring.
+# Not applied to search_files()/the CLI's `search` subcommand, which have
+# no such cap by default.
+DEFAULT_SEARCH_MAX_RESULTS = 50
+
+
+def search_project(
+    project_path: str,
+    pattern: str,
+    context_lines: int = 0,
+    ignore_case: bool = False,
+    max_results: int | None = DEFAULT_SEARCH_MAX_RESULTS,
+) -> dict:
     """Regex search across the project's original files -- use this when you
     don't already know which file has what you're after (get_detail needs a
     filename; this doesn't). Unlike the other queries here, this doesn't read
@@ -262,16 +282,40 @@ def search_project(project_path: str, pattern: str, context_lines: int = 0, igno
     project_path's own .ziplex.json include/ignore (config.py), the same
     scope pack() itself would use -- a file deliberately excluded from
     packing shouldn't turn up in search results either.
+
+    Capped at max_results matches by default (DEFAULT_SEARCH_MAX_RESULTS,
+    currently 50) -- a broad or common pattern against a real project can
+    otherwise return hundreds of matches in one call (measured directly: a
+    single common word against a 47-file project returned 204 matches,
+    ~9,000 tokens, uncapped). The scan itself stops early once the cap is
+    hit, not just the returned list -- narrow `pattern` first if you
+    actually need more than a glance. Pass
+    max_results=None for the old unlimited behavior. The result's
+    "truncated" flag is True when there were more matches than fit --
+    narrow `pattern` (or raise max_results) and call again rather than
+    assuming "matches" is the complete picture.
     """
     safe_files = collect_and_scan(project_path)["safe"]
-    matches = search_files(safe_files, project_path, pattern, context_lines, ignore_case)
-    return [
-        {
-            "file": m.file,
-            "line": m.line_number,
-            "text": m.line,
-            "context_before": m.context_before,
-            "context_after": m.context_after,
-        }
-        for m in matches
-    ]
+    if max_results is None:
+        raw_matches = search_files(safe_files, project_path, pattern, context_lines, ignore_case)
+        truncated = False
+    else:
+        # Ask for one more than the cap so truncation can be detected from
+        # this single scan, without a second full pass just to count what
+        # was left out.
+        raw_matches = search_files(safe_files, project_path, pattern, context_lines, ignore_case, max_results + 1)
+        truncated = len(raw_matches) > max_results
+        raw_matches = raw_matches[:max_results]
+    return {
+        "matches": [
+            {
+                "file": m.file,
+                "line": m.line_number,
+                "text": m.line,
+                "context_before": m.context_before,
+                "context_after": m.context_after,
+            }
+            for m in raw_matches
+        ],
+        "truncated": truncated,
+    }

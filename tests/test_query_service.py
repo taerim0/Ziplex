@@ -63,7 +63,7 @@ def test_check_freshness_does_not_flag_a_previously_included_dangerous_file_as_r
 
     assert report["is_stale"] is False
     assert report["removed"] == []
-    assert report["unchanged"] == ["config.py"]
+    assert report["unchanged_count"] == 1
 
 
 def test_get_overview_stale_field_does_not_flag_a_previously_included_dangerous_file(tmp_path, monkeypatch):
@@ -132,8 +132,36 @@ def test_search_project_does_not_search_ziplex_json_ignored_files(tmp_path):
     _write(project / "vendor" / "lib.py", "TARGET_TOKEN = 2\n")
     _write(project / ".ziplex.json", json.dumps({"include": [], "ignore": ["vendor/**"]}))
 
-    results = query_service.search_project(str(project), "TARGET_TOKEN")
+    result = query_service.search_project(str(project), "TARGET_TOKEN")
 
-    files_matched = {r["file"] for r in results}
+    files_matched = {r["file"] for r in result["matches"]}
     assert any("main.py" in f for f in files_matched)
     assert not any("lib.py" in f for f in files_matched)
+    assert result["truncated"] is False
+
+
+def test_search_project_caps_results_and_reports_truncation(tmp_path):
+    # A broad/common pattern against a real project can return far more
+    # matches than any caller actually wants in one response -- measured
+    # directly against a real 47-file project: 204 matches, ~9,000 tokens,
+    # for a single common word with no cap at all.
+    project = tmp_path / "project"
+    _write(project / "a.py", "MATCH\n" * 10)
+
+    capped = query_service.search_project(str(project), "MATCH", max_results=3)
+    assert len(capped["matches"]) == 3
+    assert capped["truncated"] is True
+
+    uncapped = query_service.search_project(str(project), "MATCH", max_results=None)
+    assert len(uncapped["matches"]) == 10
+    assert uncapped["truncated"] is False
+
+
+def test_search_project_default_cap_is_not_unlimited(tmp_path):
+    project = tmp_path / "project"
+    _write(project / "a.py", "MATCH\n" * (query_service.DEFAULT_SEARCH_MAX_RESULTS + 10))
+
+    result = query_service.search_project(str(project), "MATCH")
+
+    assert len(result["matches"]) == query_service.DEFAULT_SEARCH_MAX_RESULTS
+    assert result["truncated"] is True

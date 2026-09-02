@@ -477,10 +477,16 @@ def api_search():
     context_lines = request.args.get("context_lines", default=0, type=int)
     ignore_case = request.args.get("ignore_case", default="false") == "true"
     try:
-        results = query_service.search_project(project_path, pattern, context_lines, ignore_case)
+        # max_results=None: unlike an MCP/agent caller, a human browsing
+        # the GUI pays no per-token cost and can already scroll/refine --
+        # query_service.search_project()'s own default cap exists for the
+        # other transport, not this one. Only "matches" is a bare JSON
+        # array here, matching this route's existing response shape --
+        # "truncated" is meaningless once max_results=None.
+        result = query_service.search_project(project_path, pattern, context_lines, ignore_case, max_results=None)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
-    return jsonify(results)
+    return jsonify(result["matches"])
 
 
 _JSON_FILE_TYPES = ("JSON 파일 (*.json)", "모든 파일 (*.*)")
