@@ -618,8 +618,8 @@ Respond with JSON only, nothing else.
 
 def analyze_rules(signatures_map: dict, lang: str = "en") -> str:
     prompt = f"""
-Analyze the function signature patterns of the project below
-and extract its implicit coding rules.
+Analyze the function signatures and notable field declarations of the
+project below and extract its implicit coding rules.
 Write each rule in {_lang_name(lang)}. Keep the JSON key itself in English.
 Respond with JSON only, nothing else.
 

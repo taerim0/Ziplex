@@ -36,6 +36,163 @@ def test_extract_signatures_from_java_file(tmp_path):
     assert not any("->" in s for s in sigs)
 
 
+def test_extract_signatures_captures_a_call_initialized_java_field(tmp_path):
+    # A field_declaration isn't a function_types node, so a class whose
+    # actual behavior is registering constants via a factory call (a real,
+    # common pattern in Minecraft-mod-style code) used to be invisible to
+    # extract_signatures() entirely except for any incidental helper
+    # method alongside it -- see _java_field_handler's own docstring for
+    # the real ModItems.java case this closes.
+    file_path = tmp_path / "ModItems.java"
+    file_path.write_text(
+        "public class ModItems {\n"
+        '    public static final Item RUBY_TOOL = register("ruby_tool", new ToolItem());\n'
+        "    private int count = 0;\n"
+        "    public static boolean isRubyTool(Item item) {\n"
+        "        return item == RUBY_TOOL;\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert 'RUBY_TOOL = register("ruby_tool", new ToolItem())' in sigs
+    assert "isRubyTool(Item item)" in sigs  # the real method is still captured too
+    # a plain literal-initialized field is not a registration pattern --
+    # must not appear at all, name or otherwise
+    assert not any("count" in s for s in sigs)
+
+
+def test_extract_signatures_keeps_java_field_registrations_in_source_order(tmp_path):
+    # Regression test for a real bug caught by code review: field
+    # registrations used to be appended in a second traversal *after*
+    # every method signature, regardless of where they actually appear in
+    # the file -- so a registry-style class with 10+ methods before its
+    # field registrations could have those registrations silently pushed
+    # past corrector.py's/summarizer.py's fixed-count display caps. Now a
+    # single, document-order traversal: whatever order things appear in
+    # the source is the order they appear in `signatures`.
+    file_path = tmp_path / "Mixed.java"
+    file_path.write_text(
+        "public class Mixed {\n"
+        "    public void first() {}\n"
+        '    public static final Item RUBY_TOOL = register("ruby_tool");\n'
+        "    public void second() {}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert sigs == ["first()", 'RUBY_TOOL = register("ruby_tool")', "second()"]
+
+
+def test_extract_signatures_finds_a_java_field_registration_nested_in_an_anonymous_class(tmp_path):
+    # A field's initializer can legally contain its own nested
+    # field_declaration (an anonymous class body) -- an early "fully
+    # handled, stop recursing" return on the outer field_declaration would
+    # silently miss it, reproducing the exact low-confidence bug this
+    # feature exists to fix one syntactic layer deeper. Confirmed against
+    # the real grammar, not just a theoretical concern.
+    file_path = tmp_path / "Nested.java"
+    file_path.write_text(
+        "public class Nested {\n"
+        "    private final Comparator<Item> c = new Comparator<Item>() {\n"
+        '        private final Item helper = register("helper");\n'
+        "        public int compare(Item a, Item b) { return 0; }\n"
+        "    };\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert 'helper = register("helper")' in sigs
+    assert "compare(Item a, Item b)" in sigs
+
+
+def test_extract_signatures_captures_every_comma_separated_java_declarator(tmp_path):
+    # A single field_declaration can define several declarators at once
+    # (`A = f(), B = g();`) -- children_by_field_name("declarator") is
+    # required (plural); the singular child_by_field_name would silently
+    # return only the first and drop every one after it.
+    file_path = tmp_path / "Items.java"
+    file_path.write_text(
+        "public class Items {\n"
+        '    public static final Item A = register("a"), B = register("b");\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert 'A = register("a")' in sigs
+    assert 'B = register("b")' in sigs
+
+
+def test_extract_signatures_normalizes_a_multi_line_java_field_initializer(tmp_path):
+    # A real registration call is routinely wrapped across several indented
+    # source lines (a lambda argument, e.g. Forge's DeferredRegister
+    # pattern) -- the captured value must collapse to one line like every
+    # other signature this function produces, not leak raw newlines/
+    # indentation that would break corrector.py's one-line-per-signature
+    # review display.
+    file_path = tmp_path / "ModItems.java"
+    file_path.write_text(
+        "public class ModItems {\n"
+        "    public static final RegistryObject<Item> RUBY = ITEMS.register(\"ruby\",\n"
+        "            () -> new Item(new Item.Properties().stacksTo(64)));\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert len(sigs) == 1
+    assert "\n" not in sigs[0]
+    assert sigs[0] == 'RUBY = ITEMS.register("ruby", () -> new Item(new Item.Properties().stacksTo(64)))'
+
+
+def test_extract_signatures_ignores_a_plain_object_creation_java_field(tmp_path):
+    # `new ArrayList<>()` is an object_creation_expression, not a
+    # method_invocation -- extremely common and, unlike a *named* factory/
+    # registration call, not itself informative enough to be worth
+    # surfacing as a signature.
+    file_path = tmp_path / "Holder.java"
+    file_path.write_text(
+        "public class Holder {\n"
+        "    private final java.util.List<String> items = new java.util.ArrayList<>();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    assert extract_signatures(str(file_path)) == []
+
+
+def test_java_field_registrations_fix_the_real_low_confidence_case(tmp_path):
+    # End-to-end proof of the actual motivating case (see
+    # _java_field_handler's docstring): a real, accurate LLM summary of a
+    # registry-style class used to score a misleadingly low confidence
+    # because extract_signatures() had nothing but one incidental helper
+    # method to check it against -- this closes that specific gap.
+    from ziplex.confidence import estimate_confidence, REVIEW_THRESHOLD
+
+    file_path = tmp_path / "ModItems.java"
+    file_path.write_text(
+        "public class ModItems {\n"
+        '    public static final Item RUBY_TOOL = register("ruby_tool", new ToolItem());\n'
+        "    public static boolean isRubyTool(Item item) {\n"
+        "        return item == RUBY_TOOL;\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    summary = "Defines and registers custom items and helper methods for the mod."
+
+    sigs = extract_signatures(str(file_path))
+    with_fields = estimate_confidence(summary, sigs)
+    without_fields = estimate_confidence(summary, [s for s in sigs if "register" not in s])
+
+    assert without_fields < REVIEW_THRESHOLD  # the real, historical false-flag case
+    assert with_fields >= REVIEW_THRESHOLD   # no longer flagged for human review
+
+
 def test_extract_dependencies_from_python_file(tmp_path):
     # Not stdlib names -- see test_extract_dependencies_excludes_stdlib_
     # imports() below for the "os"/"pathlib" case this used to (wrongly)

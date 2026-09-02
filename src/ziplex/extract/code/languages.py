@@ -56,6 +56,27 @@ DependencyHandler = Callable[[Node, list], bool]
 # language with no imports of its own.
 ApiHandler = Callable[[Node, list], bool]
 
+# Deliberately NOT the same (Node, list) -> bool "stop recursing" contract
+# DependencyHandler/ApiHandler use: extractor.py's _traverse_signatures()
+# always keeps recursing into a matched node's own children regardless of
+# what this returns, since a field's initializer can itself legally contain
+# a nested field_declaration (e.g. an anonymous class body) -- an import or
+# a route declaration never nests a second one of itself the way a field
+# initializer can, which is why those two get to stop early and this one
+# can't. Recognizes a class-level field whose initializer is itself a call
+# (`public static final Item RUBY_TOOL = register(...);`) -- a pattern
+# extract_signatures()'s function-only traversal can never see on its own,
+# since a field declaration isn't a function_types node. See
+# _java_field_handler's own docstring for the real case that motivated
+# this. Scoped to Java only for now (LanguageConfig.field_handler defaults
+# to None, same "no handler at all" pattern api_handler already uses for a
+# language with nothing to look for) -- the pattern is common enough in
+# other languages too (a TS/JS module-level `const X = register(...)`, a
+# Python module-level `X = register(...)`) to extend later, but each needs
+# its own handler; a field declaration's grammar shape isn't shared the way
+# function_types' basic name/parameters/body fields mostly are.
+FieldHandler = Callable[[Node, list], None]
+
 
 def _walk_all(node: Node):
     """Every descendant of node, node itself included -- shared by the API
@@ -255,6 +276,68 @@ def _java_dependency_handler(node: Node, results: list) -> bool:
         return True
 
     return False
+
+
+def _java_field_handler(node: Node, results: list) -> None:
+    """Captures a class-level field whose initializer is itself a method
+    call (`public static final Item RUBY_TOOL = register("ruby_tool", new
+    ToolItem());`) -- a pattern extract_signatures()'s function-only
+    traversal structurally can never see, since field_declaration isn't
+    one of Java's function_types. This is often a file's *actual* primary
+    behavior (a registry class defining a whole set of constants via a
+    factory call), invisible to confidence.py's word-overlap scoring and a
+    human review screen's "real signatures" display without it -- a real,
+    observed case (not hypothetical): a mod's ModItems.java, whose accurate
+    LLM summary ("Defines and registers custom items...") scored a
+    misleadingly low confidence because the only thing extract_signatures()
+    had ever captured from it was one incidental helper method, with none
+    of the actual item-registration calls to check the summary against.
+
+    Deliberately scoped to this node type only, not a generic "any
+    identifier assigned from a call" search -- field_declaration only ever
+    appears as a direct class-body member; a local variable inside a method
+    body is a distinct local_variable_declaration node the grammar never
+    confuses with this one, so this can't misfire on an incidental
+    assignment deep inside a function body.
+
+    Only a declarator whose value is itself a method_invocation counts --
+    excludes a plain literal (`private int count = 0;`), a bare
+    object-creation expression (`new ArrayList<>()`, extremely common and,
+    unlike a *named* factory/registration call, not itself informative),
+    and a field with no initializer at all. A single field_declaration can
+    define several comma-separated declarators at once (`A = f(), B =
+    g();`) -- children_by_field_name("declarator") (plural) is required
+    here, not child_by_field_name (singular), which would silently return
+    only the first and drop every one after it.
+
+    No return value, unlike dependency_handler/api_handler's "stop
+    recursing" bool -- _traverse_signatures() always keeps recursing into
+    this node's own children regardless. That matters here specifically: a
+    field's initializer *can* legally contain a nested field_declaration of
+    its own (an anonymous class body, `new Comparator<Item>() { private
+    final Item helper = register("helper"); ... };`), which an early "stop,
+    fully handled" return would silently miss -- confirmed against the real
+    grammar, not just a theoretical concern.
+
+    The value's own text is whitespace-normalized (collapsed to single
+    spaces) before appending -- a real registration call is routinely
+    wrapped across several indented source lines (a lambda argument, e.g.
+    `ITEMS.register("ruby",\n    () -> new Item(...))`), and every other
+    signature this function produces is a single line; a raw multi-line
+    entry would otherwise break corrector.py's one-line-per-signature
+    review display. This collapses whitespace inside a string-literal
+    argument too (a documented, accepted imprecision, not a correctness
+    concern for what this exists to capture: the registration shape and
+    its own identifier, not an argument's exact literal formatting).
+    """
+    if node.type != "field_declaration":
+        return
+    for declarator in node.children_by_field_name("declarator"):
+        name = declarator.child_by_field_name("name")
+        value = declarator.child_by_field_name("value")
+        if name and value is not None and value.type == "method_invocation":
+            value_text = " ".join(value.text.decode().split())
+            results.append(f"{name.text.decode()} = {value_text}")
 
 
 def _ts_dependency_handler(node: Node, results: list) -> bool:
@@ -780,6 +863,7 @@ class LanguageConfig:
     function_types: list[str]              # node types targeted for signature extraction + body compression
     dependency_handler: DependencyHandler   # strategy for extracting import statements
     api_handler: ApiHandler | None = None   # strategy for extracting REST-route declarations, if this language has one
+    field_handler: FieldHandler | None = None  # strategy for extracting call-initialized class-level fields (see FieldHandler's own comment)
     # Fallback name for a function_types node whose grammar gives it neither
     # its own "name" field nor a wrapping node with one -- e.g. GDScript's
     # constructor_definition, whose only "name" is the fixed keyword token
@@ -883,6 +967,7 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         language=Language(tsjava.language()),
         function_types=["method_declaration"],
         dependency_handler=_java_dependency_handler,
+        field_handler=_java_field_handler,
     ),
     ".ts": LanguageConfig(
         language=Language(tstypescript.language_typescript()),
