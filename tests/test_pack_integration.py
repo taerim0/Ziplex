@@ -567,11 +567,16 @@ def test_pack_captures_a_text_file_reference_to_a_code_file(tmp_path, monkeypatc
     aif = packager.pack(str(project), auto=True, interactive=False)
 
     assert aif["files"]["README.md"]["dependencies"] == ["entities/player.gd"]
+    assert aif["files"]["README.md"]["text_dependencies"] == ["entities/player.gd"]
     # and it survives finalize_aif()'s relationship-building the same way a
-    # real import would
+    # real import would -- tagged as internal_text_refs, not just internal,
+    # since it's a prose mention with no real import behind it (see
+    # file/relationship.py's build_tree() docstring)
     from ziplex.edits import finalize_aif
     final = finalize_aif(aif)
     assert final["relationships"]["README.md"]["internal"] == ["entities/player.gd"]
+    assert final["relationships"]["README.md"]["internal_text_refs"] == ["entities/player.gd"]
+    assert "text_dependencies" not in final["files"]["README.md"]
 
 
 def test_pack_text_reference_does_not_hijack_the_summary_prompt(tmp_path, monkeypatch):

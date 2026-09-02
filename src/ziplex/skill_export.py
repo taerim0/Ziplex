@@ -167,9 +167,16 @@ def _relationships_md(aif: dict) -> str:
         deps = relationships[name]
         internal = deps.get("internal", [])
         external = deps.get("external", [])
+        # A target both imported and text-mentioned counts as the former
+        # only (see file/relationship.py's build_tree() docstring), so this
+        # set is exactly the internal edges with no real import behind them.
+        text_refs = set(deps.get("internal_text_refs", []))
         lines += ["", f"## `{name}`"]
         if internal:
-            lines += [f"- depends on: `{d}`" for d in internal]
+            lines += [
+                f"- depends on: `{d}`" + (" (text reference, not an import)" if d in text_refs else "")
+                for d in internal
+            ]
         if external:
             lines += [f"- depends on (external): `{d}`" for d in external]
         if not internal and not external:

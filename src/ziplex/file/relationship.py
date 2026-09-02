@@ -91,6 +91,25 @@ def resolve_dependency(dep: str, stem_map: dict) -> str | None:
     return _pick_candidate(candidates) if candidates else None
 
 
+def _drop_text_dep(data: dict, key: str, keep) -> None:
+    """In-place filters data[key] (a list) down to entries `keep` accepts,
+    but only if the list is present and non-empty -- a no-op write is never
+    the observable difference between "had none" and "had some, now none".
+
+    Shared by every place that must keep a text-reference-provenance shadow
+    list (`files[name]["text_dependencies"]`, or its finalized counterpart
+    `relationships[name]["internal_text_refs"]`) in sync as the real edge
+    list it shadows gets edited: move_file/add_dependency/remove_dependency
+    below (over `text_dependencies`) and remove_relationship (over
+    `internal_text_refs`). Centralized here specifically because this sync
+    rule is easy to add a new caller of without remembering it exists at
+    all -- see build_tree()'s own docstring for what these lists represent.
+    """
+    values = data.get(key)
+    if values:
+        data[key] = [v for v in values if keep(v)]
+
+
 class CycleError(Exception):
     """Raised by move_file()/add_dependency() when adding an edge would
     create a dependency cycle. from_file/to_file name the edge that was
@@ -159,6 +178,10 @@ def move_file(files: dict, file_name: str, new_parent: str) -> dict:
     for data in files.values():
         deps = data.get("dependencies", [])
         data["dependencies"] = [d for d in deps if resolve_dependency(d, stem_map) != file_name]
+        # text_dependencies is always an exact-filename subset of
+        # dependencies (see build_tree()'s docstring) -- a plain equality
+        # check keeps it in sync without needing resolve_dependency() again.
+        _drop_text_dep(data, "text_dependencies", lambda d: d != file_name)
 
     files.setdefault(new_parent, {}).setdefault("dependencies", [])
     files[new_parent]["dependencies"].append(file_name)
@@ -177,9 +200,15 @@ def add_dependency(files: dict, file_name: str, target: str) -> dict:
 
     A no-op if the edge already exists (matched by resolved target, so a raw
     import path and an already-pinned file name for the same file don't
-    both get added). Raises ValueError if file_name/target aren't both in
-    `files` (or are the same file), and CycleError if the edge would close a
-    dependency cycle -- the same has_cycle() guard move_file() uses.
+    both get added) -- except that a human explicitly (re-)linking an edge
+    that already exists purely as a text_references.py text reference (see
+    build_tree()'s `internal_text_refs`) upgrades it to a fully certain
+    edge instead of doing nothing. That upgrade *is* the human-correction
+    step the project treats as its own differentiator -- a no-op here would
+    silently leave a human-confirmed edge flagged as a weaker prose mention.
+    Raises ValueError if file_name/target aren't both in `files` (or are the
+    same file), and CycleError if the edge would close a dependency cycle --
+    the same has_cycle() guard move_file() uses.
     """
     if file_name not in files:
         raise ValueError(f"unknown file: {file_name}")
@@ -197,6 +226,8 @@ def add_dependency(files: dict, file_name: str, target: str) -> dict:
     deps = files[file_name].setdefault("dependencies", [])
     if not any(resolve_dependency(d, stem_map) == target for d in deps):
         deps.append(target)
+    else:
+        _drop_text_dep(files[file_name], "text_dependencies", lambda d: resolve_dependency(d, stem_map) != target)
 
     return files
 
@@ -217,6 +248,8 @@ def remove_dependency(files: dict, file_name: str, target: str) -> dict:
     stem_map = build_stem_map(files.keys())
     deps = files[file_name].get("dependencies", [])
     files[file_name]["dependencies"] = [d for d in deps if resolve_dependency(d, stem_map) != target]
+
+    _drop_text_dep(files[file_name], "text_dependencies", lambda d: resolve_dependency(d, stem_map) != target)
 
     return files
 
@@ -289,33 +322,60 @@ def remove_relationship(relationships: dict, file_name: str, target: str) -> dic
     internal = relationships[file_name].get("internal", [])
     relationships[file_name]["internal"] = [d for d in internal if d != target]
 
+    _drop_text_dep(relationships[file_name], "internal_text_refs", lambda d: d != target)
+
     return relationships
 
 
 def build_tree(files: dict) -> dict:
+    """Splits each file's `dependencies` into `internal`/`external`, plus a
+    third `internal_text_refs` list -- the subset of `internal` reached
+    *only* via text_references.py's free filename-mention matching (a
+    README naming another file by name, a Godot scene's ext_resource path),
+    never via a real Tree-sitter-resolved import to the same target. A
+    target reached by both counts as a genuine edge, not a text ref, since
+    the code import alone already justifies its place in `internal` -- this
+    is why classification happens per resolved *target*, not per raw
+    `dependencies` entry (a file can have both an import and a prose mention
+    of the same other file).
+
+    packager.py records which raw entries came from a text-reference match
+    in each file's own `text_dependencies` (a subset of `dependencies`,
+    exact collected file names only, never raw import syntax) -- this is
+    what `internal_text_refs` is actually computed from. Closes the
+    limitation text_references.py's own docstring documents: a prose mention
+    and a structural reference used to land in the same `internal` list with
+    no way to tell them apart. See get_dependents()/get_blast_radius()'s
+    `include_text_refs` param for the consumer side of this.
+    """
     stem_map = build_stem_map(files.keys())
     tree = {}
 
     for name, data in files.items():
         deps = data.get("dependencies", [])
+        text_deps = set(data.get("text_dependencies", []))
         internal, external = [], []
+        code_targets, text_only_targets = set(), set()
         for dep in deps:
             matched = resolve_dependency(dep, stem_map)
             if matched == name:
                 continue  # a file referencing itself isn't a real relationship in either direction
             if matched:
                 internal.append(matched)
+                (text_only_targets if dep in text_deps else code_targets).add(matched)
             else:
                 external.append(dep)
+        internal = list(dict.fromkeys(internal))   # keep order, drop duplicates
         tree[name] = {
-            "internal": list(dict.fromkeys(internal)),   # keep order, drop duplicates
-            "external": list(dict.fromkeys(external))
+            "internal": internal,
+            "external": list(dict.fromkeys(external)),
+            "internal_text_refs": [m for m in internal if m in text_only_targets - code_targets],
         }
 
     return tree
 
 
-def get_dependents(relationships: dict, file: str) -> list[str]:
+def get_dependents(relationships: dict, file: str, *, include_text_refs: bool = True) -> list[str]:
     """Every file whose `internal` list includes `file` -- i.e. who would be
     directly affected by a change to `file`. The inverse of
     relationships[file]["internal"] (what `file` depends on): this answers
@@ -325,14 +385,24 @@ def get_dependents(relationships: dict, file: str) -> list[str]:
     `relationships` field directly), not `files` -- there's no dependency
     resolution left to do here, just a graph traversal over already-resolved
     edges.
+
+    include_text_refs=False excludes a dependent whose only link to `file`
+    is a text_references.py filename mention (build_tree()'s
+    `internal_text_refs`) -- a "certain relationships only" view for a
+    caller that wants to skip the weaker prose-mention signal entirely, not
+    just see it flagged.
     """
-    return sorted(
-        name for name, deps in relationships.items()
-        if file in deps.get("internal", [])
-    )
+    result = []
+    for name, deps in relationships.items():
+        if file not in deps.get("internal", []):
+            continue
+        if not include_text_refs and file in deps.get("internal_text_refs", []):
+            continue
+        result.append(name)
+    return sorted(result)
 
 
-def get_blast_radius(relationships: dict, file: str) -> list[str]:
+def get_blast_radius(relationships: dict, file: str, *, include_text_refs: bool = True) -> list[str]:
     """Transitive closure of get_dependents(): every file that would be
     affected, directly or indirectly, by a change to `file`.
 
@@ -342,12 +412,17 @@ def get_blast_radius(relationships: dict, file: str) -> list[str]:
     Java classes import each other (a mod's main class and one of its
     registries, a common pattern) and both showed up in each other's blast
     radius, themselves included.
+
+    include_text_refs is get_dependents()'s own param, threaded through
+    every hop of the traversal -- a text-reference edge excluded at the
+    first hop must stay excluded from the whole transitive walk, not just
+    the direct-dependents step.
     """
     visited: set[str] = set()
     queue = [file]
     while queue:
         current = queue.pop()
-        for dependent in get_dependents(relationships, current):
+        for dependent in get_dependents(relationships, current, include_text_refs=include_text_refs):
             if dependent not in visited:
                 visited.add(dependent)
                 queue.append(dependent)
@@ -366,13 +441,18 @@ def print_tree(tree: dict):
 
     def print_node(name, ancestors, depth=1):
         indent = "  " * depth
-        deps = tree.get(name, {"internal": [], "external": []})
+        deps = tree.get(name, {"internal": [], "external": [], "internal_text_refs": []})
+        text_refs = set(deps.get("internal_text_refs", []))
 
         for child in deps["internal"]:
+            # a real import vs. just a filename mentioned in prose (see
+            # build_tree()'s docstring) -- flagged the same way a cycle is,
+            # since both are "still an edge, but read this differently."
+            note = " (텍스트 언급)" if child in text_refs else ""
             if child in ancestors:
                 print(f"{indent}└── 📄 {child} (순환 참조 → 생략)")
                 continue
-            print(f"{indent}└── 📄 {child}")
+            print(f"{indent}└── 📄 {child}{note}")
             print_node(child, ancestors | {child}, depth + 1)
 
         for external in deps["external"]:

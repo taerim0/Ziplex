@@ -161,6 +161,22 @@ def test_relationships_md_shows_internal_external_and_no_deps():
     assert "(no dependencies)" in rel_md  # utils.py has none
 
 
+def test_relationships_md_annotates_a_text_reference_only_edge():
+    aif = _sample_aif()
+    aif["relationships"]["src/utils.py"] = {
+        "internal": ["src/app.py"],
+        "external": [],
+        "internal_text_refs": ["src/app.py"],
+    }
+    rel_md = generate_skill_files(aif, {})["references/relationships.md"]
+
+    app_section, utils_section = rel_md.split("## `src/app.py`")[1].split("## `src/utils.py`")
+    # app.py's real import of utils.py must not be annotated as a text ref
+    assert "text reference" not in app_section
+    # utils.py's edge back to app.py exists only as a text reference
+    assert "`src/app.py` (text reference, not an import)" in utils_section
+
+
 def test_detail_json_round_trips():
     detail = {"src/app.py": {"compressed": "def main():\n    ...\n"}}
     files = generate_skill_files(_sample_aif(), detail)

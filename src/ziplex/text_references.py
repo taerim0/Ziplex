@@ -15,16 +15,29 @@ straight into `dependencies` the same way a resolved import would (see
 packager.py's per-file loop -- it's appended there, not routed through any
 separate resolve step).
 
-Known, accepted limitation: a Godot scene's ext_resource path is a genuine
-structural coupling (the scene can't load without it), but a README
-mentioning a filename in prose is a much weaker signal -- both currently
-land in the same `dependencies` list with no way to tell them apart once
-they reach `relationships`/get_blast_radius/get_dependents. Distinguishing
-"referenced in passing" from "structurally coupled" would need the kind of
-provenance/confidence tagging Tier 3's still-open LLM-inference phase
-(Phase B -- see the `ziplex-roadmap` memory) already has to solve for a
-harder reason (a guess isn't a fact); doing it here too was judged not
-worth a schema change for Phase A's sake alone.
+A Godot scene's ext_resource path is a genuine structural coupling (the
+scene can't load without it), while a README mentioning a filename in prose
+is a much weaker signal -- both still land in the same `dependencies` list
+here (packager.py's per-file loop appends this module's matches onto
+whatever extract_dependencies() already found), but are no longer
+indistinguishable once they reach `relationships`: packager.py also records
+this module's own matches separately as each file's `text_dependencies`, and
+file/relationship.py's `build_tree()` uses that to tag every text-reference-
+derived edge as `internal_text_refs`, a subset of `internal` -- a target
+also reached by a real import stays a plain, fully certain edge.
+`get_dependents()`/`get_blast_radius()` take an `include_text_refs` param
+for a caller that wants to exclude the weaker signal entirely, not just see
+it flagged.
+
+Every caller of find_text_references_for_file()/find_text_references() must
+mirror this same pair of steps -- merge the match into `dependencies` *and*
+record it separately as `text_dependencies` -- or `internal_text_refs`
+silently comes back empty for that caller's files, with no error to catch
+it (a real bug caught by code review the same day this was added: cli.py's
+`tree` subcommand has its own independent copy of this merge loop and had
+been updated for the first half only). `packager.py`'s per-file loop and
+`cli.py`'s `tree` subcommand are today's only two callers -- both do this
+correctly now; keep it that way in a third.
 """
 
 import re

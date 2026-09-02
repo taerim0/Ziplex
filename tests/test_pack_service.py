@@ -562,8 +562,8 @@ def test_review_includes_a_tree(tmp_path, monkeypatch):
 
     review = pack_service.get_review(job_id)
     # neither file imports the other -- both start as roots, no internal edges
-    assert review["tree"]["a.py"] == {"internal": [], "external": []}
-    assert review["tree"]["b.py"] == {"internal": [], "external": []}
+    assert review["tree"]["a.py"] == {"internal": [], "external": [], "internal_text_refs": []}
+    assert review["tree"]["b.py"] == {"internal": [], "external": [], "internal_text_refs": []}
 
 
 def test_review_includes_every_folder_untriaged(tmp_path, monkeypatch):

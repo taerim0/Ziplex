@@ -171,22 +171,30 @@ def get_relationships(aif_path: str) -> dict:
     return aif.get("relationships", {})
 
 
-def get_dependents(aif_path: str, file: str) -> list[str]:
+def get_dependents(aif_path: str, file: str, include_text_refs: bool = True) -> list[str]:
     """Files that directly depend on `file` -- who would need a second look
     if `file` changes. `file` is a key from list_files()'s result.
+
+    include_text_refs=False excludes a dependent whose only link to `file`
+    is a filename mentioned in prose (a README, a config value) rather than
+    an actual import or a structural reference (e.g. a Godot scene's
+    ext_resource path) -- see file/relationship.py's `get_dependents()` and
+    text_references.py for what counts as which.
     """
     aif = _load_json(aif_path)
-    return _get_dependents(aif.get("relationships", {}), file)
+    return _get_dependents(aif.get("relationships", {}), file, include_text_refs=include_text_refs)
 
 
-def get_blast_radius(aif_path: str, file: str) -> list[str]:
+def get_blast_radius(aif_path: str, file: str, include_text_refs: bool = True) -> list[str]:
     """Every file affected by a change to `file`, directly or transitively --
     the full impact set, not just its immediate dependents. Built on the
     same human-corrected dependency graph as get_dependents(), which is why
     this is worth calling instead of guessing from imports yourself.
+
+    include_text_refs is get_dependents()'s own param -- see its docstring.
     """
     aif = _load_json(aif_path)
-    return _get_blast_radius(aif.get("relationships", {}), file)
+    return _get_blast_radius(aif.get("relationships", {}), file, include_text_refs=include_text_refs)
 
 
 def get_detail(aif_path: str, file: str, start_line: int | None = None, end_line: int | None = None) -> str:

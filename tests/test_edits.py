@@ -99,7 +99,7 @@ def test_finalize_aif_builds_relationships_and_prunes_working_fields():
     aif = _make_aif()
     finalize_aif(aif)
 
-    assert aif["relationships"]["a.py"] == {"internal": ["b.py"], "external": []}
+    assert aif["relationships"]["a.py"] == {"internal": ["b.py"], "external": [], "internal_text_refs": []}
 
     for data in aif["files"].values():
         assert "signatures" not in data
@@ -108,3 +108,26 @@ def test_finalize_aif_builds_relationships_and_prunes_working_fields():
         # summary/compressed are what actually ships -- must survive
         assert "summary" in data
         assert "compressed" in data
+
+
+def test_finalize_aif_tags_a_text_reference_edge_and_prunes_text_dependencies():
+    aif = _make_aif()
+    # README.md's "b.py" mention got merged into dependencies the same way
+    # packager.py does it, plus recorded separately as text_dependencies --
+    # see packager.py's own merge-step comment and file/relationship.py's
+    # build_tree() docstring.
+    aif["files"]["readme.md"] = {
+        "summary": "docs",
+        "signatures": [],
+        "dependencies": ["b.py"],
+        "text_dependencies": ["b.py"],
+        "api": [],
+        "compressed": "See b.py.",
+    }
+    finalize_aif(aif)
+
+    assert aif["relationships"]["readme.md"]["internal_text_refs"] == ["b.py"]
+    # a.py's b.py edge is a real import, not a text reference -- must not
+    # be tagged just because some *other* file's edge to the same target is.
+    assert aif["relationships"]["a.py"]["internal_text_refs"] == []
+    assert "text_dependencies" not in aif["files"]["readme.md"]
