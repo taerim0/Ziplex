@@ -17,10 +17,11 @@ def extract_signatures(file_path: str) -> list[str]:
     implicit_names = config.implicit_names if config else {}
     name_prefixes = config.name_prefixes if config else {}
     zero_arg_types = config.zero_arg_types if config else frozenset()
+    field_handler = config.field_handler if config else None
 
     tree = parser.parse(bytes(code, "utf8"))
     results = []
-    _traverse_signatures(tree.root_node, results, node_types, implicit_names, name_prefixes, zero_arg_types, None)
+    _traverse_signatures(tree.root_node, results, node_types, implicit_names, name_prefixes, zero_arg_types, None, field_handler)
     return results
 
 
@@ -131,7 +132,7 @@ def _unwrap_declarator(node):
     return node
 
 
-def _traverse_signatures(node, results: list, node_types: list, implicit_names: dict, name_prefixes: dict, zero_arg_types: frozenset, parent):
+def _traverse_signatures(node, results: list, node_types: list, implicit_names: dict, name_prefixes: dict, zero_arg_types: frozenset, parent, field_handler=None):
     if node.type in node_types:
         sig_node = _unwrap_declarator(node)
         name   = _resolve_signature_name(sig_node, parent, implicit_names)
@@ -188,8 +189,28 @@ def _traverse_signatures(node, results: list, node_types: list, implicit_names: 
             results.append(sig)
         return
 
+    if field_handler is not None:
+        # Checked in the same single pass as the function_types check
+        # above, not a second separate traversal -- this is what keeps a
+        # field-registration entry (Java's `RUBY = register(...)`, see
+        # languages.py's FieldHandler comment) in actual source order
+        # relative to real method signatures, rather than always trailing
+        # every one of them regardless of where it appears in the file.
+        # That ordering matters beyond tidiness: corrector.py's review
+        # screen and summarizer.py's structural-summary fallback both cap
+        # `signatures` at a fixed count, so a field-registration entry
+        # appended unconditionally at the very end could be silently cut
+        # off by that cap even though it's often a file's actual primary
+        # behavior -- a real regression caught by code review before this
+        # shipped. field_handler has no "stop recursing" return value the
+        # way dependency_handler/api_handler do (see FieldHandler's own
+        # comment) -- a field's initializer can itself legally contain a
+        # nested field_declaration (an anonymous class body), so this must
+        # always keep recursing into a matched node's own children too.
+        field_handler(node, results)
+
     for child in node.children:
-        _traverse_signatures(child, results, node_types, implicit_names, name_prefixes, zero_arg_types, node)
+        _traverse_signatures(child, results, node_types, implicit_names, name_prefixes, zero_arg_types, node, field_handler)
 
 
 def _traverse_dependencies(node, results: list, handler):
