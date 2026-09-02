@@ -13,6 +13,88 @@ def test_extract_signatures_from_python_file(tmp_path):
     assert "sub(a, b)" in sigs
 
 
+def test_extract_signatures_captures_a_call_initialized_python_module_constant(tmp_path):
+    # Python's own equivalent of Java's registry-field pattern -- a
+    # module-level (or class-level) constant defined via a factory call,
+    # invisible to extract_signatures()'s function_definition-only
+    # traversal on its own.
+    file_path = tmp_path / "items.py"
+    file_path.write_text(
+        'RUBY_TOOL = register("ruby_tool", ToolItem())\n'
+        "count = 0\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert 'RUBY_TOOL = register("ruby_tool", ToolItem())' in sigs
+    assert not any("count" in s for s in sigs)  # a plain literal isn't a registration
+
+
+def test_extract_signatures_captures_a_call_initialized_python_class_attribute(tmp_path):
+    file_path = tmp_path / "mod_items.py"
+    file_path.write_text(
+        'class ModItems:\n    EMERALD = register("emerald")\n',
+        encoding="utf-8",
+    )
+
+    assert 'EMERALD = register("emerald")' in extract_signatures(str(file_path))
+
+
+def test_extract_signatures_ignores_a_python_local_variable_inside_a_function(tmp_path):
+    # A local call-initialized assignment inside a function must not be
+    # mistaken for a module/class-level constant -- Python's grammar has
+    # no distinct "local variable declaration" node the way Java does, so
+    # this relies entirely on _traverse_signatures() already stopping at
+    # the enclosing function_definition's own boundary.
+    file_path = tmp_path / "mod.py"
+    file_path.write_text(
+        "def compute():\n"
+        "    local_var = register(\"not_a_real_registration\")\n"
+        "    return local_var\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert sigs == ["compute()"]
+
+
+def test_extract_signatures_ignores_python_tuple_unpacking(tmp_path):
+    # `A, B = f(), g()` -- left is a pattern_list, not a plain identifier;
+    # a different, noisier shape deliberately left unhandled.
+    file_path = tmp_path / "mod.py"
+    file_path.write_text('A, B = register("a"), register("b")\n', encoding="utf-8")
+
+    assert extract_signatures(str(file_path)) == []
+
+
+def test_extract_signatures_captures_every_name_in_a_chained_python_assignment(tmp_path):
+    # Regression test for a real bug caught by code review: a chained
+    # assignment (`A = B = register(...)`) parses as nested assignment
+    # nodes, each one's own "right" being the next link in the chain
+    # rather than the call itself -- the outer target used to be silently
+    # dropped since only the innermost assignment's "right" was ever a
+    # real `call` node. Every name in the chain must get its own entry.
+    file_path = tmp_path / "mod.py"
+    file_path.write_text('RUBY_TOOL = EMERALD_TOOL = register("ruby_tool")\n', encoding="utf-8")
+
+    sigs = extract_signatures(str(file_path))
+    assert 'RUBY_TOOL = register("ruby_tool")' in sigs
+    assert 'EMERALD_TOOL = register("ruby_tool")' in sigs
+
+
+def test_extract_signatures_keeps_python_module_constants_in_source_order(tmp_path):
+    file_path = tmp_path / "mixed.py"
+    file_path.write_text(
+        "def first():\n    pass\n\n"
+        'RUBY_TOOL = register("ruby_tool")\n\n'
+        "def second():\n    pass\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert sigs == ["first()", 'RUBY_TOOL = register("ruby_tool")', "second()"]
+
+
 def test_extract_signatures_from_java_file(tmp_path):
     # Java's method_declaration names its return-type field "type" -- the
     # same field name C++'s function_definition happens to use too. A
@@ -882,6 +964,113 @@ def test_extract_signatures_from_typescript_arrow_functions(tmp_path):
     assert "greet()" in sigs             # pair's "key" field
     assert "method()" in sigs            # public_field_definition's "name" field
     assert "bar(a)" in sigs              # function_expression's own "name" field
+
+
+def test_extract_signatures_captures_a_call_initialized_ts_module_constant(tmp_path):
+    # TS/JS's own equivalent of Java's registry-field pattern -- a
+    # module-level `const` defined via a factory call, invisible to
+    # extract_signatures()'s function-only traversal on its own. Must not
+    # be confused with the arrow-function case above: a variable_declarator
+    # whose value is a call_expression (not an arrow_function/
+    # function_expression) is this handler's case, not that one.
+    file_path = tmp_path / "mod.ts"
+    file_path.write_text(
+        'const RUBY_TOOL = register("ruby_tool", new ToolItem());\n'
+        "const count = 0;\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert 'RUBY_TOOL = register("ruby_tool", new ToolItem())' in sigs
+    assert not any("count" in s for s in sigs)  # a plain literal isn't a registration
+
+
+def test_extract_signatures_captures_a_call_initialized_ts_class_field(tmp_path):
+    file_path = tmp_path / "mod_items.ts"
+    file_path.write_text(
+        'class ModItems {\n    static EMERALD = register("emerald");\n}\n',
+        encoding="utf-8",
+    )
+
+    assert 'EMERALD = register("emerald")' in extract_signatures(str(file_path))
+
+
+def test_extract_signatures_captures_a_call_initialized_js_class_field(tmp_path):
+    # .js is parsed via the same TSX-family grammar as .ts -- confirms the
+    # class-field shape (public_field_definition) is identical there too.
+    file_path = tmp_path / "mod_items.js"
+    file_path.write_text(
+        'class ModItems {\n    static EMERALD = register("emerald");\n}\n',
+        encoding="utf-8",
+    )
+
+    assert 'EMERALD = register("emerald")' in extract_signatures(str(file_path))
+
+
+def test_extract_signatures_ignores_a_ts_local_variable_inside_a_function(tmp_path):
+    # A local call-initialized const inside a function/method must not be
+    # mistaken for a module/class-level constant -- relies entirely on
+    # _traverse_signatures() already stopping at the enclosing
+    # function_declaration/method_definition/arrow_function's own boundary.
+    file_path = tmp_path / "mod.ts"
+    file_path.write_text(
+        "function compute() {\n"
+        '    const localVar = register("not_a_real_registration");\n'
+        "    return localVar;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert sigs == ["compute()"]
+
+
+def test_extract_signatures_ignores_ts_destructuring(tmp_path):
+    # `const { a, b } = getStuff();` -- name is an object_pattern, not a
+    # plain identifier; a different, noisier shape deliberately left
+    # unhandled.
+    file_path = tmp_path / "mod.ts"
+    file_path.write_text("const { a, b } = getStuff();\n", encoding="utf-8")
+
+    assert extract_signatures(str(file_path)) == []
+
+
+def test_extract_signatures_captures_a_private_ts_class_field_registration(tmp_path):
+    # Regression test for a real bug caught by code review: a `#foo`-style
+    # class-private field's own "name" child is a private_property_
+    # identifier node, which the handler's accepted-name-type check didn't
+    # originally include -- an increasingly common way to hold a module's
+    # internal registry, silently missed entirely (no signature, no error).
+    file_path = tmp_path / "mod.ts"
+    file_path.write_text(
+        'class Foo {\n    static #ITEMS = register("emerald");\n}\n',
+        encoding="utf-8",
+    )
+
+    assert '#ITEMS = register("emerald")' in extract_signatures(str(file_path))
+
+
+def test_extract_signatures_excludes_ts_object_creation_from_field_registration(tmp_path):
+    # `new Foo()` parses as a distinct new_expression in this grammar, not
+    # a call_expression -- excluded for free, same intent as Java's
+    # explicit object_creation_expression exclusion.
+    file_path = tmp_path / "mod.ts"
+    file_path.write_text("const holder = new Map();\n", encoding="utf-8")
+
+    assert extract_signatures(str(file_path)) == []
+
+
+def test_extract_signatures_keeps_ts_module_constants_in_source_order(tmp_path):
+    file_path = tmp_path / "mixed.ts"
+    file_path.write_text(
+        "function first() {}\n"
+        'const RUBY_TOOL = register("ruby_tool");\n'
+        "function second() {}\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert sigs == ["first()", 'RUBY_TOOL = register("ruby_tool")', "second()"]
 
 
 def test_extract_signatures_skips_bare_single_param_arrow(tmp_path):
