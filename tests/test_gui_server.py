@@ -728,7 +728,7 @@ def test_api_freshness(client, tmp_path):
 
     res = client.get("/api/freshness", query_string={"project_path": str(project), "aif_path": str(aif_path)})
     assert res.get_json() == {
-        "is_stale": False, "changed": [], "added": [], "removed": [], "unchanged": ["a.py"],
+        "is_stale": False, "changed": [], "added": [], "removed": [], "unchanged_count": 1,
     }
 
 

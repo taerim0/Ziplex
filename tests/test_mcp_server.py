@@ -228,12 +228,12 @@ def test_check_freshness_via_call_tool(tmp_path):
 
     fresh_result = _call("check_freshness", {"project_path": str(project), "aif_path": str(aif_path)})
     assert _json_result(fresh_result) == {
-        "is_stale": False, "changed": [], "added": [], "removed": [], "unchanged": ["a.py"],
+        "is_stale": False, "changed": [], "added": [], "removed": [], "unchanged_count": 1,
     }
 
     (project / "a.py").write_text("x = 2\n", encoding="utf-8")  # edit after the cache was taken
 
     stale_result = _call("check_freshness", {"project_path": str(project), "aif_path": str(aif_path)})
     assert _json_result(stale_result) == {
-        "is_stale": True, "changed": ["a.py"], "added": [], "removed": [], "unchanged": [],
+        "is_stale": True, "changed": ["a.py"], "added": [], "removed": [], "unchanged_count": 0,
     }

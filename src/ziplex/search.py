@@ -37,11 +37,22 @@ def search_files(
     pattern: str,
     context_lines: int = 0,
     ignore_case: bool = False,
+    max_results: int | None = None,
 ) -> list[SearchMatch]:
     """Searches pattern (a regex) across file_paths, in file order then line
     order. file_paths is expected to already be a safe/selected set (e.g.
     from collect_files() + scan_files()) -- this doesn't filter or scan
     anything itself, and silently skips any file read_text() can't decode.
+
+    max_results stops the scan the moment that many matches have been
+    collected, rather than finding every match and truncating afterward --
+    a broad/common pattern against a large project can otherwise mean
+    reading every remaining file for no benefit. None (the default, and
+    what the `search`/`tree`-style CLI callers use) means no cap, since a
+    human reading terminal output can already page/redirect/scroll it
+    themselves; query_service.search_project() (the MCP/GUI-facing
+    wrapper, where an uncapped result was measured to reach several
+    thousand tokens for a single common word) is what actually needs one.
 
     Raises ValueError if pattern isn't a valid regex.
     """
@@ -53,12 +64,16 @@ def search_files(
     matches: list[SearchMatch] = []
 
     for file_path in file_paths:
+        if max_results is not None and len(matches) >= max_results:
+            break
         content = read_text(file_path)
         if content is None:
             continue
 
         lines = content.splitlines()
         for i, line in enumerate(lines):
+            if max_results is not None and len(matches) >= max_results:
+                break
             if not regex.search(line):
                 continue
             start = max(0, i - context_lines)

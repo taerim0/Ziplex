@@ -52,6 +52,25 @@ def test_search_skips_binary_files(tmp_path):
     assert [m.file for m in matches] == ["a.py"]
 
 
+def test_search_max_results_caps_matches_across_files(tmp_path):
+    _write(tmp_path / "a.py", "MATCH\nMATCH\nMATCH\n")
+    _write(tmp_path / "b.py", "MATCH\nMATCH\nMATCH\n")
+
+    matches = search_files(
+        [str(tmp_path / "a.py"), str(tmp_path / "b.py")], str(tmp_path), "MATCH", max_results=4
+    )
+
+    assert len(matches) == 4
+
+
+def test_search_max_results_none_is_unlimited(tmp_path):
+    _write(tmp_path / "a.py", "MATCH\n" * 10)
+
+    matches = search_files([str(tmp_path / "a.py")], str(tmp_path), "MATCH")
+
+    assert len(matches) == 10
+
+
 def test_search_invalid_regex_raises_value_error(tmp_path):
     _write(tmp_path / "a.py", "x\n")
     with pytest.raises(ValueError):
