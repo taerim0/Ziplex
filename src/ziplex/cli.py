@@ -10,6 +10,7 @@ from .file.scanner import scan_files
 from .file.media import classify_media_file, media_summary
 from .file.textutil import relative_key as _rel_key
 from .text_references import find_text_references_for_file
+from .go_packages import read_go_module_path, build_go_package_index, expand_go_dependencies
 from .tokenizer import analyze_tokens, analyze_tokens_with_compression
 from .file.selector import select_files, review_dangerous_files
 from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES
@@ -241,6 +242,16 @@ def main():
         # batching/retry/placeholder handling there (see AGENTS.md's
         # `summarizer.py` bullet) now applies here too, instead of silently
         # missing this command the way a hand-rolled duplicate would.
+        # Go's import paths name a *package* (a directory), not a file --
+        # see go_packages.py's own docstring. Resolved once here, same as
+        # pack()/the `tree` subcommand -- every caller of
+        # extract_dependencies() on a .go file must run this same step, or
+        # this command silently disagrees with the other two on the same
+        # feature's output.
+        all_names = [_rel_key(fp, args.path) for fp in safe_files]
+        go_module_path = read_go_module_path(args.path)
+        go_package_index = build_go_package_index(all_names) if go_module_path else {}
+
         pending = {}
         signatures_map = {}
         media_summaries = {}
@@ -259,6 +270,8 @@ def main():
 
             sigs = extract_signatures(file)
             deps = extract_dependencies(file)
+            if go_module_path and file.endswith(".go"):
+                deps = expand_go_dependencies(deps, _rel_key(file, args.path), go_module_path, go_package_index)
 
             if not sigs and not deps:
                 continue
@@ -385,16 +398,29 @@ def main():
         # which only resolve correctly against a stem_map built from those
         # same keys; see resolve_dependency()'s exact-key-match branch).
         all_names = [_rel_key(fp, args.path) for fp in safe_files]
+
+        # Go's import paths name a *package* (a directory), not a file --
+        # see go_packages.py's own docstring. Resolved once here, same as
+        # packager.py's pack() -- both must call expand_go_dependencies()
+        # on every .go file's raw imports, or the two commands silently
+        # disagree on the same feature's output (exactly what happened to
+        # the text-reference merge below before it was fixed).
+        go_module_path = read_go_module_path(args.path)
+        go_package_index = build_go_package_index(all_names) if go_module_path else {}
+
         files_data = {}
         for file_path in safe_files:
             name = _rel_key(file_path, args.path)
+            deps = extract_dependencies(file_path)
+            if go_module_path and file_path.endswith(".go"):
+                deps = expand_go_dependencies(deps, name, go_module_path, go_package_index)
             text_refs = find_text_references_for_file(file_path, name, all_names)
             # text_dependencies recorded separately, same as packager.py's
             # own merge step -- this is what lets build_tree() tag a text
             # reference apart from a real import as internal_text_refs
             # instead of always coming back empty for this command.
             files_data[name] = {
-                "dependencies": extract_dependencies(file_path) + text_refs,
+                "dependencies": deps + text_refs,
                 "text_dependencies": text_refs,
             }
 

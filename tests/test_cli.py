@@ -179,6 +179,65 @@ def test_tree_command_tags_a_text_reference_edge(tmp_path, monkeypatch, capsys):
     assert "텍스트 언급" in out  # file/relationship.py's print_tree() marker
 
 
+def test_tree_command_resolves_an_internal_go_package_import(tmp_path, monkeypatch, capsys):
+    # Same "tree has its own copy of the merge loop" risk as the text-
+    # reference regression above, this time for go_packages.py -- a bare
+    # extract_dependencies() call would leave main.go's import unresolved
+    # (a package path, not a file), so its target must never be an "external"
+    # leaf here.
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "go.mod").write_text("module example.com/myproject\n\ngo 1.21\n", encoding="utf-8")
+    (project / "main.go").write_text(
+        'package main\n\nimport "example.com/myproject/internal/utils"\n\nfunc main() {}\n', encoding="utf-8"
+    )
+    (project / "internal" / "utils").mkdir(parents=True)
+    (project / "internal" / "utils" / "format.go").write_text(
+        "package utils\n\nfunc Format() string { return \"\" }\n", encoding="utf-8"
+    )
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "tree", str(project)])
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "internal/utils/format.go" in out
+    assert "example.com/myproject/internal/utils" not in out  # resolved, not left as an external leaf
+
+
+def test_analyze_command_resolves_an_internal_go_package_import(tmp_path, monkeypatch):
+    # Regression test for a real bug caught by code review: `analyze` has
+    # its own third copy of "extract_dependencies() on a .go file, then
+    # feed it into a summary prompt" -- missed on this feature's first
+    # pass, which only wired go_packages.py into pack()/tree.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "go.mod").write_text("module example.com/myproject\n\ngo 1.21\n", encoding="utf-8")
+    (project / "main.go").write_text(
+        'package main\n\nimport "example.com/myproject/internal/utils"\n\nfunc main() {}\n', encoding="utf-8"
+    )
+    (project / "internal" / "utils").mkdir(parents=True)
+    (project / "internal" / "utils" / "format.go").write_text(
+        "package utils\n\nfunc Format() string { return \"\" }\n", encoding="utf-8"
+    )
+
+    captured = {}
+    real_generate_summaries = cli.generate_summaries
+
+    def _capturing(pending, root, lang="en"):
+        captured.update(pending)
+        return real_generate_summaries(pending, root, lang=lang)
+
+    monkeypatch.setattr(cli, "generate_summaries", _capturing)
+    monkeypatch.setattr(sys, "argv", ["cli.py", "analyze", str(project)])
+    cli.main()
+
+    main_go = next(data for file, data in captured.items() if file.endswith("main.go"))
+    assert "internal/utils/format.go" in main_go["dependencies"]
+    assert "example.com/myproject/internal/utils" not in main_go["dependencies"]
+
+
 def test_analyze_command_delegates_to_summarizer_and_shares_its_failure_placeholder(tmp_path, monkeypatch, capsys):
     # analyze used to call llm.analyze_file_summary() directly in its own
     # bespoke per-file loop -- no batching, no shared retry-once-then-

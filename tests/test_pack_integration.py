@@ -579,6 +579,34 @@ def test_pack_captures_a_text_file_reference_to_a_code_file(tmp_path, monkeypatc
     assert "text_dependencies" not in final["files"]["README.md"]
 
 
+def test_pack_resolves_an_internal_go_package_import_to_its_concrete_files(tmp_path, monkeypatch):
+    # A Go import path names a *package* (a directory), not a single file --
+    # go_packages.py closes the gap left by resolve_dependency()'s pure
+    # file-stem matching (see its own docstring and _go_dependency_handler's).
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "go.mod", "module example.com/myproject\n\ngo 1.21\n")
+    _write(project / "main.go", 'package main\n\nimport "example.com/myproject/internal/utils"\n\nfunc main() {}\n')
+    _write(project / "internal" / "utils" / "format.go", "package utils\n\nfunc Format() string { return \"\" }\n")
+    _write(project / "internal" / "utils" / "parse.go", "package utils\n\nfunc Parse() int { return 0 }\n")
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+
+    deps = set(aif["files"]["main.go"]["dependencies"])
+    assert "internal/utils/format.go" in deps
+    assert "internal/utils/parse.go" in deps
+    assert "example.com/myproject/internal/utils" not in deps  # replaced, not just appended to
+
+    from ziplex.edits import finalize_aif
+    final = finalize_aif(aif)
+    internal = set(final["relationships"]["main.go"]["internal"])
+    assert {"internal/utils/format.go", "internal/utils/parse.go"} <= internal
+    # a real package import, not a text_references.py prose mention
+    assert final["relationships"]["main.go"]["internal_text_refs"] == []
+
+
 def test_pack_text_reference_does_not_hijack_the_summary_prompt(tmp_path, monkeypatch):
     # _request_summary()/analyze_batch_summaries() both switch a file's
     # summary prompt from content-based to signature/dependency-based the

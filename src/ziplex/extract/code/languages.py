@@ -359,20 +359,23 @@ def _go_dependency_handler(node: Node, results: list) -> bool:
     "name" field is irrelevant to dependency resolution, which only cares
     what's actually being imported.
 
-    Known, accepted limitation: unlike every other language here, a Go
-    import path (`"myproject/internal/utils"`) names a *package*
-    (typically a whole directory of files sharing one namespace), not a
-    single file -- Ziplex's dependency graph is file-to-file throughout
-    (resolve_dependency() matches against file stems). An internal
-    multi-package import will therefore usually resolve as "external"
-    rather than being matched to a specific file, the same way it would
-    for any language if resolve_dependency() only ever matched files, not
-    directories. Not fixed here: doing so properly would need directory-
-    level resolution (and reading go.mod for the module's own import
-    prefix), a materially bigger change than a dependency_handler can
-    make on its own. Many real Go projects are single-package anyway
-    (no internal imports to resolve in the first place), which tempers
-    how often this actually bites in practice.
+    Unlike every other language here, a Go import path
+    (`"myproject/internal/utils"`) names a *package* (typically a whole
+    directory of files sharing one namespace), not a single file -- this
+    handler still only ever returns that raw path string as-is, same as
+    any other language's import. What used to be a permanent, accepted
+    limitation (an internal multi-package import always resolving as
+    "external", since resolve_dependency() only ever matches file stems,
+    never directories) is now closed one layer up, not here: `go_packages.
+    py`'s `expand_go_dependencies()` -- called by every real caller of
+    extract_dependencies() on a .go file (packager.py's per-file loop,
+    cli.py's `tree` subcommand) -- reads go.mod's own module path and
+    expands a package import into the concrete files that make it up
+    before resolve_dependency() ever sees it. Kept as a separate,
+    project-wide post-processing step rather than folded into this
+    per-file, per-node handler because it needs information this handler
+    structurally can't have: the whole project's collected .go file list
+    and go.mod's module path, neither available from a single AST node.
     """
     if node.type != "import_spec":
         return False
