@@ -181,21 +181,24 @@ Want to smoke-test `pack` against a real project without waiting on Gemini? `LLM
 Query an already-packed project directly from Claude Code, Cursor, or any other MCP client — no copy-pasting `aif.json` into a prompt.
 
 ```bash
-ziplex-mcp                              # run directly (stdio transport)
-claude mcp add ziplex -- ziplex-mcp     # register with Claude Code
+ziplex-mcp                                                     # run directly (stdio transport)
+ziplex-mcp --aif result/Ziplex.json --project .                # bake in defaults so calls can omit them
+claude mcp add ziplex -- ziplex-mcp --aif result/Ziplex.json --project .   # register with Claude Code
 ```
+
+`--aif`/`--project` set this server's *default* `aif_path`/`project_path` — every tool below still accepts either explicitly (which always wins), but a session that only ever talks to one packed project doesn't have to repeat the same path on every single call. Omitting both flags is fine too; every tool then just requires the path per call, as before.
 
 | Tool | What it does |
 |---|---|
-| `get_overview(aif_path, project_path?)` | Project guide, coding rules, token stats — call this first |
-| `list_files(aif_path, project_path?, folder?, confidence_below?)` | Every file mapped to its summary + confidence score — optionally scoped to one folder and/or filtered to a confidence cutoff |
-| `get_folders(aif_path)` | Every folder mapped to a one-sentence summary of its role |
-| `get_relationships(aif_path, files?)` | The whole dependency graph at once — every file's internal/external edges — or just the given files' entries |
-| `get_dependents(aif_path, file)` | Files that directly depend on `file` |
-| `get_blast_radius(aif_path, file)` | Every file transitively affected by a change to `file` |
-| `get_detail(aif_path, file, start_line?, end_line?)` | A file's compressed source, in full or by line range |
-| `check_freshness(project_path, aif_path)` | Hash-check the pack against the files on disk — no LLM calls |
-| `search_project(project_path, pattern, ...)` | Regex search across the project's original files |
+| `get_overview(aif_path?, project_path?)` | Project guide, coding rules, token stats — call this first |
+| `list_files(aif_path?, project_path?, folder?, confidence_below?)` | Every file mapped to its summary + confidence score — optionally scoped to one folder and/or filtered to a confidence cutoff |
+| `get_folders(aif_path?)` | Every folder mapped to a one-sentence summary of its role |
+| `get_relationships(aif_path?, files?)` | The whole dependency graph at once — every file's internal/external edges — or just the given files' entries |
+| `get_dependents(aif_path?, file)` | Files that directly depend on `file` |
+| `get_blast_radius(aif_path?, file)` | Every file transitively affected by a change to `file` |
+| `get_detail(aif_path?, file, start_line?, end_line?)` | A file's compressed source, in full or by line range |
+| `check_freshness(project_path?, aif_path?)` | Hash-check the pack against the files on disk — no LLM calls |
+| `search_project(project_path?, pattern, ...)` | Regex search across the project's original files |
 
 Read-only and deliberately so: every tool serves an `aif.json`/`detail.json` a human already reviewed via `correct_aif()` — none of them re-pack or re-correct a project on their own, since that would skip the human-in-the-loop step that's the point of Ziplex. `get_dependents`/`get_blast_radius` run on the same human-corrected `relationships` graph `pack` builds — not a fresh, uncorrected guess.
 

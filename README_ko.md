@@ -180,21 +180,24 @@ pytest
 Claude Code, Cursor 등 MCP 클라이언트에서 이미 패킹된 프로젝트를 바로 질의할 수 있습니다 — `aif.json`을 프롬프트에 복사-붙여넣기할 필요 없이요.
 
 ```bash
-ziplex-mcp                              # 직접 실행 (stdio 트랜스포트)
-claude mcp add ziplex -- ziplex-mcp     # Claude Code에 등록
+ziplex-mcp                                                     # 직접 실행 (stdio 트랜스포트)
+ziplex-mcp --aif result/Ziplex.json --project .                # 기본값을 지정해서 호출마다 안 넘겨도 되게
+claude mcp add ziplex -- ziplex-mcp --aif result/Ziplex.json --project .   # Claude Code에 등록
 ```
+
+`--aif`/`--project`는 이 서버의 *기본* `aif_path`/`project_path`를 지정합니다 — 아래 모든 툴은 여전히 명시적으로 넘기는 값을 우선하지만, 세션 내내 하나의 패킹된 프로젝트만 다룬다면 매 호출마다 같은 경로를 반복 안 넘겨도 됩니다. 두 플래그 다 생략해도 무방합니다 — 그러면 예전처럼 매 호출마다 경로가 필요할 뿐입니다.
 
 | 툴 | 하는 일 |
 |---|---|
-| `get_overview(aif_path, project_path?)` | 프로젝트 가이드, 코딩 룰, 토큰 통계 — 가장 먼저 호출하면 됩니다 |
-| `list_files(aif_path, project_path?, folder?, confidence_below?)` | 모든 파일을 요약 + 신뢰도 점수와 함께 매핑 — 폴더 하나로 좁히거나 신뢰도 기준치로 필터링 가능 |
-| `get_folders(aif_path)` | 모든 폴더를 그 역할을 설명하는 한 문장과 함께 매핑 |
-| `get_relationships(aif_path, files?)` | 전체 의존성 그래프를 한 번에 — 모든 파일의 내부/외부 엣지 — 또는 지정한 파일들만 |
-| `get_dependents(aif_path, file)` | `file`을 직접 의존하는 파일들 |
-| `get_blast_radius(aif_path, file)` | `file`이 바뀌면 직간접적으로 영향받는 모든 파일 |
-| `get_detail(aif_path, file, start_line?, end_line?)` | 파일의 압축 소스, 전체 또는 줄 범위로 |
-| `check_freshness(project_path, aif_path)` | 패킹 결과가 디스크의 실제 파일과 맞는지 해시로 확인 — LLM 호출 없음 |
-| `search_project(project_path, pattern, ...)` | 프로젝트 원본 파일 전체에서 정규식 검색 |
+| `get_overview(aif_path?, project_path?)` | 프로젝트 가이드, 코딩 룰, 토큰 통계 — 가장 먼저 호출하면 됩니다 |
+| `list_files(aif_path?, project_path?, folder?, confidence_below?)` | 모든 파일을 요약 + 신뢰도 점수와 함께 매핑 — 폴더 하나로 좁히거나 신뢰도 기준치로 필터링 가능 |
+| `get_folders(aif_path?)` | 모든 폴더를 그 역할을 설명하는 한 문장과 함께 매핑 |
+| `get_relationships(aif_path?, files?)` | 전체 의존성 그래프를 한 번에 — 모든 파일의 내부/외부 엣지 — 또는 지정한 파일들만 |
+| `get_dependents(aif_path?, file)` | `file`을 직접 의존하는 파일들 |
+| `get_blast_radius(aif_path?, file)` | `file`이 바뀌면 직간접적으로 영향받는 모든 파일 |
+| `get_detail(aif_path?, file, start_line?, end_line?)` | 파일의 압축 소스, 전체 또는 줄 범위로 |
+| `check_freshness(project_path?, aif_path?)` | 패킹 결과가 디스크의 실제 파일과 맞는지 해시로 확인 — LLM 호출 없음 |
+| `search_project(project_path?, pattern, ...)` | 프로젝트 원본 파일 전체에서 정규식 검색 |
 
 의도적으로 읽기 전용입니다 — 모든 툴은 사람이 `correct_aif()`로 이미 검토한 `aif.json`/`detail.json`을 그대로 서빙할 뿐, 어떤 툴도 프로젝트를 알아서 다시 패킹하거나 보정하지 않습니다. 그건 Ziplex의 핵심인 human-in-the-loop 단계를 건너뛰는 거니까요. `get_dependents`/`get_blast_radius`도 `pack`이 만드는 것과 같은, 사람이 보정한 `relationships` 그래프 위에서 동작합니다 — 방금 추출한 검토 안 된 그래프가 아니라요.
 

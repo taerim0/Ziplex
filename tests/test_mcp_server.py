@@ -261,6 +261,70 @@ def test_get_detail_missing_file_raises_tool_error(tmp_path):
         _call("get_detail", {"aif_path": aif_path, "file": "missing.py"})
 
 
+def test_get_overview_uses_the_server_default_aif_when_omitted(tmp_path, monkeypatch):
+    aif_path = _write_sample_aif(tmp_path)
+    monkeypatch.setitem(mcp_server._defaults, "aif", aif_path)
+
+    result = _call("get_overview", {})
+
+    assert result.is_error is False
+    assert _json_result(result)["project"]["name"] == "sample"
+
+
+def test_explicit_aif_path_overrides_the_server_default(tmp_path, monkeypatch):
+    default_aif = _write_sample_aif(tmp_path)
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+    other_aif = _write_sample_aif(other_dir)
+    monkeypatch.setitem(mcp_server._defaults, "aif", default_aif)
+
+    result = _call("get_overview", {"aif_path": other_aif})
+
+    assert result.is_error is False
+    assert _json_result(result)["project"]["name"] == "sample"
+    # Both fixtures happen to share a project name -- the real assertion is
+    # that the call didn't silently fall back to the default path; confirm
+    # by pointing the default somewhere that would raise if it were used.
+    monkeypatch.setitem(mcp_server._defaults, "aif", str(tmp_path / "does-not-exist.json"))
+    result2 = _call("get_overview", {"aif_path": other_aif})
+    assert result2.is_error is False
+
+
+def test_get_overview_raises_a_clear_error_when_aif_path_is_missing_and_no_default_is_set():
+    # _defaults starts as {"aif": None, "project": None} for any test that
+    # never calls main() or sets one via monkeypatch.
+    assert mcp_server._defaults["aif"] is None
+    with pytest.raises(ToolError):
+        _call("get_overview", {})
+
+
+def test_search_project_uses_the_server_default_project_when_omitted(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "a.py").write_text("TARGET_TOKEN = 1\n", encoding="utf-8")
+    monkeypatch.setitem(mcp_server._defaults, "project", str(project))
+
+    result = _call("search_project", {"pattern": "TARGET_TOKEN"})
+
+    assert result.is_error is False
+    data = _json_result(result)
+    assert [m["file"] for m in data["matches"]] == ["a.py"]
+
+
+def test_main_sets_defaults_from_cli_args(monkeypatch):
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
+    monkeypatch.setattr(
+        "sys.argv", ["ziplex-mcp", "--aif", "some/out.json", "--project", "some/project"]
+    )
+    monkeypatch.setitem(mcp_server._defaults, "aif", None)
+    monkeypatch.setitem(mcp_server._defaults, "project", None)
+
+    mcp_server.main()
+
+    assert mcp_server._defaults["aif"] == "some/out.json"
+    assert mcp_server._defaults["project"] == "some/project"
+
+
 def test_check_freshness_via_call_tool(tmp_path):
     project = tmp_path / "project"
     (project).mkdir()
