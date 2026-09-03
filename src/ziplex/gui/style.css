@@ -60,6 +60,12 @@ body {
    as the app's wordmark rather than a fourth nav item that happens to say
    "Ziplex". */
 .topbar-brand { font-weight: 600; font-size: 1em; margin-right: 4px; }
+/* Set once from GET /api/config's "version" field (router.js's bootstrap) --
+   never a nav link, so it deliberately sits outside every .topbar a rule
+   above (no hover/active pill, no padding fighting the brand's own
+   margin-right). Muted so it reads as a build-number footnote next to the
+   wordmark, not a fifth topbar item. */
+.topbar-version { font-size: 0.75em; opacity: 0.5; margin-right: 12px; }
 .topbar a {
   padding: 6px 10px;
   border-radius: 5px;

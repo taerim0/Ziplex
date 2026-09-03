@@ -23,6 +23,7 @@ from .search import search_files, read_detail_range
 from .freshness import check_freshness_scoped
 from .skill_export import export_skill
 from .config import init_config, CONFIG_FILENAME, collection_kwargs as _collection_kwargs, collect_and_scan as _collect_and_scan
+from . import __version__
 
 
 def _split_patterns(value: str | None) -> list[str] | None:
@@ -77,6 +78,8 @@ def main():
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
     parser = argparse.ArgumentParser(description="Ziplex")
+    parser.add_argument("--version", action="version", version=f"ziplex {__version__}",
+                         help="버전 정보 출력")
     sub = parser.add_subparsers(dest="command")
 
     c = sub.add_parser("compress", help="코드 압축")

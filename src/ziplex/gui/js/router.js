@@ -6,7 +6,7 @@
 // by listing <script> tags in the correct sequence.
 // ---- router -----------------------------------------------------------
 
-import { getAif, setActiveNav, setActiveTopbar, stopStaleWatch } from "./app.js";
+import { api, getAif, setActiveNav, setActiveTopbar, stopStaleWatch } from "./app.js";
 import { applyStaticI18n } from "./i18n.js";
 import { renderPackJob, hasActiveGuard, confirmLeaveActivePackJob } from "./pack.js";
 import { renderHome, renderPackHome, renderCheck } from "./pages/landing.js";
@@ -150,4 +150,11 @@ window.addEventListener("hashchange", guardedRoute);
 window.addEventListener("DOMContentLoaded", () => {
   applyStaticI18n(); // index.html's own static topbar/sidebar labels (i18n.js) -- route() below never touches them
   route();
+  // Fire-and-forget: the topbar's version footnote (see style.css's
+  // .topbar-version) is a nice-to-have, not something any route depends on
+  // being ready before its own render -- a slow/failed /api/config call
+  // just leaves the span empty rather than blocking first paint.
+  api("/api/config").then(cfg => {
+    if (cfg.version) document.getElementById("app-version").textContent = `v${cfg.version}`;
+  }).catch(() => {});
 });

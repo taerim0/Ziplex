@@ -38,6 +38,7 @@ import argparse
 from mcp.server import MCPServer
 
 from . import query_service
+from . import __version__
 
 mcp = MCPServer("ziplex")
 
@@ -178,6 +179,7 @@ mcp.tool()(search_project)
 
 def main():
     parser = argparse.ArgumentParser(description="Ziplex MCP server")
+    parser.add_argument("--version", action="version", version=f"ziplex-mcp {__version__}")
     parser.add_argument(
         "--aif",
         default=None,

@@ -59,6 +59,7 @@ from . import pack_service
 from . import watcher
 from .. import query_service
 from .. import settings as app_settings
+from .. import __version__
 from ..file.relationship import CycleError
 from ..llm import LANGUAGE_NAMES
 
@@ -70,8 +71,12 @@ app = Flask(__name__, static_folder=".", static_url_path="")
 
 # Filled in from CLI args at startup (see main()); read by GET /api/config
 # so the frontend can prefill the landing page without a templating layer --
-# index.html/the js/ module tree stay plain static files this way.
-_default_config = {"aif_path": None, "project_path": None}
+# index.html/the js/ module tree stay plain static files this way. "version"
+# is the one entry never overwritten by main() -- it's the installed
+# package's own __version__, read once at import time and shown in the
+# topbar (see router.js's bootstrap) so a human looking at the GUI can tell
+# which build they're running without a separate `ziplex --version` call.
+_default_config = {"aif_path": None, "project_path": None, "version": __version__}
 
 
 # query_service's functions open aif_path/project_path straight off disk
@@ -602,6 +607,7 @@ def main():
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
     parser = argparse.ArgumentParser(description="Ziplex GUI")
+    parser.add_argument("--version", action="version", version=f"ziplex-gui {__version__}")
     parser.add_argument("--aif", default=None, help="시작 시 미리 채울 aif.json 경로")
     parser.add_argument("--project", default=None, help="시작 시 미리 채울 프로젝트 폴더 경로")
     parser.add_argument("--port", type=int, default=5321)

@@ -58,6 +58,16 @@ def test_check_max_tokens_returns_none_for_unknown_model():
     assert actual is None
 
 
+def test_version_flag_prints_version_and_exits_zero(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["cli.py", "--version"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 0
+    assert cli.__version__ in capsys.readouterr().out
+
+
 def test_pack_main_fails_loudly_when_max_tokens_requested_but_pack_never_completed(tmp_path, monkeypatch):
     # pack() returns {} on a checkpoint-and-exit (a repeated LLM failure) or
     # a cancelled/empty run -- the whole --max-tokens guard block used to

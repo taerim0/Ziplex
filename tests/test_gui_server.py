@@ -17,6 +17,7 @@ from unittest import mock
 
 import pytest
 
+import ziplex
 from ziplex import checkpoint
 from ziplex import freshness
 from ziplex.gui import gui_server
@@ -78,7 +79,12 @@ def test_config_reflects_startup_defaults(client):
     gui_server._default_config["aif_path"] = "some/path.json"
     gui_server._default_config["project_path"] = None
     res = client.get("/api/config")
-    assert res.get_json() == {"aif_path": "some/path.json", "project_path": None}
+    # "version" is a static, always-present field (see gui_server.py's
+    # _default_config comment) -- checked separately rather than pinned to
+    # a literal so this test doesn't need a version bump every release.
+    data = res.get_json()
+    assert data.pop("version") == ziplex.__version__
+    assert data == {"aif_path": "some/path.json", "project_path": None}
     gui_server._default_config["aif_path"] = None  # reset for other tests
 
 
