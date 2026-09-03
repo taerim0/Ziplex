@@ -28,6 +28,7 @@ Deliberately much lighter-weight than summarizer.py's own machinery:
 import json
 from pathlib import Path
 
+from .file.textutil import parent_folder
 from .llm import analyze_folder_summaries
 
 # Cap on how many files a structural (--no-llm) folder summary lists by
@@ -68,7 +69,7 @@ def group_files_by_folder(files_data: dict) -> dict[str, list[str]]:
     """
     grouped: dict[str, list[str]] = {}
     for name, data in files_data.items():
-        folder = Path(name).parent.as_posix()
+        folder = parent_folder(name)
         filename = Path(name).name
         summary = data.get("summary", "")
         entry = f"{filename}: {summary}" if summary else filename

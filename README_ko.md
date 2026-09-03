@@ -187,9 +187,9 @@ claude mcp add ziplex -- ziplex-mcp     # Claude Code에 등록
 | 툴 | 하는 일 |
 |---|---|
 | `get_overview(aif_path, project_path?)` | 프로젝트 가이드, 코딩 룰, 토큰 통계 — 가장 먼저 호출하면 됩니다 |
-| `list_files(aif_path, project_path?)` | 모든 파일을 요약 + 신뢰도 점수와 함께 매핑 |
+| `list_files(aif_path, project_path?, folder?, confidence_below?)` | 모든 파일을 요약 + 신뢰도 점수와 함께 매핑 — 폴더 하나로 좁히거나 신뢰도 기준치로 필터링 가능 |
 | `get_folders(aif_path)` | 모든 폴더를 그 역할을 설명하는 한 문장과 함께 매핑 |
-| `get_relationships(aif_path)` | 전체 의존성 그래프를 한 번에 — 모든 파일의 내부/외부 엣지 |
+| `get_relationships(aif_path, files?)` | 전체 의존성 그래프를 한 번에 — 모든 파일의 내부/외부 엣지 — 또는 지정한 파일들만 |
 | `get_dependents(aif_path, file)` | `file`을 직접 의존하는 파일들 |
 | `get_blast_radius(aif_path, file)` | `file`이 바뀌면 직간접적으로 영향받는 모든 파일 |
 | `get_detail(aif_path, file, start_line?, end_line?)` | 파일의 압축 소스, 전체 또는 줄 범위로 |

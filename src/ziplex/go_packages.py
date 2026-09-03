@@ -26,7 +26,7 @@ None, at which point expand_go_dependencies() is never worth calling at all
 
 from pathlib import Path
 
-from .file.textutil import read_text as _read_text
+from .file.textutil import parent_folder, read_text as _read_text
 
 
 def read_go_module_path(root_path: str) -> str | None:
@@ -63,7 +63,7 @@ def build_go_package_index(all_names: list[str]) -> dict[str, list[str]]:
     index: dict[str, list[str]] = {}
     for name in all_names:
         if name.endswith(".go"):
-            index.setdefault(Path(name).parent.as_posix(), []).append(name)
+            index.setdefault(parent_folder(name), []).append(name)
     return index
 
 

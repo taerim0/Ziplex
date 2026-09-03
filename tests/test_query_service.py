@@ -10,6 +10,7 @@ from ziplex import checkpoint
 from ziplex import llm
 from ziplex import packager
 from ziplex import query_service
+from ziplex.confidence import REVIEW_THRESHOLD
 
 
 def _write(path, content):
@@ -192,18 +193,40 @@ def test_list_files_folder_filter_dot_matches_root_level_files(tmp_path):
     assert set(result) == {"top.py"}
 
 
-def test_list_files_only_low_confidence_filters_by_review_threshold(tmp_path):
+def test_list_files_folder_filter_normalizes_trailing_slash_and_empty_string(tmp_path):
+    # A real rough edge caught in code review: parent_folder() never
+    # produces "src/" or "" itself, so an un-normalized comparison would
+    # silently return {} for either instead of matching -- "src/" should
+    # behave exactly like "src", and "" (a plausible "give me root" guess)
+    # should behave exactly like the real root sentinel ".".
     aif_path = _write_mixed_confidence_aif(tmp_path)
 
-    result = query_service.list_files(aif_path, only_low_confidence=True)
+    assert set(query_service.list_files(aif_path, folder="src/")) == {"src/a.py", "src/b.py"}
+    assert set(query_service.list_files(aif_path, folder="")) == {"top.py"}
+
+
+def test_list_files_confidence_below_filters_by_the_given_cutoff(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    result = query_service.list_files(aif_path, confidence_below=REVIEW_THRESHOLD)
 
     assert set(result) == {"src/b.py"}
+
+
+def test_list_files_confidence_below_accepts_a_custom_cutoff(tmp_path):
+    # Not hardcoded to REVIEW_THRESHOLD -- a caller can ask for a stricter
+    # or looser cutoff, e.g. "show me everything under 0.95".
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    result = query_service.list_files(aif_path, confidence_below=0.95)
+
+    assert set(result) == {"src/a.py", "src/b.py"}
 
 
 def test_list_files_folder_and_confidence_filters_compose(tmp_path):
     aif_path = _write_mixed_confidence_aif(tmp_path)
 
-    result = query_service.list_files(aif_path, folder="src", only_low_confidence=True)
+    result = query_service.list_files(aif_path, folder="src", confidence_below=REVIEW_THRESHOLD)
 
     assert set(result) == {"src/b.py"}
 

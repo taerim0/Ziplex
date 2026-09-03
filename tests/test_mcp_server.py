@@ -185,14 +185,22 @@ def test_get_relationships_files_param_scopes_the_result_via_call_tool(tmp_path)
     assert _json_result(result) == {"a.py": {"internal": [], "external": []}}
 
 
-def test_list_files_only_low_confidence_param_via_call_tool(tmp_path):
+def test_list_files_confidence_below_param_via_call_tool(tmp_path):
     aif_path = _write_sample_aif(tmp_path)
-    result = _call("list_files", {"aif_path": aif_path, "only_low_confidence": True})
+    result = _call("list_files", {"aif_path": aif_path, "confidence_below": 0.34})
 
     assert result.is_error is False
-    # sample aif has no stored "confidence" -- defaults to 1.0, above
-    # REVIEW_THRESHOLD, so nothing is flagged.
+    # sample aif has no stored "confidence" -- defaults to 1.0, above any
+    # real cutoff, so nothing is flagged.
     assert _json_result(result) == {}
+
+
+def test_list_files_folder_param_via_call_tool(tmp_path):
+    aif_path = _write_sample_aif(tmp_path)
+    result = _call("list_files", {"aif_path": aif_path, "folder": "."})
+
+    assert result.is_error is False
+    assert set(_json_result(result)) == {"a.py", "b.py"}
 
 
 def test_get_blast_radius_via_call_tool(tmp_path):

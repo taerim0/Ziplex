@@ -188,9 +188,9 @@ claude mcp add ziplex -- ziplex-mcp     # register with Claude Code
 | Tool | What it does |
 |---|---|
 | `get_overview(aif_path, project_path?)` | Project guide, coding rules, token stats — call this first |
-| `list_files(aif_path, project_path?)` | Every file mapped to its summary + confidence score |
+| `list_files(aif_path, project_path?, folder?, confidence_below?)` | Every file mapped to its summary + confidence score — optionally scoped to one folder and/or filtered to a confidence cutoff |
 | `get_folders(aif_path)` | Every folder mapped to a one-sentence summary of its role |
-| `get_relationships(aif_path)` | The whole dependency graph at once — every file's internal/external edges |
+| `get_relationships(aif_path, files?)` | The whole dependency graph at once — every file's internal/external edges — or just the given files' entries |
 | `get_dependents(aif_path, file)` | Files that directly depend on `file` |
 | `get_blast_radius(aif_path, file)` | Every file transitively affected by a change to `file` |
 | `get_detail(aif_path, file, start_line?, end_line?)` | A file's compressed source, in full or by line range |

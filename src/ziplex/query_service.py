@@ -22,10 +22,10 @@ from .file.relationship import (
     get_dependents as _get_dependents,
     get_blast_radius as _get_blast_radius,
 )
+from .file.textutil import parent_folder
 from .search import search_files, read_detail_range
 from .freshness import check_freshness_scoped
 from .config import collect_and_scan
-from .confidence import REVIEW_THRESHOLD
 
 
 def _load_json(path: str) -> dict:
@@ -123,7 +123,7 @@ def list_files(
     aif_path: str,
     project_path: str | None = None,
     folder: str | None = None,
-    only_low_confidence: bool = False,
+    confidence_below: float | None = None,
 ) -> dict:
     """Every file in the project mapped to its one-line summary and a
     heuristic confidence score (0.0-1.0, see src/confidence.py) for how well
@@ -139,14 +139,16 @@ def list_files(
 
     Two optional filters, composable with each other: `folder` scopes the
     result to files directly inside one folder (get_folders()'s own path
-    convention -- "." for root-level files) instead of every file in the
-    project, for drilling into one folder after get_folders() names it
-    worth a closer look. `only_low_confidence=True` returns only files
-    below confidence.REVIEW_THRESHOLD -- the same triage corrector.py
-    already applies for its own human-review loop, now reachable here
-    without first fetching every file's summary just to filter client-side.
-    Neither filter touches the "_stale" check, which always looks at the
-    whole project regardless of what's being asked for.
+    convention -- "." for root-level files, trailing slashes and "" both
+    normalized to match it) instead of every file in the project, for
+    drilling into one folder after get_folders() names it worth a closer
+    look. `confidence_below` returns only files with a stored confidence
+    strictly under the given cutoff -- pass confidence.REVIEW_THRESHOLD
+    (0.34) for the same triage corrector.py already applies in its own
+    human-review loop, or any other cutoff a caller wants, now reachable
+    here without first fetching every file's summary just to filter
+    client-side. Neither filter touches the "_stale" check, which always
+    looks at the whole project regardless of what's being asked for.
 
     Both exist for the same reason search_project() got a max_results cap
     and check_freshness() dropped its unchanged file list: measured
@@ -157,13 +159,15 @@ def list_files(
     since there's no single "too many files" threshold that fits every
     project size the way an arbitrary regex match count has one.
     """
+    if folder is not None:
+        folder = folder.rstrip("/") or "."
     aif = _load_json(aif_path)
     result = {}
     for name, data in aif.get("files", {}).items():
-        if folder is not None and Path(name).parent.as_posix() != folder:
+        if folder is not None and parent_folder(name) != folder:
             continue
         confidence = data.get("confidence", 1.0)
-        if only_low_confidence and confidence >= REVIEW_THRESHOLD:
+        if confidence_below is not None and confidence >= confidence_below:
             continue
         result[name] = {"summary": data.get("summary", ""), "confidence": confidence}
     warning = _stale_warning(project_path, aif_path)
@@ -200,7 +204,7 @@ def get_relationships(aif_path: str, files: list[str] | None = None) -> dict:
     Pass `files` to scope the result to just those keys (each one's full
     internal/external/internal_text_refs entry, not filtered further)
     instead of the whole project -- the same "response grows with project
-    size" problem list_files()'s own folder/only_low_confidence params
+    size" problem list_files()'s own folder/confidence_below params
     address, and the more expensive of the two: measured directly against
     Ziplex's own 115-file self-pack, an unscoped call here costs ~9,400
     tokens, the single priciest of the nine tools. A name not present in
