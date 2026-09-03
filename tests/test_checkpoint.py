@@ -158,3 +158,66 @@ def test_checkpoints_for_same_named_projects_at_different_paths_dont_collide(tmp
 def test_delete_checkpoint_is_a_no_op_when_none_exists(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path)
     checkpoint.delete_checkpoint("some/project")  # must not raise
+
+
+def test_list_checkpoints_is_empty_when_checkpoint_dir_is_absent(tmp_path, monkeypatch):
+    # CHECKPOINT_DIR itself doesn't exist yet (no pack has ever failed) --
+    # must not raise just because .glob() is called on a missing directory.
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "never-created")
+    assert checkpoint.list_checkpoints() == []
+
+
+def test_list_checkpoints_reports_project_name_and_pending_file_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path)
+    project_a = tmp_path / "proj-a"
+    project_a.mkdir()
+    checkpoint.save_checkpoint(
+        str(project_a), {"project": {"name": "proj-a"}, "files_data": {"a.py": {}, "b.py": {}}}
+    )
+
+    [entry] = checkpoint.list_checkpoints()
+
+    assert entry["project_name"] == "proj-a"
+    assert entry["pending_files"] == 2
+    assert entry["path"].exists()
+    assert entry["size_bytes"] > 0
+
+
+def test_list_checkpoints_survives_a_corrupted_file(tmp_path, monkeypatch):
+    # A checkpoint file that fails to parse (killed mid-write, hand-edited)
+    # is still listed -- `ziplex checkpoint list` must surface it so
+    # `ziplex checkpoint clean --all` has something to remove, rather than
+    # silently dropping or raising on it.
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path)
+    (tmp_path / "broken-abcd1234.json").write_text("{not valid json", encoding="utf-8")
+
+    [entry] = checkpoint.list_checkpoints()
+
+    assert entry["project_name"] == "(읽기 실패)"
+    assert entry["pending_files"] == 0
+
+
+def test_list_checkpoints_sorted_by_filename(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path)
+    checkpoint.save_checkpoint(str(tmp_path / "zzz"), {"project": {"name": "zzz"}})
+    checkpoint.save_checkpoint(str(tmp_path / "aaa"), {"project": {"name": "aaa"}})
+
+    names = [entry["project_name"] for entry in checkpoint.list_checkpoints()]
+
+    assert names == sorted(names)  # "zzz-<hash>.json" sorts after "aaa-<hash>.json"
+
+
+def test_clear_all_checkpoints_removes_every_file_and_returns_the_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path)
+    checkpoint.save_checkpoint(str(tmp_path / "proj1"), {"project": {"name": "proj1"}})
+    checkpoint.save_checkpoint(str(tmp_path / "proj2"), {"project": {"name": "proj2"}})
+
+    removed = checkpoint.clear_all_checkpoints()
+
+    assert removed == 2
+    assert checkpoint.list_checkpoints() == []
+
+
+def test_clear_all_checkpoints_is_a_no_op_when_checkpoint_dir_is_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "never-created")
+    assert checkpoint.clear_all_checkpoints() == 0

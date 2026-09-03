@@ -494,7 +494,15 @@ PROVIDERS: dict[str, type[LLMProvider]] = {
     "mock": MockProvider,
 }
 
-_provider: LLMProvider = PROVIDERS[os.getenv("LLM_PROVIDER", "gemini")]()
+# A named constant (not just an inline "gemini" literal in the os.getenv()
+# call below) so `cli.py`'s `ziplex settings` -- which describes what an
+# unset `llm_provider` field actually falls back to -- can import and print
+# the real value instead of a second hardcoded copy that could drift from
+# this one (a code-review finding: the same risk PROVIDERS' own class
+# references below avoid for each provider's DEFAULT_MODEL/DEFAULT_BASE_URL).
+DEFAULT_PROVIDER_NAME = "gemini"
+
+_provider: LLMProvider = PROVIDERS[os.getenv("LLM_PROVIDER", DEFAULT_PROVIDER_NAME)]()
 
 
 def _active_provider() -> LLMProvider:

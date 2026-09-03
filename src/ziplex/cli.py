@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from .extract.code.extractor import extract_signatures, extract_dependencies, extract_api, debug_tree
@@ -13,7 +14,10 @@ from .text_references import find_text_references_for_file
 from .go_packages import read_go_module_path, build_go_package_index, expand_go_dependencies
 from .tokenizer import analyze_tokens, analyze_tokens_with_compression
 from .file.selector import select_files, review_dangerous_files
-from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES
+from .llm import (
+    analyze_rules, analyze_prompt, LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME,
+    GeminiProvider, OpenAIProvider, ClaudeProvider,
+)
 from .summarizer import generate_summaries
 from .packager import pack, save_aif
 from .corrector import correct_aif
@@ -25,6 +29,8 @@ from .skill_export import export_skill
 from .config import init_config, CONFIG_FILENAME, collection_kwargs as _collection_kwargs, collect_and_scan as _collect_and_scan
 from . import __version__
 from . import settings as app_settings
+from . import checkpoint as app_checkpoint
+from .file.textutil import human_size as _human_size
 
 
 def _split_patterns(value: str | None) -> list[str] | None:
@@ -47,16 +53,21 @@ _SECRET_FIELDS = ("gemini_api_key", "openai_api_key", "claude_api_key")
 # what each fallback actually is); kept here rather than read off that
 # module since these are display-only prose, not values anything resolves
 # against.
+# Built from llm.py's own DEFAULT_MODEL/DEFAULT_BASE_URL/DEFAULT_PROVIDER_NAME
+# constants, not retyped literals -- a code-review finding: a hardcoded copy
+# here could silently drift the moment one of those defaults changes (e.g. a
+# provider's default model gets bumped), leaving `ziplex settings` printing a
+# stale fallback with nothing tying the two together.
 _SETTINGS_FIELD_HINTS = {
     "output_dir": "미설정 -- 프로젝트별 기본 출력 폴더(result/) 사용",
     "gemini_api_key": "미설정 -- GEMINI_API_KEY 환경변수(.env) 사용",
-    "gemini_model": "미설정 -- GEMINI_MODEL 환경변수 또는 기본 모델(gemini-flash-latest) 사용",
-    "llm_provider": "미설정 -- LLM_PROVIDER 환경변수 또는 기본값(gemini) 사용",
+    "gemini_model": f"미설정 -- GEMINI_MODEL 환경변수 또는 기본 모델({GeminiProvider.DEFAULT_MODEL}) 사용",
+    "llm_provider": f"미설정 -- LLM_PROVIDER 환경변수 또는 기본값({DEFAULT_PROVIDER_NAME}) 사용",
     "openai_api_key": "미설정 -- OPENAI_API_KEY 환경변수 사용",
-    "openai_base_url": "미설정 -- 기본값(https://api.openai.com/v1) 사용",
-    "openai_model": "미설정 -- 기본 모델(gpt-4o-mini) 사용",
+    "openai_base_url": f"미설정 -- 기본값({OpenAIProvider.DEFAULT_BASE_URL}) 사용",
+    "openai_model": f"미설정 -- 기본 모델({OpenAIProvider.DEFAULT_MODEL}) 사용",
     "claude_api_key": "미설정 -- ANTHROPIC_API_KEY/CLAUDE_API_KEY 환경변수 사용",
-    "claude_model": "미설정 -- 기본 모델(claude-sonnet-4-5) 사용",
+    "claude_model": f"미설정 -- 기본 모델({ClaudeProvider.DEFAULT_MODEL}) 사용",
 }
 
 
@@ -93,6 +104,25 @@ def _print_settings(settings: dict) -> None:
             print(f"  {field}: {value}")
     pin_count = len(settings.get("project_output_dirs") or {})
     print(f"\nproject_output_dirs: {pin_count}개 프로젝트에 폴더 핀 고정됨 (GUI Options 페이지에서 확인)")
+
+
+def _print_checkpoints(checkpoints: list[dict]) -> None:
+    """`ziplex checkpoint list`'s read path. Each entry's own recorded
+    project name (not the checkpoint filename's one-way hash suffix -- see
+    checkpoint.list_checkpoints()'s docstring for why that can't be
+    reversed back into a project path) plus how many files it has pending
+    and how long ago it was saved, so a human can tell a fresh in-flight
+    checkpoint apart from one abandoned months ago worth clearing.
+    """
+    if not checkpoints:
+        print(f"체크포인트 없음 ({app_checkpoint.CHECKPOINT_DIR})")
+        return
+    print(f"📂 체크포인트 {len(checkpoints)}개 ({app_checkpoint.CHECKPOINT_DIR})\n")
+    for cp in checkpoints:
+        saved_at = datetime.fromtimestamp(cp["modified"]).strftime("%Y-%m-%d %H:%M")
+        print(f"  {cp['path'].name}")
+        print(f"    프로젝트: {cp['project_name']} | 대기 중인 파일: {cp['pending_files']}개"
+              f" | {_human_size(cp['size_bytes'])} | 저장 시각: {saved_at}")
 
 
 def _check_max_tokens(aif_tokens: dict, max_tokens: int, model: str) -> tuple[bool, int | None]:
@@ -219,6 +249,16 @@ def main():
     st_set = st_sub.add_parser("set", help="설정값 하나를 변경")
     st_set.add_argument("key", choices=list(app_settings.EDITABLE_FIELDS), help="변경할 필드 이름")
     st_set.add_argument("value", help="설정할 값 -- 빈 문자열(\"\")을 주면 미설정 상태로 되돌림")
+
+    ckp = sub.add_parser(
+        "checkpoint",
+        help="pack 중단 후 남은 체크포인트 파일 확인/삭제 (checkpoint/*.json -- 재개용 임시 파일, LLM 호출 없음)",
+    )
+    ckp_sub = ckp.add_subparsers(dest="checkpoint_action")
+    ckp_sub.add_parser("list", help="남은 체크포인트 목록 출력 (인자 없이 `ziplex checkpoint`만 실행해도 동일)")
+    ckp_clean = ckp_sub.add_parser("clean", help="체크포인트 삭제")
+    ckp_clean.add_argument("path", nargs="?", default=None, help="이 프로젝트의 체크포인트만 삭제 (프로젝트 폴더 경로 -- pack에 준 경로와 동일해야 함)")
+    ckp_clean.add_argument("--all", action="store_true", help="모든 프로젝트의 체크포인트를 전부 삭제")
 
     args = parser.parse_args()
 
@@ -577,6 +617,25 @@ def main():
             print(f"✅ {args.key} = {shown} (저장됨: {app_settings.SETTINGS_PATH})")
         else:  # "get" or omitted -- ziplex settings alone is the read path
             _print_settings(app_settings.load_settings())
+
+    elif args.command == "checkpoint":
+        if args.checkpoint_action == "clean":
+            if args.all:
+                removed = app_checkpoint.clear_all_checkpoints()
+                print(f"🗑️  체크포인트 {removed}개 삭제됨")
+            elif args.path:
+                existed = app_checkpoint.load_checkpoint(args.path) is not None
+                app_checkpoint.delete_checkpoint(args.path)
+                print(f"🗑️  체크포인트 삭제됨: {args.path}" if existed else f"체크포인트 없음: {args.path}")
+            else:
+                # Neither `path` nor `--all` given -- an ambiguous "clean
+                # what?" rather than a silent no-op. ckp_clean.error() (not
+                # a plain print+sys.exit) matches every other invalid-usage
+                # message in this CLI, which argparse itself already
+                # renders this way for its own choices=/required checks.
+                ckp_clean.error("삭제할 프로젝트 경로 또는 --all 중 하나가 필요합니다")
+        else:  # "list" or omitted -- ziplex checkpoint alone is the read path
+            _print_checkpoints(app_checkpoint.list_checkpoints())
 
 if __name__ == "__main__":
     main()

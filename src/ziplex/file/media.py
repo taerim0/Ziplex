@@ -24,7 +24,7 @@ decode, no third-party imaging dependency.
 import struct
 from pathlib import Path
 
-from .textutil import read_text
+from .textutil import read_text, human_size as _human_size
 
 # extension (lowercase, with leading dot) -> broad media kind. Deliberately
 # not exhaustive -- SVG stays out on purpose: it's valid UTF-8 text, already
@@ -173,15 +173,6 @@ def describe_media_file(file_path: str, kind: str) -> dict:
             width, height = dims
 
     return {"kind": kind, "size_bytes": size_bytes, "width": width, "height": height}
-
-
-def _human_size(size_bytes: int) -> str:
-    size = float(size_bytes)
-    for unit in ("B", "KB", "MB"):
-        if size < 1024:
-            return f"{int(size)}{unit}" if unit == "B" else f"{size:.1f}{unit}"
-        size /= 1024
-    return f"{size:.1f}GB"
 
 
 def media_summary(file_path: str, kind: str) -> str:

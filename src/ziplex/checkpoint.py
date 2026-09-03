@@ -81,6 +81,64 @@ def delete_checkpoint(root_path: str) -> None:
         path.unlink()
 
 
+def list_checkpoints() -> list[dict]:
+    """Every leftover checkpoint file under CHECKPOINT_DIR -- `ziplex
+    checkpoint list`'s data source. One dict per file: {"path",
+    "project_name", "pending_files", "size_bytes", "modified" (mtime,
+    epoch seconds)}.
+
+    `project_name`/`pending_files` come from the checkpoint's own recorded
+    `project.name`/`files_data`, not the filename -- the filename's hash
+    suffix is a one-way sha256 digest (see _checkpoint_path()'s docstring),
+    so the original project path can never be recovered from it alone;
+    only what the checkpoint itself remembered at save time is available.
+
+    A checkpoint file that fails to parse (hand-edited, truncated by a
+    killed process mid-write) is still listed, with project_name
+    "(읽기 실패)" and pending_files 0, rather than silently dropped or
+    raising -- `ziplex checkpoint list` should surface a broken file the
+    same way `ziplex checkpoint clean --all` needs to be able to remove
+    one.
+    """
+    if not CHECKPOINT_DIR.is_dir():
+        return []
+    results = []
+    for path in sorted(CHECKPOINT_DIR.glob("*.json")):
+        stat = path.stat()
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            project_name = data.get("project", {}).get("name") or "(알 수 없음)"
+            pending_files = len(data.get("files_data") or {})
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            project_name = "(읽기 실패)"
+            pending_files = 0
+        results.append({
+            "path": path,
+            "project_name": project_name,
+            "pending_files": pending_files,
+            "size_bytes": stat.st_size,
+            "modified": stat.st_mtime,
+        })
+    return results
+
+
+def clear_all_checkpoints() -> int:
+    """Deletes every checkpoint file under CHECKPOINT_DIR (`ziplex
+    checkpoint clean --all`) and returns how many were removed. A no-op,
+    not an error, when CHECKPOINT_DIR doesn't exist yet -- same "never
+    raise over an absent target" spirit delete_checkpoint() itself already
+    follows for a single missing file.
+    """
+    if not CHECKPOINT_DIR.is_dir():
+        return 0
+    removed = 0
+    for path in CHECKPOINT_DIR.glob("*.json"):
+        path.unlink()
+        removed += 1
+    return removed
+
+
 def build_snapshot(root: Path, files_data: dict, rules: list = None, prompt: str = "", lang: str = "en") -> dict:
     """The shape handle_llm_failure() checkpoints on a failure -- everything
     pack() has produced so far, keyed by relative name (matching what

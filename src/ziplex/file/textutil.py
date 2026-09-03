@@ -32,6 +32,20 @@ def relative_key(file_path: str, root) -> str:
         return Path(file_path).name
 
 
+def human_size(size_bytes: int) -> str:
+    """B/KB/MB/GB with one decimal place above B -- shared so a byte count
+    reads the same way everywhere one's shown (media.py's media_summary(),
+    checkpoint.list_checkpoints()'s cli.py renderer) rather than each call
+    site inventing its own rounding/unit convention.
+    """
+    size = float(size_bytes)
+    for unit in ("B", "KB", "MB"):
+        if size < 1024:
+            return f"{int(size)}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}GB"
+
+
 def parent_folder(name: str) -> str:
     """A file's own immediate containing folder, POSIX-normalized -- "."
     for a root-level file (Path.parent's own natural value for a name with

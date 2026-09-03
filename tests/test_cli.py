@@ -3,6 +3,7 @@ import sys
 
 import pytest
 
+from ziplex import checkpoint as app_checkpoint
 from ziplex import cli
 from ziplex import llm
 from ziplex import settings as app_settings
@@ -89,6 +90,25 @@ def test_settings_get_prints_unset_hints_when_nothing_configured(tmp_path, monke
     assert "미설정" in out
 
 
+def test_settings_get_hints_use_llm_py_own_default_constants(tmp_path, monkeypatch, capsys):
+    # code-review finding: the unset-field hints must read llm.py's real
+    # DEFAULT_MODEL/DEFAULT_BASE_URL/DEFAULT_PROVIDER_NAME, not a
+    # hand-typed copy that can silently go stale when a default changes.
+    from ziplex import llm
+
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "settings"])
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert llm.GeminiProvider.DEFAULT_MODEL in out
+    assert llm.OpenAIProvider.DEFAULT_MODEL in out
+    assert llm.OpenAIProvider.DEFAULT_BASE_URL in out
+    assert llm.ClaudeProvider.DEFAULT_MODEL in out
+    assert llm.DEFAULT_PROVIDER_NAME in out
+
+
 def test_settings_set_persists_and_masks_a_secret_field_on_echo(tmp_path, monkeypatch, capsys):
     settings_path = tmp_path / "settings.json"
     monkeypatch.setattr(app_settings, "SETTINGS_PATH", settings_path)
@@ -146,6 +166,63 @@ def test_settings_set_empty_string_clears_a_field_back_to_unset(tmp_path, monkey
 
     assert app_settings.load_settings()["gemini_model"] == ""
     assert "미설정" in capsys.readouterr().out
+
+
+def test_checkpoint_list_prints_project_name_and_pending_count(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(app_checkpoint, "CHECKPOINT_DIR", tmp_path)
+    app_checkpoint.save_checkpoint(
+        str(tmp_path / "proj"), {"project": {"name": "proj"}, "files_data": {"a.py": {}}}
+    )
+    monkeypatch.setattr(sys, "argv", ["cli.py", "checkpoint"])
+
+    cli.main()  # must not raise SystemExit
+
+    out = capsys.readouterr().out
+    assert "proj" in out
+    assert "1개" in out  # pending_files count
+
+
+def test_checkpoint_list_reports_none_when_dir_is_empty(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(app_checkpoint, "CHECKPOINT_DIR", tmp_path / "never-created")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "checkpoint", "list"])
+
+    cli.main()
+
+    assert "없음" in capsys.readouterr().out
+
+
+def test_checkpoint_clean_with_path_removes_only_that_projects_checkpoint(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(app_checkpoint, "CHECKPOINT_DIR", tmp_path)
+    proj1, proj2 = tmp_path / "proj1", tmp_path / "proj2"
+    app_checkpoint.save_checkpoint(str(proj1), {"project": {"name": "proj1"}})
+    app_checkpoint.save_checkpoint(str(proj2), {"project": {"name": "proj2"}})
+    monkeypatch.setattr(sys, "argv", ["cli.py", "checkpoint", "clean", str(proj1)])
+
+    cli.main()
+
+    assert app_checkpoint.load_checkpoint(str(proj1)) is None
+    assert app_checkpoint.load_checkpoint(str(proj2)) is not None  # untouched
+
+
+def test_checkpoint_clean_all_removes_every_checkpoint(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(app_checkpoint, "CHECKPOINT_DIR", tmp_path)
+    app_checkpoint.save_checkpoint(str(tmp_path / "proj1"), {"project": {"name": "proj1"}})
+    app_checkpoint.save_checkpoint(str(tmp_path / "proj2"), {"project": {"name": "proj2"}})
+    monkeypatch.setattr(sys, "argv", ["cli.py", "checkpoint", "clean", "--all"])
+
+    cli.main()
+
+    assert app_checkpoint.list_checkpoints() == []
+
+
+def test_checkpoint_clean_without_path_or_all_errors_out(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(app_checkpoint, "CHECKPOINT_DIR", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["cli.py", "checkpoint", "clean"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2  # argparse-style usage error, not a crash
 
 
 def test_pack_main_fails_loudly_when_max_tokens_requested_but_pack_never_completed(tmp_path, monkeypatch):
