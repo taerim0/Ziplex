@@ -24,7 +24,17 @@ from .confidence import triage
 
 def correct_relationships(aif: dict) -> dict:
     print(f"\n🔗 파일 간 관계 수정")
-    print("(완료=q, 엔터=유지)\n")
+    print("(완료=q, 엔터=유지)")
+    # A real, reported pain point: this loop reparents one file at a time
+    # by typed index, with no search -- workable for a quick fix or two,
+    # but doesn't scale to a real project's file count. `ziplex-gui`'s
+    # relationship editor (search + a mini dependency graph) or the
+    # one-shot `ziplex link`/`ziplex unlink <aif_path> <file> <target>`
+    # CLI commands (cli.py -- edit an already-*saved* aif.json directly,
+    # no interactive loop at all) are both better fits for anything past a
+    # couple of edits; this loop stays as the fallback for a GUI-less
+    # environment (SSH-only, no browser).
+    print("(대규모로 고칠 거면 ziplex-gui 또는 pack 이후 `ziplex link`/`ziplex unlink` 추천)\n")
 
     files = list(aif["files"].keys())
     stem_map = build_stem_map(files)

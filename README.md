@@ -86,7 +86,7 @@ A local model (Gemma, Llama, Mistral, ...) served through Ollama or LM Studio is
 }
 ```
 
-`--include`/`--ignore` CLI flags add to this file's patterns rather than replacing them. Every subcommand that previews what `pack` would collect (`collect`, `tree`, `tokens`, `search`, `freshness`, `select`, `analyze`) reads the same file, so none of them drift out of sync with what a real `pack` on that project would actually see. Worth committing alongside the project the same way `aif.json`/`detail.json` already can (see Team use below) — it documents how that project gets packed.
+`--include`/`--ignore` CLI flags add to this file's patterns rather than replacing them. Every subcommand that previews what `pack` would collect (`collect`, `tree`, `tokens`, `search`, `freshness`) reads the same file, so none of them drift out of sync with what a real `pack` on that project would actually see. Worth committing alongside the project the same way `aif.json`/`detail.json` already can (see Team use below) — it documents how that project gets packed.
 
 <details>
 <summary>Every command</summary>

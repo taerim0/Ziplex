@@ -8,21 +8,18 @@ from .extract.code.extractor import extract_signatures, extract_dependencies, ex
 from .extract.code.compressor import compress_file
 from .file.collector import collect_files, print_tree as print_file_tree
 from .file.scanner import scan_files
-from .file.media import classify_media_file, media_summary
+from .file.media import classify_media_file
 from .file.textutil import relative_key as _rel_key
 from .text_references import find_text_references_for_file
 from .go_packages import read_go_module_path, build_go_package_index, expand_go_dependencies
 from .tokenizer import analyze_tokens, analyze_tokens_with_compression
-from .file.selector import select_files, review_dangerous_files
-from .llm import (
-    analyze_rules, analyze_prompt, LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME,
-    GeminiProvider, OpenAIProvider, ClaudeProvider,
-)
-from .summarizer import generate_summaries
+from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, GeminiProvider, OpenAIProvider, ClaudeProvider
 from .packager import pack, save_aif
 from .corrector import correct_aif
 from .edits import finalize_aif
-from .file.relationship import build_tree, print_tree as print_dependency_tree
+from .file.relationship import (
+    build_tree, print_tree as print_dependency_tree, add_relationship, remove_relationship, CycleError,
+)
 from .search import search_files, read_detail_range
 from .freshness import check_freshness_scoped
 from .skill_export import export_skill
@@ -168,6 +165,52 @@ def _print_doctor(report: dict) -> None:
             print(f"  ℹ️  git 저장소: {git_state} (freshness-gate CI 사용 시 참고)")
 
 
+def _edit_saved_relationship(aif_path: str, file_name: str, target: str, edit_fn, verb: str) -> None:
+    """Shared body for `ziplex link`/`ziplex unlink` -- both are a one-shot
+    wrapper over file/relationship.py's add_relationship()/
+    remove_relationship(), operating directly on an already-packed
+    aif.json's `relationships` field. The same shape gui_server.py's
+    /api/relationships/link|unlink routes edit (via gui/pack_service.py's
+    link_saved_relationship()/unlink_saved_relationship()) -- not reused
+    directly here since that pair also carries per-path locking meant for
+    a long-running server juggling concurrent requests, which a one-shot
+    CLI invocation (start, do one edit, exit) has no need for. Never
+    touches detail.json/cache.json -- only `relationships` changes,
+    rewritten byte for byte identical apart from that one field, same
+    "don't call packager.save_aif() on an already-finished pack" reasoning
+    pack_service.py's own _edit_saved_relationships() documents.
+
+    Added specifically so a wrong dependency edge can be fixed without
+    pack's own interactive `correct_relationships()` loop -- built for a
+    single reparent move at a time via typed numbers, which doesn't scale
+    past a handful of files (see that function's own module docstring for
+    the fuller reasoning; the GUI's relationship editor is still the
+    better tool for anything past a couple of quick edge fixes).
+    """
+    try:
+        with open(aif_path, "r", encoding="utf-8") as f:
+            aif = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"❌ {aif_path} 읽기 실패: {e}")
+        sys.exit(1)
+
+    relationships = aif.get("relationships")
+    if relationships is None:
+        print(f"❌ {aif_path}에 relationships가 없습니다 -- pack이 완료된 aif.json인지 확인하세요")
+        sys.exit(1)
+
+    try:
+        edit_fn(relationships, file_name, target)
+    except (ValueError, CycleError) as e:
+        print(f"⚠️  {e}")
+        sys.exit(1)
+
+    with open(aif_path, "w", encoding="utf-8") as f:
+        json.dump(aif, f, ensure_ascii=False, indent=2)
+
+    print(f"✅ {file_name} → {target} {verb}")
+
+
 def _check_max_tokens(aif_tokens: dict, max_tokens: int, model: str) -> tuple[bool, int | None]:
     """CI-guard check for `pack --max-tokens`: does the packed payload
     (aif.json's actual per-file token cost, tokenizer.py's "compressed"
@@ -231,14 +274,6 @@ def main():
 
     tok = sub.add_parser("tokens", help="토큰 카운팅")
     tok.add_argument("path", help="프로젝트 폴더 경로")
-
-    sel = sub.add_parser("select", help="파일 선택")
-    sel.add_argument("path", help="프로젝트 폴더 경로")
-
-    an = sub.add_parser("analyze", help="LLM 분석")
-    an.add_argument("path", help="프로젝트 폴더 경로")
-    an.add_argument("--lang", choices=list(LANGUAGE_NAMES), default="en",
-                     help="요약/코딩 룰/AI 가이드의 언어 (기본값 및 권장값: en)")
 
     p = sub.add_parser("pack", help="프로젝트 패킹")
     p.add_argument("path", help="프로젝트 폴더 경로")
@@ -309,6 +344,19 @@ def main():
     )
     dc.add_argument("path", nargs="?", default=None, help="선택: 프로젝트 폴더 경로 (주면 .env/git 저장소 여부도 확인)")
 
+    lk = sub.add_parser(
+        "link",
+        help="이미 저장된 aif.json에서 두 파일 사이 의존 관계를 한 번에 연결 (pack의 인터랙티브 관계 수정 루프 대신 쓰는 one-shot 명령어)",
+    )
+    lk.add_argument("aif_path", help="aif.json 경로")
+    lk.add_argument("file", help="의존하는 쪽 파일 (relationships의 키, 예: src/a.py)")
+    lk.add_argument("target", help="의존받는 쪽 파일")
+
+    ulk = sub.add_parser("unlink", help="이미 저장된 aif.json에서 두 파일 사이 의존 관계를 해제")
+    ulk.add_argument("aif_path", help="aif.json 경로")
+    ulk.add_argument("file", help="의존하는 쪽 파일")
+    ulk.add_argument("target", help="의존받는 쪽 파일")
+
     args = parser.parse_args()
 
     if args.command == "compress":
@@ -365,120 +413,6 @@ def main():
             print(f"  압축 전: {data['original']:,} / {data['max']:,} {data['original_bar']}")
             print(f"  압축 후: {data['compressed']:,} / {data['max']:,} {data['compressed_bar']}")
             print(f"  절감:    {data['saved']:,} 토큰 ({data['saved_pct']}% 감소)\n")
-
-    elif args.command == "select":
-        scan_result = _collect_and_scan(args.path)
-        safe_files = scan_result["safe"]
-        dangerous = scan_result["dangerous"]
-
-        if dangerous:
-            # always interactive (this whole subcommand is the interactive
-            # picker), so always offered the chance to include one anyway --
-            # same review file/selector.review_dangerous_files() gives
-            # pack()'s own picker path.
-            included_anyway = review_dangerous_files(dangerous, args.path)
-            safe_files = safe_files + included_anyway
-            excluded = [d["file"] for d in dangerous if d["file"] not in included_anyway]
-            if excluded:
-                print(f"\n⚠️  민감 파일 제외됨: {len(excluded)}개")
-                for f in excluded:
-                    print(f"  ❌ {f}")
-
-        selected = select_files(safe_files, args.path)
-
-    elif args.command == "analyze":
-        # 1. Collect files
-        safe_files = _collect_and_scan(args.path)["safe"]
-
-        print(f"\n📁 분석 대상: {len(safe_files)}개 파일\n")
-
-        # 2. Per-file analysis -- delegates to summarizer.generate_summaries(),
-        # the same batched/threaded/retry-once-then-placeholder path pack()
-        # itself uses for its own per-file summaries, instead of a bespoke
-        # one-call-per-file loop with its own separate failure placeholder
-        # ("분석 실패" vs summarizer.SUMMARY_FAILED_PLACEHOLDERS). A future fix to
-        # batching/retry/placeholder handling there (see AGENTS.md's
-        # `summarizer.py` bullet) now applies here too, instead of silently
-        # missing this command the way a hand-rolled duplicate would.
-        # Go's import paths name a *package* (a directory), not a file --
-        # see go_packages.py's own docstring. Resolved once here, same as
-        # pack()/the `tree` subcommand -- every caller of
-        # extract_dependencies() on a .go file must run this same step, or
-        # this command silently disagrees with the other two on the same
-        # feature's output.
-        all_names = [_rel_key(fp, args.path) for fp in safe_files]
-        go_module_path = read_go_module_path(args.path)
-        go_package_index = build_go_package_index(all_names) if go_module_path else {}
-
-        pending = {}
-        signatures_map = {}
-        media_summaries = {}
-        for file in safe_files:
-            media_kind = classify_media_file(file)
-            if media_kind:
-                # Same free, no-LLM metadata summary pack() gives a media
-                # asset (see file/media.py) -- without this branch it fell
-                # straight into extract_signatures/extract_dependencies
-                # (both [] for a media file) and the "no signatures, no
-                # dependencies" skip just below, silently vanishing from
-                # this command's own output despite being counted in the
-                # "분석 대상" total printed above.
-                media_summaries[file] = media_summary(file, media_kind)
-                continue
-
-            sigs = extract_signatures(file)
-            deps = extract_dependencies(file)
-            if go_module_path and file.endswith(".go"):
-                deps = expand_go_dependencies(deps, _rel_key(file, args.path), go_module_path, go_package_index)
-
-            if not sigs and not deps:
-                continue
-
-            pending[file] = {"signatures": sigs, "dependencies": deps}
-            signatures_map[file] = sigs
-
-        print(f"  🔍 {len(pending)}개 파일 분석 중...")
-        summaries = generate_summaries(pending, Path(args.path), lang=args.lang)
-        summaries.update(media_summaries)
-
-        # 3. Extract rules
-        print(f"\n  📋 코딩 룰 추출 중...")
-        rules_response = analyze_rules(signatures_map, lang=args.lang)
-        try:
-            rules_data = json.loads(rules_response)
-        except json.JSONDecodeError:
-            rules_data = {"rules": []}
-
-        # 4. Generate prompt
-        print(f"  ✍️  AI 가이드 생성 중...\n")
-        prompt_response = analyze_prompt(
-            project_name=Path(args.path).name,
-            architecture=[],
-            rules=rules_data["rules"],
-            lang=args.lang,
-        )
-        try:
-            prompt_data = json.loads(prompt_response)
-        except json.JSONDecodeError:
-            prompt_data = {"prompt": "생성 실패"}
-
-        # 5. Print results
-        print("=" * 50)
-        print("📄 파일별 Summary")
-        print("=" * 50)
-        for file, summary in summaries.items():
-            print(f"  {Path(file).name}: {summary}")
-
-        print("\n" + "=" * 50)
-        print("📋 코딩 룰")
-        print("=" * 50)
-        for rule in rules_data["rules"]:
-            print(f"  - {rule}")
-
-        print("\n" + "=" * 50)
-        print("✍️  AI 가이드")
-        print("=" * 50)
-        print(f"  {prompt_data['prompt']}")
 
     elif args.command == "pack":
         # --auto-correct also means no terminal to prompt if an LLM call
@@ -688,6 +622,12 @@ def main():
 
     elif args.command == "doctor":
         _print_doctor(app_doctor.run_diagnostics(args.path))
+
+    elif args.command == "link":
+        _edit_saved_relationship(args.aif_path, args.file, args.target, add_relationship, "연결됨")
+
+    elif args.command == "unlink":
+        _edit_saved_relationship(args.aif_path, args.file, args.target, remove_relationship, "연결 해제됨")
 
 if __name__ == "__main__":
     main()

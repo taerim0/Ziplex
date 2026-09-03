@@ -7,7 +7,6 @@ from ziplex import checkpoint as app_checkpoint
 from ziplex import cli
 from ziplex import llm
 from ziplex import settings as app_settings
-from ziplex import summarizer
 from ziplex.cli import _split_patterns, _check_max_tokens, _mask_secret
 from ziplex.freshness import build_manifest
 
@@ -260,6 +259,118 @@ def test_doctor_with_project_path_reports_missing_directory(tmp_path, monkeypatc
     assert str(missing) in out
 
 
+def _write_test_aif(path, relationships):
+    aif = {
+        "project": {"name": "x"},
+        "files": {name: {} for name in relationships},
+        "relationships": relationships,
+    }
+    path.write_text(json.dumps(aif), encoding="utf-8")
+    return aif
+
+
+def test_link_adds_a_dependency_edge_and_saves_it(tmp_path, monkeypatch, capsys):
+    aif_path = tmp_path / "test.json"
+    _write_test_aif(aif_path, {
+        "a.py": {"internal": [], "external": [], "internal_text_refs": []},
+        "b.py": {"internal": [], "external": [], "internal_text_refs": []},
+    })
+    monkeypatch.setattr(sys, "argv", ["cli.py", "link", str(aif_path), "a.py", "b.py"])
+
+    cli.main()  # must not raise SystemExit
+
+    assert "연결됨" in capsys.readouterr().out
+    saved = json.loads(aif_path.read_text(encoding="utf-8"))
+    assert saved["relationships"]["a.py"]["internal"] == ["b.py"]
+
+
+def test_unlink_removes_a_dependency_edge_and_saves_it(tmp_path, monkeypatch, capsys):
+    aif_path = tmp_path / "test.json"
+    _write_test_aif(aif_path, {
+        "a.py": {"internal": ["b.py"], "external": [], "internal_text_refs": []},
+        "b.py": {"internal": [], "external": [], "internal_text_refs": []},
+    })
+    monkeypatch.setattr(sys, "argv", ["cli.py", "unlink", str(aif_path), "a.py", "b.py"])
+
+    cli.main()
+
+    assert "연결 해제됨" in capsys.readouterr().out
+    saved = json.loads(aif_path.read_text(encoding="utf-8"))
+    assert saved["relationships"]["a.py"]["internal"] == []
+
+
+def test_link_never_touches_unrelated_aif_fields(tmp_path, monkeypatch):
+    # _edit_saved_relationship must rewrite the file byte-for-byte
+    # identical apart from `relationships` -- never routed through
+    # packager.save_aif(), which would wipe fields this shape doesn't have
+    # (see the function's own docstring).
+    aif_path = tmp_path / "test.json"
+    aif = _write_test_aif(aif_path, {
+        "a.py": {"internal": [], "external": [], "internal_text_refs": []},
+        "b.py": {"internal": [], "external": [], "internal_text_refs": []},
+    })
+    aif["project"]["prompt"] = "some AI guide"
+    aif["rules"] = ["a rule"]
+    aif_path.write_text(json.dumps(aif), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "link", str(aif_path), "a.py", "b.py"])
+
+    cli.main()
+
+    saved = json.loads(aif_path.read_text(encoding="utf-8"))
+    assert saved["project"]["prompt"] == "some AI guide"
+    assert saved["rules"] == ["a rule"]
+
+
+def test_link_rejects_an_unknown_file(tmp_path, monkeypatch, capsys):
+    aif_path = tmp_path / "test.json"
+    _write_test_aif(aif_path, {"a.py": {"internal": [], "external": [], "internal_text_refs": []}})
+    monkeypatch.setattr(sys, "argv", ["cli.py", "link", str(aif_path), "a.py", "does-not-exist.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    assert "does-not-exist.py" in capsys.readouterr().out
+
+
+def test_link_rejects_an_edge_that_would_close_a_cycle(tmp_path, monkeypatch, capsys):
+    aif_path = tmp_path / "test.json"
+    _write_test_aif(aif_path, {
+        "a.py": {"internal": ["b.py"], "external": [], "internal_text_refs": []},
+        "b.py": {"internal": [], "external": [], "internal_text_refs": []},
+    })
+    # b.py -> a.py would close a.py -> b.py -> a.py
+    monkeypatch.setattr(sys, "argv", ["cli.py", "link", str(aif_path), "b.py", "a.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    assert "cycle" in capsys.readouterr().out
+
+
+def test_link_on_an_aif_without_relationships_errors_out(tmp_path, monkeypatch, capsys):
+    aif_path = tmp_path / "test.json"
+    aif_path.write_text(json.dumps({"project": {"name": "x"}, "files": {}}), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "link", str(aif_path), "a.py", "b.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    assert "relationships" in capsys.readouterr().out
+
+
+def test_link_on_a_missing_aif_path_errors_out(tmp_path, monkeypatch, capsys):
+    missing = tmp_path / "does-not-exist.json"
+    monkeypatch.setattr(sys, "argv", ["cli.py", "link", str(missing), "a.py", "b.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+
+
 def test_pack_main_fails_loudly_when_max_tokens_requested_but_pack_never_completed(tmp_path, monkeypatch):
     # pack() returns {} on a checkpoint-and-exit (a repeated LLM failure) or
     # a cancelled/empty run -- the whole --max-tokens guard block used to
@@ -404,65 +515,3 @@ def test_tree_command_resolves_an_internal_go_package_import(tmp_path, monkeypat
     out = capsys.readouterr().out
     assert "internal/utils/format.go" in out
     assert "example.com/myproject/internal/utils" not in out  # resolved, not left as an external leaf
-
-
-def test_analyze_command_resolves_an_internal_go_package_import(tmp_path, monkeypatch):
-    # Regression test for a real bug caught by code review: `analyze` has
-    # its own third copy of "extract_dependencies() on a .go file, then
-    # feed it into a summary prompt" -- missed on this feature's first
-    # pass, which only wired go_packages.py into pack()/tree.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "go.mod").write_text("module example.com/myproject\n\ngo 1.21\n", encoding="utf-8")
-    (project / "main.go").write_text(
-        'package main\n\nimport "example.com/myproject/internal/utils"\n\nfunc main() {}\n', encoding="utf-8"
-    )
-    (project / "internal" / "utils").mkdir(parents=True)
-    (project / "internal" / "utils" / "format.go").write_text(
-        "package utils\n\nfunc Format() string { return \"\" }\n", encoding="utf-8"
-    )
-
-    captured = {}
-    real_generate_summaries = cli.generate_summaries
-
-    def _capturing(pending, root, lang="en"):
-        captured.update(pending)
-        return real_generate_summaries(pending, root, lang=lang)
-
-    monkeypatch.setattr(cli, "generate_summaries", _capturing)
-    monkeypatch.setattr(sys, "argv", ["cli.py", "analyze", str(project)])
-    cli.main()
-
-    main_go = next(data for file, data in captured.items() if file.endswith("main.go"))
-    assert "internal/utils/format.go" in main_go["dependencies"]
-    assert "example.com/myproject/internal/utils" not in main_go["dependencies"]
-
-
-def test_analyze_command_delegates_to_summarizer_and_shares_its_failure_placeholder(tmp_path, monkeypatch, capsys):
-    # analyze used to call llm.analyze_file_summary() directly in its own
-    # bespoke per-file loop -- no batching, no shared retry-once-then-
-    # placeholder logic, and its own separate failure string ("분석 실패")
-    # instead of summarizer.SUMMARY_FAILED_PLACEHOLDERS's default-language
-    # ("Summary generation failed"), the one confidence.py specifically
-    # recognizes via is_summary_failed_placeholder(). Refactored to delegate
-    # to summarizer.generate_summaries() -- the same path pack() itself
-    # uses -- so a future fix there (batching, retry, placeholder handling)
-    # no longer silently misses this command.
-    class _FailingProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
-            return "not valid json"
-
-    monkeypatch.setattr(llm, "_provider", _FailingProvider())
-
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-
-    monkeypatch.setattr(sys, "argv", ["cli.py", "analyze", str(project)])
-    cli.main()
-
-    out = capsys.readouterr().out
-    assert summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"] in out
-    assert "분석 실패" not in out
