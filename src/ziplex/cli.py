@@ -30,6 +30,7 @@ from .config import init_config, CONFIG_FILENAME, collection_kwargs as _collecti
 from . import __version__
 from . import settings as app_settings
 from . import checkpoint as app_checkpoint
+from . import doctor as app_doctor
 from .file.textutil import human_size as _human_size
 
 
@@ -123,6 +124,48 @@ def _print_checkpoints(checkpoints: list[dict]) -> None:
         print(f"  {cp['path'].name}")
         print(f"    프로젝트: {cp['project_name']} | 대기 중인 파일: {cp['pending_files']}개"
               f" | {_human_size(cp['size_bytes'])} | 저장 시각: {saved_at}")
+
+
+def _print_doctor(report: dict) -> None:
+    """`ziplex doctor`'s read path -- one line per check, ✅/⚠️/❌ marking
+    whether it needs attention (❌ blocks a real pack from working at all;
+    ⚠️ degrades gracefully to an already-working fallback; ℹ️ is purely
+    informational, neither state is wrong).
+    """
+    print("🩺 Ziplex 환경 점검\n")
+    print(f"  Ziplex 버전: {report['ziplex_version']}")
+
+    py_ok = "✅" if report["python_ok"] else "❌"
+    print(f"  {py_ok} Python 버전: {report['python_version']} (요구: >= {report['python_min']})")
+
+    print(f"  활성 LLM Provider: {report['llm_provider']} (모델: {report['llm_model']})")
+    if report["llm_api_key_present"]:
+        print("  ✅ API Key: 설정됨")
+    else:
+        print("  ❌ API Key: 없음 -- pack 시 LLM 요약 실패 -- `ziplex settings set` 또는 .env로 설정하거나 `pack --no-llm` 사용")
+
+    if report["secretlint_available"]:
+        print("  ✅ secretlint: 사용 가능")
+    else:
+        print("  ⚠️  secretlint: 없음 -- 정규식 기반 보안 스캔으로 대체됨 (Windows npm 전역 설치의 알려진 제약일 수 있음)")
+
+    settings_state = "있음" if report["settings_file_present"] else "없음 (기본값 사용 중)"
+    print(f"  ℹ️  {app_settings.SETTINGS_PATH}: {settings_state}")
+
+    if report["checkpoint_count"]:
+        print(f"  ⚠️  남은 체크포인트: {report['checkpoint_count']}개 -- `ziplex checkpoint`로 확인")
+    else:
+        print("  ✅ 남은 체크포인트: 없음")
+
+    if "project_path" in report:
+        print()
+        proj_ok = "✅" if report["project_is_dir"] else "❌"
+        print(f"  {proj_ok} 프로젝트 경로: {report['project_path']}")
+        if report["project_is_dir"]:
+            env_state = "있음" if report["project_has_env_file"] else "없음"
+            git_state = "예" if report["project_is_git_repo"] else "아니오"
+            print(f"  ℹ️  .env 파일: {env_state}")
+            print(f"  ℹ️  git 저장소: {git_state} (freshness-gate CI 사용 시 참고)")
 
 
 def _check_max_tokens(aif_tokens: dict, max_tokens: int, model: str) -> tuple[bool, int | None]:
@@ -259,6 +302,12 @@ def main():
     ckp_clean = ckp_sub.add_parser("clean", help="체크포인트 삭제")
     ckp_clean.add_argument("path", nargs="?", default=None, help="이 프로젝트의 체크포인트만 삭제 (프로젝트 폴더 경로 -- pack에 준 경로와 동일해야 함)")
     ckp_clean.add_argument("--all", action="store_true", help="모든 프로젝트의 체크포인트를 전부 삭제")
+
+    dc = sub.add_parser(
+        "doctor",
+        help="환경 점검 -- Python 버전/활성 LLM provider/API key/secretlint/남은 체크포인트를 한 번에 확인 (LLM 호출 없음)",
+    )
+    dc.add_argument("path", nargs="?", default=None, help="선택: 프로젝트 폴더 경로 (주면 .env/git 저장소 여부도 확인)")
 
     args = parser.parse_args()
 
@@ -636,6 +685,9 @@ def main():
                 ckp_clean.error("삭제할 프로젝트 경로 또는 --all 중 하나가 필요합니다")
         else:  # "list" or omitted -- ziplex checkpoint alone is the read path
             _print_checkpoints(app_checkpoint.list_checkpoints())
+
+    elif args.command == "doctor":
+        _print_doctor(app_doctor.run_diagnostics(args.path))
 
 if __name__ == "__main__":
     main()

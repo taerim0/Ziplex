@@ -174,20 +174,30 @@ class GeminiProvider:
         self._explicit_model = model
 
     @property
-    def url(self) -> str:
+    def resolved_model(self) -> str:
         # Precedence: an explicit constructor arg (programmatic/test
         # callers) wins over settings.py's stored model (the Options page)
         # wins over GEMINI_MODEL (a user's own .env override) wins over
-        # DEFAULT_MODEL.
-        resolved_model = (
+        # DEFAULT_MODEL. A real property (not resolved once at __init__ the
+        # way OpenAIProvider/ClaudeProvider's own self.model is) since
+        # GEMINI_MODEL/settings.py can change between calls on this same
+        # long-lived instance -- see __init__'s own comment on why neither
+        # this nor the API key is baked in early. Split out from url below
+        # (which used to inline this same expression) so describe_active_
+        # provider() has one place to read "what model would the next call
+        # actually use" without re-deriving the precedence itself.
+        return (
             self._explicit_model
             or app_settings.resolve_gemini_model()
             or os.getenv("GEMINI_MODEL")
             or self.DEFAULT_MODEL
         )
+
+    @property
+    def url(self) -> str:
         return (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{resolved_model}:generateContent"
+            f"{self.resolved_model}:generateContent"
         )
 
     def _resolve_api_key(self) -> str | None:
@@ -527,6 +537,31 @@ def _active_provider() -> LLMProvider:
     if name and name in PROVIDERS:
         return PROVIDERS[name]()
     return _provider
+
+
+def describe_active_provider() -> dict:
+    """A read-only snapshot of what the *next* generate() call would
+    actually do -- which provider, which model it would resolve to, and
+    whether an API key is present (a bool, never the key itself) -- without
+    spending a real request. `ziplex doctor` (doctor.py) is the one caller;
+    kept here, not reimplemented there, so the answer can never drift from
+    generate()'s own real resolution logic (_active_provider(), each
+    provider's own model/_resolve_api_key() precedence) -- the same
+    duplication risk a code-review finding already caught once for
+    cli.py's `ziplex settings` hints (see DEFAULT_PROVIDER_NAME above).
+
+    `model`/`api_key_present` are "?"/False for a provider with no such
+    concept (MockProvider, reachable only via LLM_PROVIDER=mock) rather
+    than raising -- `getattr` with a default, not a MockProvider-specific
+    branch, since any future provider missing one of these attributes
+    degrades the same safe way.
+    """
+    provider = _active_provider()
+    name = next((k for k, v in PROVIDERS.items() if isinstance(provider, v)), "?")
+    model = getattr(provider, "resolved_model", None) or getattr(provider, "model", None) or "?"
+    resolve_key = getattr(provider, "_resolve_api_key", None)
+    api_key_present = bool(resolve_key()) if resolve_key else False
+    return {"name": name, "model": model, "api_key_present": api_key_present}
 
 
 def generate(prompt: str, retry: int = 5, label: str = "") -> str:

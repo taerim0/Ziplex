@@ -225,6 +225,41 @@ def test_checkpoint_clean_without_path_or_all_errors_out(tmp_path, monkeypatch, 
     assert exc_info.value.code == 2  # argparse-style usage error, not a crash
 
 
+def test_doctor_prints_python_and_provider_status(monkeypatch, capsys):
+    from ziplex import llm
+
+    monkeypatch.setattr(llm, "describe_active_provider", lambda: {
+        "name": "gemini", "model": "gemini-flash-latest", "api_key_present": True,
+    })
+    monkeypatch.setattr(cli.app_doctor, "_secretlint_available", lambda: False)
+    monkeypatch.setattr(sys, "argv", ["cli.py", "doctor"])
+
+    cli.main()  # must not raise SystemExit
+
+    out = capsys.readouterr().out
+    assert "gemini" in out
+    assert "gemini-flash-latest" in out
+    assert "API Key: 설정됨" in out
+    assert "secretlint" in out  # unavailable-but-informational, not an error exit
+
+
+def test_doctor_with_project_path_reports_missing_directory(tmp_path, monkeypatch, capsys):
+    from ziplex import llm
+
+    monkeypatch.setattr(llm, "describe_active_provider", lambda: {
+        "name": "gemini", "model": "gemini-flash-latest", "api_key_present": False,
+    })
+    monkeypatch.setattr(cli.app_doctor, "_secretlint_available", lambda: True)
+    missing = tmp_path / "does-not-exist"
+    monkeypatch.setattr(sys, "argv", ["cli.py", "doctor", str(missing)])
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "❌" in out  # missing project dir and missing API key both render as ❌
+    assert str(missing) in out
+
+
 def test_pack_main_fails_loudly_when_max_tokens_requested_but_pack_never_completed(tmp_path, monkeypatch):
     # pack() returns {} on a checkpoint-and-exit (a repeated LLM failure) or
     # a cancelled/empty run -- the whole --max-tokens guard block used to
