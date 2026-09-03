@@ -25,6 +25,7 @@ from .file.relationship import (
 from .search import search_files, read_detail_range
 from .freshness import check_freshness_scoped
 from .config import collect_and_scan
+from .confidence import REVIEW_THRESHOLD
 
 
 def _load_json(path: str) -> dict:
@@ -118,7 +119,12 @@ def get_overview(aif_path: str, project_path: str | None = None) -> dict:
     return result
 
 
-def list_files(aif_path: str, project_path: str | None = None) -> dict:
+def list_files(
+    aif_path: str,
+    project_path: str | None = None,
+    folder: str | None = None,
+    only_low_confidence: bool = False,
+) -> dict:
     """Every file in the project mapped to its one-line summary and a
     heuristic confidence score (0.0-1.0, see src/confidence.py) for how well
     that summary's wording actually matches the file's extracted signatures
@@ -130,12 +136,36 @@ def list_files(aif_path: str, project_path: str | None = None) -> dict:
 
     Pass project_path too for the same free "_stale" freshness check
     get_overview() does -- see its docstring for details.
+
+    Two optional filters, composable with each other: `folder` scopes the
+    result to files directly inside one folder (get_folders()'s own path
+    convention -- "." for root-level files) instead of every file in the
+    project, for drilling into one folder after get_folders() names it
+    worth a closer look. `only_low_confidence=True` returns only files
+    below confidence.REVIEW_THRESHOLD -- the same triage corrector.py
+    already applies for its own human-review loop, now reachable here
+    without first fetching every file's summary just to filter client-side.
+    Neither filter touches the "_stale" check, which always looks at the
+    whole project regardless of what's being asked for.
+
+    Both exist for the same reason search_project() got a max_results cap
+    and check_freshness() dropped its unchanged file list: measured
+    directly against Ziplex's own 115-file self-pack, an unscoped call here
+    costs ~5,000 tokens -- the same "response grows with project size"
+    problem those two already had fixed for them, left open on this tool
+    until now. Opt-in rather than a forced cap, unlike search_project's,
+    since there's no single "too many files" threshold that fits every
+    project size the way an arbitrary regex match count has one.
     """
     aif = _load_json(aif_path)
-    result = {
-        name: {"summary": data.get("summary", ""), "confidence": data.get("confidence", 1.0)}
-        for name, data in aif.get("files", {}).items()
-    }
+    result = {}
+    for name, data in aif.get("files", {}).items():
+        if folder is not None and Path(name).parent.as_posix() != folder:
+            continue
+        confidence = data.get("confidence", 1.0)
+        if only_low_confidence and confidence >= REVIEW_THRESHOLD:
+            continue
+        result[name] = {"summary": data.get("summary", ""), "confidence": confidence}
     warning = _stale_warning(project_path, aif_path)
     if warning:
         result["_stale"] = warning
@@ -158,7 +188,7 @@ def get_folders(aif_path: str) -> dict:
     return aif.get("folders", {})
 
 
-def get_relationships(aif_path: str) -> dict:
+def get_relationships(aif_path: str, files: list[str] | None = None) -> dict:
     """The whole dependency graph at once -- every file mapped to what it
     depends on internally (other project files) and externally (packages),
     aif.json's `relationships` field verbatim. get_dependents()/
@@ -166,9 +196,24 @@ def get_relationships(aif_path: str) -> dict:
     underlying graph with nothing filtered out, for a caller that wants the
     project's overall shape in one call (e.g. a whole-tree browser view)
     instead of walking it file by file.
+
+    Pass `files` to scope the result to just those keys (each one's full
+    internal/external/internal_text_refs entry, not filtered further)
+    instead of the whole project -- the same "response grows with project
+    size" problem list_files()'s own folder/only_low_confidence params
+    address, and the more expensive of the two: measured directly against
+    Ziplex's own 115-file self-pack, an unscoped call here costs ~9,400
+    tokens, the single priciest of the nine tools. A name not present in
+    `relationships` is silently skipped rather than raising -- a caller
+    filtering here is narrowing a graph it can already see the keys of
+    (typically via list_files()), not looking one up blind the way
+    get_detail() does.
     """
     aif = _load_json(aif_path)
-    return aif.get("relationships", {})
+    relationships = aif.get("relationships", {})
+    if files is None:
+        return relationships
+    return {name: relationships[name] for name in files if name in relationships}
 
 
 def get_dependents(aif_path: str, file: str, include_text_refs: bool = True) -> list[str]:

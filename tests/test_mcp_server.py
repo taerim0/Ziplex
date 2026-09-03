@@ -177,6 +177,45 @@ def test_get_relationships_via_call_tool(tmp_path):
     }
 
 
+def test_get_relationships_files_param_scopes_the_result_via_call_tool(tmp_path):
+    aif_path = _write_sample_aif(tmp_path)
+    result = _call("get_relationships", {"aif_path": aif_path, "files": ["a.py"]})
+
+    assert result.is_error is False
+    assert _json_result(result) == {"a.py": {"internal": [], "external": []}}
+
+
+def test_list_files_only_low_confidence_param_via_call_tool(tmp_path):
+    aif_path = _write_sample_aif(tmp_path)
+    result = _call("list_files", {"aif_path": aif_path, "only_low_confidence": True})
+
+    assert result.is_error is False
+    # sample aif has no stored "confidence" -- defaults to 1.0, above
+    # REVIEW_THRESHOLD, so nothing is flagged.
+    assert _json_result(result) == {}
+
+
+def test_get_blast_radius_via_call_tool(tmp_path):
+    aif_path = _write_sample_aif(tmp_path)
+    result = _call("get_blast_radius", {"aif_path": aif_path, "file": "a.py"})
+
+    assert result.is_error is False
+    assert [c.text for c in result.content] == ["b.py"]
+
+
+def test_search_project_via_call_tool(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "a.py").write_text("TARGET_TOKEN = 1\n", encoding="utf-8")
+
+    result = _call("search_project", {"project_path": str(project), "pattern": "TARGET_TOKEN"})
+
+    assert result.is_error is False
+    data = _json_result(result)
+    assert data["truncated"] is False
+    assert [m["file"] for m in data["matches"]] == ["a.py"]
+
+
 def test_get_dependents_via_call_tool(tmp_path):
     aif_path = _write_sample_aif(tmp_path)
     result = _call("get_dependents", {"aif_path": aif_path, "file": "a.py"})

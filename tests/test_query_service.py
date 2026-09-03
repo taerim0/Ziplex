@@ -157,6 +157,89 @@ def test_search_project_caps_results_and_reports_truncation(tmp_path):
     assert uncapped["truncated"] is False
 
 
+def _write_mixed_confidence_aif(tmp_path):
+    aif_path = tmp_path / "out.json"
+    aif_path.write_text(json.dumps({
+        "project": {}, "files": {
+            "src/a.py": {"summary": "high confidence", "confidence": 0.9},
+            "src/b.py": {"summary": "low confidence", "confidence": 0.1},
+            "docs/readme.md": {"summary": "root-adjacent doc", "confidence": 1.0},
+            "top.py": {"summary": "root-level file", "confidence": 1.0},
+        },
+        "relationships": {
+            "src/a.py": {"internal": [], "external": []},
+            "src/b.py": {"internal": ["src/a.py"], "external": []},
+            "docs/readme.md": {"internal": [], "external": []},
+            "top.py": {"internal": [], "external": []},
+        },
+    }), encoding="utf-8")
+    return str(aif_path)
+
+
+def test_list_files_folder_filter_scopes_to_files_directly_inside_it(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    result = query_service.list_files(aif_path, folder="src")
+
+    assert set(result) == {"src/a.py", "src/b.py"}
+
+
+def test_list_files_folder_filter_dot_matches_root_level_files(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    result = query_service.list_files(aif_path, folder=".")
+
+    assert set(result) == {"top.py"}
+
+
+def test_list_files_only_low_confidence_filters_by_review_threshold(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    result = query_service.list_files(aif_path, only_low_confidence=True)
+
+    assert set(result) == {"src/b.py"}
+
+
+def test_list_files_folder_and_confidence_filters_compose(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    result = query_service.list_files(aif_path, folder="src", only_low_confidence=True)
+
+    assert set(result) == {"src/b.py"}
+
+
+def test_list_files_default_is_unfiltered(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    result = query_service.list_files(aif_path)
+
+    assert set(result) == {"src/a.py", "src/b.py", "docs/readme.md", "top.py"}
+
+
+def test_get_relationships_scopes_to_the_given_files(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    result = query_service.get_relationships(aif_path, files=["src/b.py"])
+
+    assert result == {"src/b.py": {"internal": ["src/a.py"], "external": []}}
+
+
+def test_get_relationships_silently_skips_a_name_not_in_the_graph(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    result = query_service.get_relationships(aif_path, files=["src/b.py", "nope.py"])
+
+    assert result == {"src/b.py": {"internal": ["src/a.py"], "external": []}}
+
+
+def test_get_relationships_default_is_the_whole_graph(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    result = query_service.get_relationships(aif_path)
+
+    assert set(result) == {"src/a.py", "src/b.py", "docs/readme.md", "top.py"}
+
+
 def test_search_project_default_cap_is_not_unlimited(tmp_path):
     project = tmp_path / "project"
     _write(project / "a.py", "MATCH\n" * (query_service.DEFAULT_SEARCH_MAX_RESULTS + 10))
