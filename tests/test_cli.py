@@ -5,8 +5,9 @@ import pytest
 
 from ziplex import cli
 from ziplex import llm
+from ziplex import settings as app_settings
 from ziplex import summarizer
-from ziplex.cli import _split_patterns, _check_max_tokens
+from ziplex.cli import _split_patterns, _check_max_tokens, _mask_secret
 from ziplex.freshness import build_manifest
 
 
@@ -66,6 +67,85 @@ def test_version_flag_prints_version_and_exits_zero(monkeypatch, capsys):
 
     assert exc_info.value.code == 0
     assert cli.__version__ in capsys.readouterr().out
+
+
+def test_mask_secret_keeps_only_last_four_characters():
+    assert _mask_secret("sk-ABCDEFGHIJKL1234") == "***************1234"
+
+
+def test_mask_secret_masks_a_short_value_in_full():
+    assert _mask_secret("abcd") == "****"
+    assert _mask_secret("") == ""
+
+
+def test_settings_get_prints_unset_hints_when_nothing_configured(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "settings"])
+
+    cli.main()  # must not raise SystemExit
+
+    out = capsys.readouterr().out
+    assert "gemini_api_key" in out
+    assert "미설정" in out
+
+
+def test_settings_set_persists_and_masks_a_secret_field_on_echo(tmp_path, monkeypatch, capsys):
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", settings_path)
+    monkeypatch.setattr(sys, "argv", ["cli.py", "settings", "set", "gemini_api_key", "sk-ABCDEFGHIJKL1234"])
+
+    cli.main()  # must not raise SystemExit
+
+    out = capsys.readouterr().out
+    assert "sk-ABCDEFGHIJKL1234" not in out  # the raw key must never be echoed back
+    assert "1234" in out  # only the masked tail
+    assert app_settings.load_settings()["gemini_api_key"] == "sk-ABCDEFGHIJKL1234"
+
+
+def test_settings_set_non_secret_field_echoes_the_real_value(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "settings", "set", "llm_provider", "openai"])
+
+    cli.main()
+
+    assert "llm_provider = openai" in capsys.readouterr().out
+    assert app_settings.load_settings()["llm_provider"] == "openai"
+
+
+def test_settings_set_rejects_an_unknown_key(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "settings", "set", "not_a_real_field", "x"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2  # argparse's own choices= validation, not a custom check
+
+
+def test_settings_set_strips_surrounding_whitespace(tmp_path, monkeypatch, capsys):
+    # Matches gui_server.py's POST /api/settings ((data.get(field) or
+    # "").strip()) -- a pasted value with a trailing newline/space must not
+    # reach llm.py's Authorization header verbatim (code-review finding).
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "settings", "set", "gemini_api_key", "  sk-abc123 \n"])
+
+    cli.main()
+
+    assert app_settings.load_settings()["gemini_api_key"] == "sk-abc123"
+
+
+def test_settings_set_empty_string_clears_a_field_back_to_unset(tmp_path, monkeypatch, capsys):
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", settings_path)
+    monkeypatch.setattr(sys, "argv", ["cli.py", "settings", "set", "gemini_model", "gemini-2.5-pro"])
+    cli.main()
+    assert app_settings.load_settings()["gemini_model"] == "gemini-2.5-pro"
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "settings", "set", "gemini_model", ""])
+    cli.main()
+
+    assert app_settings.load_settings()["gemini_model"] == ""
+    assert "미설정" in capsys.readouterr().out
 
 
 def test_pack_main_fails_loudly_when_max_tokens_requested_but_pack_never_completed(tmp_path, monkeypatch):

@@ -109,43 +109,26 @@ def api_config():
 
 
 
-# Every settings.py field the Options page is allowed to write through
-# POST /api/settings, besides project_output_dirs (never sent by any
-# caller -- see the route's own docstring). One flat whitelist rather than
-# a per-provider shape, since the frontend already only ever sends the one
-# section (provider selector + whichever provider's own fields) a human
-# actually touched in a single save action -- see js/pages/options.js.
-_SETTINGS_TEXT_FIELDS = (
-    "output_dir",
-    "gemini_api_key",
-    "gemini_model",
-    "llm_provider",
-    "openai_api_key",
-    "openai_base_url",
-    "openai_model",
-    "claude_api_key",
-    "claude_model",
-)
-
-
 @app.route("/api/settings", methods=["GET", "POST"])
 def api_settings():
     """GET returns settings.py's whole persisted shape (see that module's
     own docstring for what each field means). POST accepts a partial body
-    -- whichever of _SETTINGS_TEXT_FIELDS the caller actually sends -- merged
-    onto whatever was already saved rather than requiring the whole shape
-    back, so a caller that only knows about one field (or one provider's
-    fields) can't accidentally wipe another out. `project_output_dirs` is
-    deliberately not in that whitelist: no request body here ever includes
-    it at all -- a folder pin is set implicitly by packing with an explicit
-    output path (pack_service.start_pack_job()), never through this route.
+    -- whichever of settings.EDITABLE_FIELDS the caller actually sends --
+    merged onto whatever was already saved rather than requiring the whole
+    shape back, so a caller that only knows about one field (or one
+    provider's fields) can't accidentally wipe another out.
+    `project_output_dirs` is deliberately not in that whitelist: no request
+    body here ever includes it at all -- a folder pin is set implicitly by
+    packing with an explicit output path (pack_service.start_pack_job()),
+    never through this route. `ziplex settings set` (cli.py) is the same
+    whitelist's other caller.
     """
     if request.method == "GET":
         return jsonify(app_settings.load_settings())
 
     data = request.get_json(silent=True) or {}
     current = app_settings.load_settings()
-    for field in _SETTINGS_TEXT_FIELDS:
+    for field in app_settings.EDITABLE_FIELDS:
         if field in data:
             current[field] = (data.get(field) or "").strip()
     app_settings.save_settings(current)

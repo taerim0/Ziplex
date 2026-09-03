@@ -24,6 +24,7 @@ from .freshness import check_freshness_scoped
 from .skill_export import export_skill
 from .config import init_config, CONFIG_FILENAME, collection_kwargs as _collection_kwargs, collect_and_scan as _collect_and_scan
 from . import __version__
+from . import settings as app_settings
 
 
 def _split_patterns(value: str | None) -> list[str] | None:
@@ -37,6 +38,61 @@ def _split_patterns(value: str | None) -> list[str] | None:
     if not value:
         return None
     return [p.strip() for p in value.split(",") if p.strip()]
+
+
+_SECRET_FIELDS = ("gemini_api_key", "openai_api_key", "claude_api_key")
+
+# Shown next to each unset field in `ziplex settings` -- mirrors settings.py's
+# own inline comments on DEFAULT_SETTINGS (the single source of truth for
+# what each fallback actually is); kept here rather than read off that
+# module since these are display-only prose, not values anything resolves
+# against.
+_SETTINGS_FIELD_HINTS = {
+    "output_dir": "미설정 -- 프로젝트별 기본 출력 폴더(result/) 사용",
+    "gemini_api_key": "미설정 -- GEMINI_API_KEY 환경변수(.env) 사용",
+    "gemini_model": "미설정 -- GEMINI_MODEL 환경변수 또는 기본 모델(gemini-flash-latest) 사용",
+    "llm_provider": "미설정 -- LLM_PROVIDER 환경변수 또는 기본값(gemini) 사용",
+    "openai_api_key": "미설정 -- OPENAI_API_KEY 환경변수 사용",
+    "openai_base_url": "미설정 -- 기본값(https://api.openai.com/v1) 사용",
+    "openai_model": "미설정 -- 기본 모델(gpt-4o-mini) 사용",
+    "claude_api_key": "미설정 -- ANTHROPIC_API_KEY/CLAUDE_API_KEY 환경변수 사용",
+    "claude_model": "미설정 -- 기본 모델(claude-sonnet-4-5) 사용",
+}
+
+
+def _mask_secret(value: str) -> str:
+    """Never prints a stored API key in full -- only its last 4 characters,
+    same "something to recognize it by, nothing to steal" tradeoff a
+    password manager's own masked display makes. A short value (<=4 chars,
+    never a real key but cheap to guard anyway) masks in full rather than
+    echoing itself back unmasked.
+    """
+    if len(value) <= 4:
+        return "*" * len(value)
+    return "*" * (len(value) - 4) + value[-4:]
+
+
+def _print_settings(settings: dict) -> None:
+    """`ziplex settings`'s read path -- settings.EDITABLE_FIELDS in
+    declaration order, each either its real value (masked for
+    _SECRET_FIELDS) or _SETTINGS_FIELD_HINTS' explanation of what applies
+    instead. `project_output_dirs` is summarized as a count only (not
+    editable via this command -- see settings.EDITABLE_FIELDS' own
+    docstring for why), not printed key-by-key, since a long-lived install
+    could have many pins and this command is about the provider/model
+    settings, not an audit of every per-project folder pin.
+    """
+    print(f"⚙️  Ziplex 설정 ({app_settings.SETTINGS_PATH})\n")
+    for field in app_settings.EDITABLE_FIELDS:
+        value = settings.get(field) or ""
+        if not value:
+            print(f"  {field}: ({_SETTINGS_FIELD_HINTS[field]})")
+        elif field in _SECRET_FIELDS:
+            print(f"  {field}: {_mask_secret(value)} (설정됨)")
+        else:
+            print(f"  {field}: {value}")
+    pin_count = len(settings.get("project_output_dirs") or {})
+    print(f"\nproject_output_dirs: {pin_count}개 프로젝트에 폴더 핀 고정됨 (GUI Options 페이지에서 확인)")
 
 
 def _check_max_tokens(aif_tokens: dict, max_tokens: int, model: str) -> tuple[bool, int | None]:
@@ -153,6 +209,16 @@ def main():
 
     ini = sub.add_parser("init", help="프로젝트에 .ziplex.json 설정 파일 생성 (include/ignore 패턴)")
     ini.add_argument("path", help="프로젝트 폴더 경로")
+
+    st = sub.add_parser(
+        "settings",
+        help="Ziplex 전역 설정 확인/변경 (~/.ziplex/settings.json -- 기본 출력 폴더, LLM provider/API key/모델, GUI Options 페이지와 동일한 값)",
+    )
+    st_sub = st.add_subparsers(dest="settings_action")
+    st_sub.add_parser("get", help="현재 설정 출력 (인자 없이 `ziplex settings`만 실행해도 동일)")
+    st_set = st_sub.add_parser("set", help="설정값 하나를 변경")
+    st_set.add_argument("key", choices=list(app_settings.EDITABLE_FIELDS), help="변경할 필드 이름")
+    st_set.add_argument("value", help="설정할 값 -- 빈 문자열(\"\")을 주면 미설정 상태로 되돌림")
 
     args = parser.parse_args()
 
@@ -494,6 +560,23 @@ def main():
         target = init_config(args.path)
         print(f"✅ .ziplex.json {'이미 있음' if existed else '생성됨'}: {target}")
         print('   예시: {"include": ["src/**/*.py"], "ignore": ["**/*.generated.*"]}')
+
+    elif args.command == "settings":
+        if args.settings_action == "set":
+            # .strip() matches gui_server.py's POST /api/settings
+            # ((data.get(field) or "").strip()) -- without it, a value
+            # pasted with a trailing newline/space (common from a terminal
+            # or script) would reach llm.py's Authorization header verbatim
+            # and fail auth in a way that never reproduces through the GUI,
+            # which already strips the same field.
+            value = args.value.strip()
+            current = app_settings.load_settings()
+            current[args.key] = value
+            app_settings.save_settings(current)
+            shown = _mask_secret(value) if args.key in _SECRET_FIELDS and value else (value or "(미설정)")
+            print(f"✅ {args.key} = {shown} (저장됨: {app_settings.SETTINGS_PATH})")
+        else:  # "get" or omitted -- ziplex settings alone is the read path
+            _print_settings(app_settings.load_settings())
 
 if __name__ == "__main__":
     main()

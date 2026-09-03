@@ -40,6 +40,27 @@ from pathlib import Path
 
 SETTINGS_PATH = Path.home() / ".ziplex" / "settings.json"
 
+# Every field a human is allowed to write directly -- via gui_server.py's
+# POST /api/settings (the Options page) or the `ziplex settings set` CLI
+# subcommand, the two callers that need this list. `project_output_dirs` is
+# deliberately excluded from both: a pin is only ever set implicitly, by
+# packing with an explicit output path (set_project_output_dir(), called
+# from gui/pack_service.py's start_pack_job()), never through a direct
+# settings write -- see that function's own docstring for why. One shared
+# tuple instead of two independently-typed-out copies, so the two callers
+# can't quietly drift apart on which fields are actually editable.
+EDITABLE_FIELDS = (
+    "output_dir",
+    "gemini_api_key",
+    "gemini_model",
+    "llm_provider",
+    "openai_api_key",
+    "openai_base_url",
+    "openai_model",
+    "claude_api_key",
+    "claude_model",
+)
+
 DEFAULT_SETTINGS = {
     "output_dir": "",           # "" = no global override, packager.RESULT_DIR applies
     "project_output_dirs": {},  # {absolute project path: output dir}, explicit per-project pins
