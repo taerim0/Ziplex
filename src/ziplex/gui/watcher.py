@@ -46,6 +46,19 @@ MAX_WATCHERS = 5
 
 _watchers: dict[str, dict] = {}
 _watchers_lock = threading.Lock()
+# Serializes start_watch()'s whole stop-old/build-new/register-new sequence
+# below -- a separate lock from _watchers_lock (which only ever guards a
+# single dict read/write) so that recompute(), called after this lock is
+# released, can still take _watchers_lock itself without deadlocking.
+# Without this, two near-simultaneous start_watch() calls for the same
+# project (two tabs, or app.js firing on every Overview/Files mount) could
+# both pop the same existing entry (only one gets it, so the other's
+# "existing" is None -- no double-stop), both build+start their own new
+# Observer entirely outside any lock, and then race on the final dict
+# insert -- the loser's Observer is overwritten with nothing left to stop
+# it, leaking that thread indefinitely, unrecoverable even by
+# MAX_WATCHERS eviction.
+_start_lock = threading.Lock()
 
 
 def _abs_key(project_path: str) -> str:
@@ -168,20 +181,21 @@ def start_watch(project_path: str, aif_path: str) -> None:
             # the next event (or the next debounce window) tries again.
             pass
 
-    with _watchers_lock:
-        existing = _watchers.pop(key, None)
-    if existing:
-        existing["observer"].stop()
+    with _start_lock:
+        with _watchers_lock:
+            existing = _watchers.pop(key, None)
+        if existing:
+            existing["observer"].stop()
 
-    ignore_spec = _build_ignore_spec(root)
-    handler = _DebouncedHandler(root, ignore_spec, recompute)
-    observer = Observer()
-    observer.schedule(handler, str(root), recursive=True)
-    observer.start()
+        ignore_spec = _build_ignore_spec(root)
+        handler = _DebouncedHandler(root, ignore_spec, recompute)
+        observer = Observer()
+        observer.schedule(handler, str(root), recursive=True)
+        observer.start()
 
-    with _watchers_lock:
-        _watchers[key] = {"observer": observer, "report": None, "started_at": time.time()}
-        _evict_old_watchers(key)
+        with _watchers_lock:
+            _watchers[key] = {"observer": observer, "report": None, "started_at": time.time()}
+            _evict_old_watchers(key)
 
     recompute()
 

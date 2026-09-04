@@ -71,8 +71,18 @@ def load_checkpoint(root_path: str) -> dict | None:
     path = _checkpoint_path(root_path)
     if not path.exists():
         return None
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        # A truncated/corrupted checkpoint (e.g. the process was killed
+        # mid-write) shouldn't crash the caller -- list_checkpoints() below
+        # already treats this the same way (surfaced as "읽기 실패", not
+        # raised); resume_checkpoint_choice()'s callers need the same
+        # "nothing usable here" outcome `path.exists()` being False already
+        # gives, notably so `ziplex checkpoint clean <project_path>` can
+        # still delete the very file it's failing to read.
+        return None
 
 
 def delete_checkpoint(root_path: str) -> None:
@@ -104,7 +114,16 @@ def list_checkpoints() -> list[dict]:
         return []
     results = []
     for path in sorted(CHECKPOINT_DIR.glob("*.json")):
-        stat = path.stat()
+        try:
+            stat = path.stat()
+        except OSError:
+            # Deleted between glob() and here (a concurrent successful
+            # pack(), or `checkpoint clean --all` racing this listing) --
+            # nothing left to report size/mtime for, so it's skipped
+            # entirely rather than surfaced as a broken file: unlike the
+            # read failure below, there's no file left for `ziplex
+            # checkpoint clean` to point at.
+            continue
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)

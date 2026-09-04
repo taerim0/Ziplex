@@ -731,30 +731,43 @@ def pack(
             rules_response = analyze_rules(signatures_map, lang=lang)
             try:
                 rules_data = json.loads(rules_response)
-                rules = rules_data.get("rules", [])
             except json.JSONDecodeError:
-                rules = []
+                rules_data = None
 
-            if not rules:
-                result = ckpt.handle_llm_failure(
-                    "rules", "코딩 룰",
-                    ckpt.build_snapshot(root, files_data, lang=lang),
-                    root_path,
-                    interactive=interactive,
-                )
-                if result == "EXIT":
-                    return {}
-                elif result is None:
-                    continue
-                else:
-                    # Filtered, not just stripped: "".split(",") is ['']
-                    # (a one-element list holding an empty string, not an
-                    # empty list) -- pressing Enter with no input at this
-                    # prompt used to silently become a single bogus
-                    # empty-string rule instead of re-prompting, since
-                    # `while not rules:` only re-loops on a genuinely
-                    # empty list.
-                    rules = [r.strip() for r in result.split(",") if r.strip()]
+            if rules_data is not None and "rules" in rules_data:
+                # The "rules" key being present at all -- even paired with
+                # an empty list -- means this is a real answer (a trivial
+                # project can legitimately have no inferable coding rules),
+                # not generate()'s own failure sentinel ("{}", returned on
+                # a retry-exhausted or malformed-response error): that
+                # sentinel parses fine too but never carries this key.
+                # `while not rules:` alone can't tell these apart, since an
+                # empty list and a missing key are both equally falsy --
+                # treating a correct empty answer as a failure used to send
+                # an otherwise-successful --auto/--auto-correct run
+                # straight into handle_llm_failure's checkpoint-and-exit.
+                rules = rules_data["rules"]
+                break
+
+            result = ckpt.handle_llm_failure(
+                "rules", "코딩 룰",
+                ckpt.build_snapshot(root, files_data, lang=lang),
+                root_path,
+                interactive=interactive,
+            )
+            if result == "EXIT":
+                return {}
+            elif result is None:
+                continue
+            else:
+                # Filtered, not just stripped: "".split(",") is ['']
+                # (a one-element list holding an empty string, not an
+                # empty list) -- pressing Enter with no input at this
+                # prompt used to silently become a single bogus
+                # empty-string rule instead of re-prompting, since
+                # `while not rules:` only re-loops on a genuinely
+                # empty list.
+                rules = [r.strip() for r in result.split(",") if r.strip()]
     elif rules:
         print("  📋 코딩 룰 (체크포인트에서 복원)")
     else:
@@ -774,23 +787,32 @@ def pack(
             )
             try:
                 prompt_data = json.loads(prompt_response)
-                prompt = prompt_data.get("prompt", "")
             except json.JSONDecodeError:
-                prompt = ""
+                prompt_data = None
 
-            if not prompt:
-                result = ckpt.handle_llm_failure(
-                    "prompt", "AI 가이드",
-                    ckpt.build_snapshot(root, files_data, rules, lang=lang),
-                    root_path,
-                    interactive=interactive,
-                )
-                if result == "EXIT":
-                    return {}
-                elif result is None:
-                    continue
-                else:
-                    prompt = result
+            if prompt_data is not None and "prompt" in prompt_data:
+                # Same "key present, even if its value is falsy, means a
+                # real answer" distinction rules extraction above needs --
+                # see that block's comment. Less likely in practice for a
+                # 2-3 sentence guide than for a rules list, but the same
+                # generate() failure sentinel ("{}") is indistinguishable
+                # from a genuine (if empty) `{"prompt": ""}` otherwise.
+                prompt = prompt_data["prompt"]
+                if prompt:
+                    break
+
+            result = ckpt.handle_llm_failure(
+                "prompt", "AI 가이드",
+                ckpt.build_snapshot(root, files_data, rules, lang=lang),
+                root_path,
+                interactive=interactive,
+            )
+            if result == "EXIT":
+                return {}
+            elif result is None:
+                continue
+            else:
+                prompt = result
     elif prompt:
         print("  ✍️  AI 가이드 (체크포인트에서 복원)")
     else:

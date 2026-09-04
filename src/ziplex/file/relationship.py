@@ -306,6 +306,13 @@ def add_relationship(relationships: dict, file_name: str, target: str) -> dict:
     internal = relationships[file_name].setdefault("internal", [])
     if target not in internal:
         internal.append(target)
+    else:
+        # Same upgrade add_dependency() performs (see its own docstring):
+        # a human explicitly (re-)linking an edge already present only as
+        # an internal_text_refs prose mention is exactly the confirmation
+        # that should promote it to a fully certain edge, not a silent
+        # no-op that leaves it flagged as the weaker text-reference kind.
+        _drop_text_dep(relationships[file_name], "internal_text_refs", lambda d: d != target)
 
     return relationships
 

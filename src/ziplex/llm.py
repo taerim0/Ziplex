@@ -272,7 +272,23 @@ class GeminiProvider:
                 continue
 
             if "candidates" in data:
-                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                try:
+                    text = data["candidates"][0]["content"]["parts"][0]["text"]
+                except (KeyError, IndexError):
+                    # A safety-blocked or otherwise content-less response
+                    # (HTTP 200, but no `content`/`parts` at all -- e.g.
+                    # finishReason: "SAFETY" on source text containing
+                    # words like "kill"/"exploit") isn't a transport or
+                    # rate-limit failure, so it isn't retried; falling
+                    # through to the same "{}" the API-error branch below
+                    # returns keeps this inside the documented
+                    # json.loads()-falls-back-to-default contract instead
+                    # of an uncaught IndexError/KeyError escaping into
+                    # summarizer.py's thread pool or packager.py's
+                    # rules/prompt calls and crashing the whole pack() run.
+                    finish_reason = data["candidates"][0].get("finishReason", "unknown") if data["candidates"] else "unknown"
+                    print(f"  ❌ {prefix}응답에 콘텐츠 없음 (finishReason: {finish_reason})")
+                    break
                 return _clean_json(text)
 
             error_code = data.get("error", {}).get("code", 0)

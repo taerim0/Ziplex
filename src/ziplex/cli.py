@@ -13,7 +13,7 @@ from .file.textutil import relative_key as _rel_key
 from .text_references import find_text_references_for_file
 from .go_packages import read_go_module_path, build_go_package_index, expand_go_dependencies
 from .tokenizer import analyze_tokens, analyze_tokens_with_compression
-from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, GeminiProvider, OpenAIProvider, ClaudeProvider
+from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider
 from .packager import pack, save_aif
 from .corrector import correct_aif
 from .edits import finalize_aif
@@ -45,6 +45,14 @@ def _split_patterns(value: str | None) -> list[str] | None:
 
 
 _SECRET_FIELDS = ("gemini_api_key", "openai_api_key", "claude_api_key")
+
+# The real, user-facing provider choices for `ziplex settings set llm_provider`
+# -- llm.PROVIDERS minus "mock", which exists there only for tests
+# (LLM_PROVIDER=mock) and would otherwise silently become the process-wide
+# default for every future pack (CLI and GUI) if accepted here, fabricating
+# plausible-looking MockProvider summaries with no error. The GUI's own
+# Options page provider selector excludes it the same way.
+_REAL_PROVIDER_NAMES = tuple(name for name in PROVIDERS if name != "mock")
 
 # Shown next to each unset field in `ziplex settings` -- mirrors settings.py's
 # own inline comments on DEFAULT_SETTINGS (the single source of truth for
@@ -593,6 +601,10 @@ def main():
             # and fail auth in a way that never reproduces through the GUI,
             # which already strips the same field.
             value = args.value.strip()
+            if args.key == "llm_provider" and value and value not in _REAL_PROVIDER_NAMES:
+                st_set.error(
+                    f"알 수 없는 llm_provider: {value} (사용 가능: {', '.join(_REAL_PROVIDER_NAMES)})"
+                )
             current = app_settings.load_settings()
             current[args.key] = value
             app_settings.save_settings(current)
