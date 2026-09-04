@@ -22,11 +22,14 @@ Ziplex walks a project, compresses and structures it with Tree-sitter, summarize
 ## Quick start
 
 ```bash
-pip install ziplex        # or: venv\Scripts\activate && pip install -e . from a clone
+pip install ziplex        # or: pipx install ziplex (isolated env, PATH handled for you automatically)
+# or: venv\Scripts\activate && pip install -e . from a clone
 ziplex-gui
 ```
 
 A native window opens: pick a project folder with the folder picker, check off which files to include (or just accept the safe default), and pack — no flags to remember. Want to try it before committing to an API key? Check "no LLM" and you get a real `aif.json` from structural summaries alone — no signup, no network call. Uncheck it (with a `GEMINI_API_KEY` in `.env`, or another provider picked on the Options page) for real AI-written summaries, inferred coding rules, and a project guide instead. Packing pauses for review before anything's saved, and browsing a project you've already packed works the same way — see [GUI](#gui) for the full walkthrough.
+
+> **`ziplex`/`ziplex-gui` command not found after installing?** [pipx](https://pipx.pypa.io/) avoids this by design — it installs into its own isolated environment and puts that on your PATH automatically (`pipx ensurepath`, then restart your terminal). With plain `pip install ziplex` on Windows, if you don't have write access to your global Python's `site-packages` (common without admin rights), pip silently falls back to a per-user install whose `Scripts` folder often isn't on PATH — you'll usually see a `WARNING: The script ziplex.exe is installed in '...' which is not on PATH` line scroll by during install. Fix: either switch to `pipx install ziplex`, or add that printed folder (typically `%APPDATA%\Python\Python3XX\Scripts`) to your user PATH yourself and open a new terminal.
 
 Prefer the terminal — scripting, CI, or an environment with no GUI?
 

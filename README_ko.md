@@ -22,11 +22,14 @@ Ziplex는 프로젝트 전체를 훑으면서 Tree-sitter로 압축·구조화�
 ## 빠른 시작
 
 ```bash
-pip install ziplex        # 또는 클론한 저장소에서: venv\Scripts\activate && pip install -e .
+pip install ziplex        # 또는: pipx install ziplex (격리된 환경 + PATH 자동 처리)
+# 또는 클론한 저장소에서: venv\Scripts\activate && pip install -e .
 ziplex-gui
 ```
 
 네이티브 창이 뜹니다 — 폴더 선택창으로 프로젝트 폴더를 고르고, 어떤 파일을 포함할지 체크박스로 고른 뒤(그냥 기본 안전 목록을 그대로 써도 됨), 패킹하면 끝입니다. 플래그를 외울 필요가 없습니다. API 키를 쓰기 전에 먼저 써보고 싶다면 "LLM 사용 안 함"을 체크하세요 — 가입도 네트워크 호출도 없이, 구조 정보만으로 진짜 `aif.json`이 나옵니다. 체크를 풀면(`.env`에 `GEMINI_API_KEY`를 넣거나 Options 페이지에서 다른 프로바이더를 고르면) 진짜 AI가 쓴 요약, 추론된 코딩 룰, 프로젝트 가이드를 받을 수 있습니다. 패킹은 저장 전에 검토 단계에서 멈추고, 이미 패킹한 프로젝트를 둘러보는 것도 같은 창에서 됩니다 — 전체 흐름은 [GUI](#gui) 참고.
+
+> **설치 후 `ziplex`/`ziplex-gui` 명령을 못 찾는다면?** [pipx](https://pipx.pypa.io/)는 이 문제를 애초에 방지하도록 설계됐습니다 — 격리된 환경에 설치하면서 그 경로를 PATH에 자동으로 추가해줍니다(`pipx ensurepath` 실행 후 터미널을 새로 열면 적용). 그냥 `pip install ziplex`로 설치했는데 Windows에서 전역 Python의 `site-packages`에 쓰기 권한이 없으면(관리자 권한 없이 흔한 상황), pip이 조용히 사용자 단위 설치로 전환되고 그 `Scripts` 폴더가 PATH에 없는 경우가 많습니다 — 설치 중 `WARNING: The script ziplex.exe is installed in '...' which is not on PATH` 같은 줄이 지나가는 걸 볼 수 있습니다. 해결법: `pipx install ziplex`로 바꾸거나, 그 경고에 찍힌 폴더(보통 `%APPDATA%\Python\Python3XX\Scripts`)를 사용자 PATH에 직접 추가한 뒤 터미널을 새로 여세요.
 
 터미널이 더 편하신가요 — 스크립트, CI, GUI 없는 환경이라면?
 
