@@ -23,7 +23,15 @@ Ziplex walks a project, compresses and structures it with Tree-sitter, summarize
 
 ```bash
 pip install ziplex        # or: venv\Scripts\activate && pip install -e . from a clone
+ziplex-gui
 ```
+
+A native window opens: pick a project folder with the folder picker, check off which files to include (or just accept the safe default), and pack — no flags to remember. Want to try it before committing to an API key? Check "no LLM" and you get a real `aif.json` from structural summaries alone — no signup, no network call. Uncheck it (with a `GEMINI_API_KEY` in `.env`, or another provider picked on the Options page) for real AI-written summaries, inferred coding rules, and a project guide instead. Packing pauses for review before anything's saved, and browsing a project you've already packed works the same way — see [GUI](#gui) for the full walkthrough.
+
+Prefer the terminal — scripting, CI, or an environment with no GUI?
+
+<details>
+<summary>CLI quick start</summary>
 
 **Try it right now — no API key, no signup, no network call:**
 
@@ -41,6 +49,8 @@ ziplex pack ./your-project/ --auto --auto-correct  # fully non-interactive (CI, 
 ```
 
 `--auto` (skip interactive file selection) and `--auto-correct` (skip interactive correction) are independent, so any combination of the two works. Re-running `pack` on a project you've packed before only re-summarizes files that actually changed (by content hash) — everything else reuses its previous summary instead of another LLM call.
+
+</details>
 
 <details>
 <summary>Every <code>pack</code> flag</summary>
@@ -93,7 +103,7 @@ A local model (Gemma, Llama, Mistral, ...) served through Ollama or LM Studio is
 
 | Command | Description |
 |---|---|
-| `pack <path>` | Full pipeline — the one most people want |
+| `pack <path>` | Full pipeline — `ziplex-gui` is the same thing without the flags |
 | `init <path>` | Scaffold `.ziplex.json` (`include`/`ignore` glob patterns) in the target project |
 | `collect <path>` | File collection + security scan only |
 | `tokens <path>` | Token count, before/after compression |
@@ -102,9 +112,13 @@ A local model (Gemma, Llama, Mistral, ...) served through Ollama or LM Studio is
 | `detail <name>.detail.json <file-key>` | Partial read of one file's compressed body (`--start`/`--end`) |
 | `freshness <path> <name>.cache.json` | Hash-check `aif.json` against the files on disk — no LLM calls |
 | `skill <name>.json` | Export as a Claude Agent Skill (`.claude/skills/<slug>/`) — no MCP server needed |
-| `select <path>` | Interactive file selection only |
-| `analyze <path>` | LLM analysis only |
+| `link <name>.json <file> <target>` / `unlink ...` | Add/remove a dependency edge on an already-saved `aif.json`, without re-running `pack` |
+| `settings` / `settings set <key> <value>` | View or change `~/.ziplex/settings.json` — output folder, LLM provider/API key/model; the CLI counterpart of the GUI's Options page |
+| `checkpoint` / `checkpoint clean [<path>\|--all]` | List or delete leftover checkpoint files from an interrupted `pack` |
+| `doctor [<path>]` | Environment check — Python version, active LLM provider/API key, secretlint, leftover checkpoints; no LLM call |
 | `signatures \| dependencies \| api \| compress \| debug <file>` | Run one extraction step on a single file |
+
+`ziplex --version` (also `ziplex-gui --version`/`ziplex-mcp --version`) prints the installed version.
 
 </details>
 

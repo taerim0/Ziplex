@@ -23,7 +23,15 @@ Ziplex는 프로젝트 전체를 훑으면서 Tree-sitter로 압축·구조화�
 
 ```bash
 pip install ziplex        # 또는 클론한 저장소에서: venv\Scripts\activate && pip install -e .
+ziplex-gui
 ```
+
+네이티브 창이 뜹니다 — 폴더 선택창으로 프로젝트 폴더를 고르고, 어떤 파일을 포함할지 체크박스로 고른 뒤(그냥 기본 안전 목록을 그대로 써도 됨), 패킹하면 끝입니다. 플래그를 외울 필요가 없습니다. API 키를 쓰기 전에 먼저 써보고 싶다면 "LLM 사용 안 함"을 체크하세요 — 가입도 네트워크 호출도 없이, 구조 정보만으로 진짜 `aif.json`이 나옵니다. 체크를 풀면(`.env`에 `GEMINI_API_KEY`를 넣거나 Options 페이지에서 다른 프로바이더를 고르면) 진짜 AI가 쓴 요약, 추론된 코딩 룰, 프로젝트 가이드를 받을 수 있습니다. 패킹은 저장 전에 검토 단계에서 멈추고, 이미 패킹한 프로젝트를 둘러보는 것도 같은 창에서 됩니다 — 전체 흐름은 [GUI](#gui) 참고.
+
+터미널이 더 편하신가요 — 스크립트, CI, GUI 없는 환경이라면?
+
+<details>
+<summary>CLI로 빠르게 시작하기</summary>
 
 **API 키도, 가입도, 네트워크 호출도 없이 지금 바로 써볼 수 있습니다:**
 
@@ -41,6 +49,8 @@ ziplex pack ./your-project/ --auto --auto-correct  # 완전 비대화형 (CI, �
 ```
 
 `--auto`(대화형 파일 선택 생략)와 `--auto-correct`(대화형 보정 생략)는 서로 독립된 옵션이라 마음대로 조합해서 써도 됩니다. 전에 한 번 pack한 프로젝트를 다시 pack하면, 실제로 내용이 바뀐 파일(콘텐츠 해시 기준)만 다시 요약합니다 — 나머지는 이전 요약을 그대로 재사용해서 LLM을 다시 호출하지 않습니다.
+
+</details>
 
 <details>
 <summary><code>pack</code>의 모든 플래그</summary>
@@ -86,14 +96,14 @@ ziplex pack ./your-project/ --auto --auto-correct  # 완전 비대화형 (CI, �
 }
 ```
 
-`--include`/`--ignore` CLI 플래그는 이 파일의 패턴을 대체하는 게 아니라 더해집니다. `pack`이 뭘 수집할지 미리 보여주는 서브커맨드들(`collect`, `tree`, `tokens`, `search`, `freshness`, `select`, `analyze`)도 전부 같은 파일을 읽어서, 실제 `pack`이 보는 것과 어긋나지 않습니다. `aif.json`/`detail.json`처럼(아래 팀에서 사용하기 참고) 프로젝트와 함께 커밋해둘 만합니다 — 이 프로젝트를 어떻게 패킹하는지 그 자체로 문서가 됩니다.
+`--include`/`--ignore` CLI 플래그는 이 파일의 패턴을 대체하는 게 아니라 더해집니다. `pack`이 뭘 수집할지 미리 보여주는 서브커맨드들(`collect`, `tree`, `tokens`, `search`, `freshness`)도 전부 같은 파일을 읽어서, 실제 `pack`이 보는 것과 어긋나지 않습니다. `aif.json`/`detail.json`처럼(아래 팀에서 사용하기 참고) 프로젝트와 함께 커밋해둘 만합니다 — 이 프로젝트를 어떻게 패킹하는지 그 자체로 문서가 됩니다.
 
 <details>
 <summary>전체 명령어</summary>
 
 | 명령어 | 설명 |
 |---|---|
-| `pack <path>` | 전체 파이프라인 — 대부분 이걸 쓰면 됩니다 |
+| `pack <path>` | 전체 파이프라인 — `ziplex-gui`는 플래그 없이 똑같은 걸 해줍니다 |
 | `init <path>` | 대상 프로젝트에 `.ziplex.json`(`include`/`ignore` glob 패턴) 생성 |
 | `collect <path>` | 파일 수집 + 보안 스캔만 |
 | `tokens <path>` | 압축 전/후 토큰 수 |
@@ -102,9 +112,13 @@ ziplex pack ./your-project/ --auto --auto-correct  # 완전 비대화형 (CI, �
 | `detail <name>.detail.json <file-key>` | 파일 하나의 압축 본문을 부분만 읽기 (`--start`/`--end`) |
 | `freshness <path> <name>.cache.json` | `aif.json`이 디스크의 실제 파일과 맞는지 해시로 확인 — LLM 호출 없음 |
 | `skill <name>.json` | Claude Agent Skill로 내보내기 (`.claude/skills/<slug>/`) — MCP 서버 불필요 |
-| `select <path>` | 대화형 파일 선택만 |
-| `analyze <path>` | LLM 분석만 |
+| `link <name>.json <file> <target>` / `unlink ...` | 이미 저장된 `aif.json`에 의존 관계 엣지를 추가/삭제 — `pack`을 다시 돌릴 필요 없음 |
+| `settings` / `settings set <key> <value>` | `~/.ziplex/settings.json` 확인/변경 — 출력 폴더, LLM 프로바이더/API 키/모델. GUI Options 페이지의 CLI 버전 |
+| `checkpoint` / `checkpoint clean [<path>\|--all]` | 중단된 `pack`이 남긴 체크포인트 파일 목록 확인/삭제 |
+| `doctor [<path>]` | 환경 점검 — Python 버전, 활성 LLM 프로바이더/API 키, secretlint, 남은 체크포인트. LLM 호출 없음 |
 | `signatures \| dependencies \| api \| compress \| debug <file>` | 파일 하나에 대해 추출 단계 하나만 실행 |
+
+`ziplex --version`(`ziplex-gui --version`/`ziplex-mcp --version`도 동일)으로 설치된 버전을 확인할 수 있습니다.
 
 </details>
 
