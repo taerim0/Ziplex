@@ -101,6 +101,8 @@ ziplex pack ./your-project/ --auto --auto-correct  # 완전 비대화형 (CI, �
 <details>
 <summary>전체 명령어</summary>
 
+목록이 기억 안 나시면? 아무 인자 없이 `ziplex`만 치면 같은 표가 그대로 출력됩니다 — 이 CLI에서 유일하게 영어로 나오는 부분입니다.
+
 | 명령어 | 설명 |
 |---|---|
 | `pack <path>` | 전체 파이프라인 — `ziplex-gui`는 플래그 없이 똑같은 걸 해줍니다 |

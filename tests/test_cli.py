@@ -69,6 +69,26 @@ def test_version_flag_prints_version_and_exits_zero(monkeypatch, capsys):
     assert cli.__version__ in capsys.readouterr().out
 
 
+def test_bare_invocation_prints_english_command_overview(monkeypatch, capsys):
+    # A bare `ziplex` with no subcommand used to silently exit 0 with no
+    # output at all -- the main() if/elif dispatch chain matched nothing.
+    # Reported directly as wanting a real command list here, in English
+    # specifically (unlike every other message in this CLI, Korean by
+    # long-standing convention -- see AGENTS.md), since this is often the
+    # very first thing anyone lands on.
+    monkeypatch.setattr(sys, "argv", ["cli.py"])
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "pack <path>" in out
+    assert "settings" in out
+    assert "doctor" in out
+    # English, not the Korean every other command's own --help text uses.
+    assert "패킹" not in out
+    assert "파이프라인" not in out
+
+
 def test_mask_secret_keeps_only_last_four_characters():
     assert _mask_secret("sk-ABCDEFGHIJKL1234") == "***************1234"
 

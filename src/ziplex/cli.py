@@ -180,6 +180,45 @@ def _print_doctor(report: dict) -> None:
             print(f"  ℹ️  git 저장소: {git_state} (freshness-gate CI 사용 시 참고)")
 
 
+# Every other message in this CLI is Korean by long-standing convention (see
+# AGENTS.md) -- this one's the deliberate exception. A bare `ziplex` with no
+# subcommand used to silently exit 0 with no output at all (the if/elif
+# dispatch chain in main() just matches nothing); reported directly as
+# wanting a real command list here, and in English specifically -- this is
+# often the very first thing anyone lands on (following the English-first
+# README, or just typing the bare command name to see what's there), before
+# they've necessarily learned this CLI's own output is Korean everywhere
+# else. `ziplex <command> --help`/`ziplex --help` are untouched (still
+# argparse's own full, Korean help text) -- this is a friendlier, shorter
+# alternative shown only on a genuinely empty invocation, not a translation
+# of the whole help system.
+_COMMAND_OVERVIEW = [
+    ("pack <path>", "Full pipeline (or just run `ziplex-gui` -- no flags to remember)"),
+    ("init <path>", "Scaffold .ziplex.json (include/ignore glob patterns)"),
+    ("collect <path>", "File collection + security scan only"),
+    ("tokens <path>", "Token count, before/after compression"),
+    ("tree <path>", "Dependency tree only"),
+    ("search <path> <pattern>", "Regex search across all safe files"),
+    ("detail <name>.detail.json <file>", "Partial read of one file's compressed body"),
+    ("freshness <path> <name>.cache.json", "Hash-check aif.json against disk -- no LLM calls"),
+    ("skill <name>.json", "Export as a Claude Agent Skill"),
+    ("link / unlink <name>.json <file> <target>", "Add/remove a dependency edge"),
+    ("settings [set <key> <value>]", "View/change ~/.ziplex/settings.json"),
+    ("checkpoint [clean [<path>|--all]]", "List/delete leftover checkpoint files"),
+    ("doctor [<path>]", "Environment sanity check -- no LLM calls"),
+    ("signatures | dependencies | api | compress | debug <file>", "One extraction step on a single file"),
+]
+
+
+def _print_command_overview() -> None:
+    print(f"Ziplex {__version__} -- local project -> aif.json, a token-reduced context format for AI\n")
+    print("Usage: ziplex <command> [options]\n")
+    width = max(len(cmd) for cmd, _ in _COMMAND_OVERVIEW)
+    for cmd, desc in _COMMAND_OVERVIEW:
+        print(f"  {cmd.ljust(width)}  {desc}")
+    print("\nRun `ziplex <command> --help` for a command's full options, or `ziplex-gui` for the GUI.")
+
+
 def _edit_saved_relationship(aif_path: str, file_name: str, target: str, edit_fn, verb: str) -> None:
     """Shared body for `ziplex link`/`ziplex unlink` -- both are a one-shot
     wrapper over file/relationship.py's add_relationship()/
@@ -660,6 +699,9 @@ def main():
 
     elif args.command == "unlink":
         _edit_saved_relationship(args.aif_path, args.file, args.target, remove_relationship, "연결 해제됨")
+
+    else:
+        _print_command_overview()
 
 if __name__ == "__main__":
     main()

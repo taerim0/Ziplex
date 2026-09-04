@@ -101,6 +101,8 @@ A local model (Gemma, Llama, Mistral, ...) served through Ollama or LM Studio is
 <details>
 <summary>Every command</summary>
 
+Forgot the list? A bare `ziplex` (no subcommand) prints this same table, English text and all — the one part of this CLI that isn't Korean.
+
 | Command | Description |
 |---|---|
 | `pack <path>` | Full pipeline — `ziplex-gui` is the same thing without the flags |
