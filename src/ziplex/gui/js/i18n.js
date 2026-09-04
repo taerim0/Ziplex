@@ -13,15 +13,19 @@
 // of its own, since it's the lowest layer everything else depends on.
 //
 // This file: LANG_KEY/getLang()/setLang() (localStorage-backed, same
-// pattern as app.js's aif_path/project_path -- a purely client-side
-// display preference, never sent to the server, so it lives alongside
-// the other browser-only state rather than in settings.py's per-user
-// config file, which only ever holds things the *backend* needs to know),
-// the I18N dictionary (ko/en), t(key, vars) (the lookup + optional
-// interpolation), and applyStaticI18n() (for index.html's own static
-// markup -- the sidebar/topbar links aren't rendered by any render*()
-// function, so nothing else in this app would ever re-translate them on
-// a language switch without this).
+// pattern as app.js's aif_path/project_path -- a client-side display
+// preference that lives alongside the other browser-only state rather
+// than in settings.py's per-user config file, which only ever holds
+// things the *backend* needs to know on its own), the I18N dictionary
+// (ko/en), t(key, vars) (the lookup + optional interpolation), and
+// applyStaticI18n() (for index.html's own static markup -- the
+// sidebar/topbar links aren't rendered by any render*() function, so
+// nothing else in this app would ever re-translate them on a language
+// switch without this). Not persisted to the backend -- landing.js's own
+// pack-start request is the one place getLang() rides along as a plain
+// request field (`progress_lang`, so a pack job's own progress log
+// matches this same language -- see packager.pack()'s param of the same
+// name), a one-off value for that single call, not a stored preference.
 
 const LANG_KEY = "ziplex.lang";
 

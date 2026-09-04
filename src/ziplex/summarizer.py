@@ -28,6 +28,7 @@ import json
 
 from .file.textutil import relative_key as _rel_key
 from .llm import analyze_file_summary, analyze_text_summary, analyze_batch_summaries
+from .progress_i18n import pick
 
 # Concurrency used when requesting per-file summaries in parallel.
 # Kept conservative with LLM API rate limits in mind — adjust if needed.
@@ -169,7 +170,10 @@ def generate_summaries(pending: dict[str, dict], root: Path, lang: str = "en") -
                     print(f"  ✅ {name}")
                 else:
                     results[fp] = placeholder
-                    print(f"  ❌ {name} (요약 생성 실패 -- 검토 단계에서 확인 필요)")
+                    print(pick(
+                        f"  ❌ {name} (summary generation failed -- needs review)",
+                        f"  ❌ {name} (요약 생성 실패 -- 검토 단계에서 확인 필요)",
+                    ))
     return results
 
 

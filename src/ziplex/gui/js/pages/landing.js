@@ -14,7 +14,7 @@ import {
   openProject, relativeTime, browseButton, browseAifButton, browseSaveButton,
   staleTooltip, renderStaleDetail,
 } from "../app.js";
-import { t } from "../i18n.js";
+import { t, getLang } from "../i18n.js";
 
 // Just the logo -- no content of its own yet. Exists as its own screen
 // (rather than redirecting "/" straight to renderPackHome() or
@@ -202,6 +202,13 @@ export function renderPackHome() {
         no_llm: noLlmInput.checked,
         selected_files,
         lang: packLangInput.value,
+        // The GUI's own display language (not packLangInput's packed-
+        // content choice above) -- so this job's progress log, captured
+        // straight from packager.pack()'s own print()s, matches whatever
+        // language the rest of this page is already in instead of always
+        // being Korean regardless of this setting. See packager.pack()'s
+        // `progress_lang` param / progress_i18n.py's own docstring.
+        progress_lang: getLang(),
       });
       location.hash = `#/pack/${job_id}`;
     } catch (e) {

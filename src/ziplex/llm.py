@@ -8,6 +8,7 @@ import requests
 from dotenv import load_dotenv
 
 from . import settings as app_settings
+from .progress_i18n import pick
 
 load_dotenv()
 
@@ -267,7 +268,10 @@ class GeminiProvider:
                 # the whole pack() run and losing all extraction work done
                 # so far instead of saving a resumable checkpoint first.
                 wait = _retry_wait(attempt)
-                print(f"  ⚠️  {prefix}네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도")
+                print(pick(
+                    f"  ⚠️  {prefix}Network error ({e.__class__.__name__}), retrying in {wait}s",
+                    f"  ⚠️  {prefix}네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도",
+                ))
                 time.sleep(wait)
                 continue
 
@@ -287,7 +291,10 @@ class GeminiProvider:
                     # summarizer.py's thread pool or packager.py's
                     # rules/prompt calls and crashing the whole pack() run.
                     finish_reason = data["candidates"][0].get("finishReason", "unknown") if data["candidates"] else "unknown"
-                    print(f"  ❌ {prefix}응답에 콘텐츠 없음 (finishReason: {finish_reason})")
+                    print(pick(
+                        f"  ❌ {prefix}Empty response (finishReason: {finish_reason})",
+                        f"  ❌ {prefix}응답에 콘텐츠 없음 (finishReason: {finish_reason})",
+                    ))
                     break
                 return _clean_json(text)
 
@@ -296,11 +303,14 @@ class GeminiProvider:
 
             if error_code in [503, 429]:
                 wait = _retry_wait(attempt)
-                print(f"  ⚠️  {prefix}서버 과부하, {wait}초 후 재시도")
+                print(pick(
+                    f"  ⚠️  {prefix}Server overloaded, retrying in {wait}s",
+                    f"  ⚠️  {prefix}서버 과부하, {wait}초 후 재시도",
+                ))
                 time.sleep(wait)
                 continue
 
-            print(f"  ❌ {prefix}API 에러: {error_msg}")
+            print(pick(f"  ❌ {prefix}API error: {error_msg}", f"  ❌ {prefix}API 에러: {error_msg}"))
             break
 
         return "{}"
@@ -364,7 +374,10 @@ class OpenAIProvider:
                 # Same transient-failure treatment as GeminiProvider's own
                 # generate() -- see that method's comment for why.
                 wait = _retry_wait(attempt)
-                print(f"  ⚠️  {prefix}네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도")
+                print(pick(
+                    f"  ⚠️  {prefix}Network error ({e.__class__.__name__}), retrying in {wait}s",
+                    f"  ⚠️  {prefix}네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도",
+                ))
                 time.sleep(wait)
                 continue
 
@@ -379,12 +392,15 @@ class OpenAIProvider:
             # across every backend this class might be pointed at.
             if response.status_code in (429, 500, 502, 503, 504):
                 wait = _retry_wait(attempt)
-                print(f"  ⚠️  {prefix}서버 과부하, {wait}초 후 재시도")
+                print(pick(
+                    f"  ⚠️  {prefix}Server overloaded, retrying in {wait}s",
+                    f"  ⚠️  {prefix}서버 과부하, {wait}초 후 재시도",
+                ))
                 time.sleep(wait)
                 continue
 
             error_msg = data.get("error", {}).get("message", "unknown") if isinstance(data, dict) else "unknown"
-            print(f"  ❌ {prefix}API 에러: {error_msg}")
+            print(pick(f"  ❌ {prefix}API error: {error_msg}", f"  ❌ {prefix}API 에러: {error_msg}"))
             break
 
         return "{}"
@@ -441,7 +457,10 @@ class ClaudeProvider:
                 data = response.json()
             except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
                 wait = _retry_wait(attempt)
-                print(f"  ⚠️  {prefix}네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도")
+                print(pick(
+                    f"  ⚠️  {prefix}Network error ({e.__class__.__name__}), retrying in {wait}s",
+                    f"  ⚠️  {prefix}네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도",
+                ))
                 time.sleep(wait)
                 continue
 
@@ -453,12 +472,15 @@ class ClaudeProvider:
             # usual 429/5xx set every other provider here also retries on.
             if response.status_code in (429, 500, 502, 503, 504, 529):
                 wait = _retry_wait(attempt)
-                print(f"  ⚠️  {prefix}서버 과부하, {wait}초 후 재시도")
+                print(pick(
+                    f"  ⚠️  {prefix}Server overloaded, retrying in {wait}s",
+                    f"  ⚠️  {prefix}서버 과부하, {wait}초 후 재시도",
+                ))
                 time.sleep(wait)
                 continue
 
             error_msg = data.get("error", {}).get("message", "unknown") if isinstance(data, dict) else "unknown"
-            print(f"  ❌ {prefix}API 에러: {error_msg}")
+            print(pick(f"  ❌ {prefix}API error: {error_msg}", f"  ❌ {prefix}API 에러: {error_msg}"))
             break
 
         return "{}"

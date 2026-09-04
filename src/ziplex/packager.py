@@ -18,6 +18,7 @@ from .confidence import estimate_confidence, REVIEW_THRESHOLD
 from .config import collection_kwargs
 from .tech_stack import detect_tech_stack
 from .paths import REPO_ROOT
+from .progress_i18n import pick, set_current as _set_progress_lang
 from . import checkpoint as ckpt
 from . import summarizer
 from . import folder_summary
@@ -150,12 +151,15 @@ def _confirm_regenerate_failed_summaries(failed_names: list[str], interactive: b
     if not interactive:
         return False
 
-    print(f"\n  ⚠️  이전 pack에서 요약 생성에 실패한 파일 {len(failed_names)}개가 캐시에 있습니다:")
+    print(pick(
+        f"\n  ⚠️  {len(failed_names)} file(s) with a failed summary from a previous pack are in the cache:",
+        f"\n  ⚠️  이전 pack에서 요약 생성에 실패한 파일 {len(failed_names)}개가 캐시에 있습니다:",
+    ))
     for name in failed_names:
         print(f"      - {name}")
-    print("  [1] 다시 생성 시도")
-    print("  [2] 그대로 둠 (검토 단계에서 확인)")
-    choice = input("  선택: ").strip()
+    print(pick("  [1] Try regenerating", "  [1] 다시 생성 시도"))
+    print(pick("  [2] Leave as-is (check during review)", "  [2] 그대로 둠 (검토 단계에서 확인)"))
+    choice = input(pick("  Choice: ", "  선택: ")).strip()
     return choice == "1"
 
 
@@ -202,6 +206,7 @@ def pack(
     result_dir: str | Path | None = None,
     lang: str = "en",
     discard_checkpoint: bool | None = None,
+    progress_lang: str = "ko",
 ) -> dict:
     """include/ignore are extra glob patterns (gitignore syntax -- see
     collect_files()'s own docstring for exactly how each is applied),
@@ -351,7 +356,26 @@ def pack(
     project.tech_stack/security_scan/format_notes are always attached --
     a reader with no other context should be able to tell what language a
     pack's own content is in without guessing from the text itself.
+
+    progress_lang is a wholly separate concern from `lang` above -- which
+    language this call's own progress/status `print()`s (llm.py's retry
+    messages, checkpoint.py's save/failure notices, summarizer.py's
+    per-file lines, this function's own stage headers) are written in, not
+    what language ends up *inside* aif.json. Defaults to "ko" (this
+    project's own long-standing CLI convention -- see AGENTS.md); the GUI
+    passes its own current display-language setting instead
+    (`pack_service.start_pack_job()`), so a human watching the GUI's pack-
+    progress log sees it match whatever language the rest of that page is
+    already in, rather than always-Korean regardless of that setting -- a
+    real gap reported directly (the log stayed Korean even with English
+    picked on the Options page, since that page's language switcher only
+    ever translates the GUI's own chrome, and this log is just captured
+    stdout from these same prints). See progress_i18n.py's own docstring
+    for the mechanism (a contextvars.ContextVar, set here, read via
+    progress_i18n.pick() at each print site instead of threading a new
+    parameter through every function in between).
     """
+    _set_progress_lang(progress_lang)
     if lang not in LANGUAGE_NAMES:
         lang = "en"
     root = Path(root_path)
@@ -419,14 +443,17 @@ def pack(
     # already fixed once for rules/prompt vs. `use_llm` (see below).
     lang_matches = restored_lang == lang
     if checkpoint and not lang_matches:
-        print(f"  ⚠️  체크포인트가 다른 언어({restored_lang})로 생성됨 -- rules/AI 가이드/요약을 {lang}(으)로 다시 생성합니다")
+        print(pick(
+            f"  ⚠️  Checkpoint was generated in a different language ({restored_lang}) -- regenerating rules/AI guide/summaries in {lang}",
+            f"  ⚠️  체크포인트가 다른 언어({restored_lang})로 생성됨 -- rules/AI 가이드/요약을 {lang}(으)로 다시 생성합니다",
+        ))
 
     # 1. Collect files
-    print("\n📁 파일 수집 중...")
+    print(pick("\n📁 Collecting files...", "\n📁 파일 수집 중..."))
     files = collect_files(root_path, **collection_kwargs(root_path, extra_include=include, extra_ignore=ignore))
 
     # 2. Security scan
-    print("🔒 보안 스캔 중...")
+    print(pick("🔒 Security scanning...", "🔒 보안 스캔 중..."))
     scan_result = scan_files(files)
     safe_files = scan_result["safe"]
     dangerous = scan_result["dangerous"]
@@ -466,10 +493,10 @@ def pack(
         wanted = set(preselected)
         candidates = safe_files + [d["file"] for d in dangerous if d["file"] not in included_anyway]
         selected = [f for f in candidates if _rel_key(f, root) in wanted]
-        print(f"  ✅ {len(selected)}개 파일 선택됨 (지정된 목록 기준)")
+        print(pick(f"  ✅ {len(selected)} file(s) selected (from the given list)", f"  ✅ {len(selected)}개 파일 선택됨 (지정된 목록 기준)"))
     elif auto:
         selected = safe_files
-        print(f"  ✅ 전체 {len(selected)}개 파일 선택됨")
+        print(pick(f"  ✅ All {len(selected)} file(s) selected", f"  ✅ 전체 {len(selected)}개 파일 선택됨"))
     else:
         selected = select_files(safe_files, root_path)
 
@@ -490,19 +517,22 @@ def pack(
         selected_set = set(selected)
         excluded = [d["file"] for d in dangerous if d["file"] not in selected_set]
         if excluded:
-            print(f"  ⚠️  민감 파일 제외: {len(excluded)}개")
+            print(pick(f"  ⚠️  Sensitive files excluded: {len(excluded)}", f"  ⚠️  민감 파일 제외: {len(excluded)}개"))
             for f in excluded:
                 print(f"  ❌ {Path(f).name}")
 
     if not selected:
-        print("선택된 파일 없음.")
+        print(pick("No files selected.", "선택된 파일 없음."))
         return {}
 
     # incremental reuse (staleness stage 2): {relative key: summary} for
     # files whose content hasn't changed since the last successful pack
     previous_summaries = load_previous_summaries(root_path, selected, effective_result_dir, lang=lang) if use_cache else {}
     if previous_summaries:
-        print(f"  ♻️  이전 pack에서 변경 없는 파일 {len(previous_summaries)}개 발견 — 요약 재사용")
+        print(pick(
+            f"  ♻️  Found {len(previous_summaries)} unchanged file(s) from a previous pack — reusing their summaries",
+            f"  ♻️  이전 pack에서 변경 없는 파일 {len(previous_summaries)}개 발견 — 요약 재사용",
+        ))
 
         failed_previously = [
             name for name, summary in previous_summaries.items()
@@ -513,7 +543,7 @@ def pack(
                 del previous_summaries[name]
 
     # 4. Tree-sitter analysis
-    print("\n🔍 코드 구조 분석 중...")
+    print(pick("\n🔍 Analyzing code structure...", "\n🔍 코드 구조 분석 중..."))
     files_data = {}
     signatures_map = {}
 
@@ -564,7 +594,7 @@ def pack(
 
         # restore from checkpoint
         if name in restored_files_data:
-            print(f"  ✅ {name} (체크포인트에서 복원)")
+            print(pick(f"  ✅ {name} (restored from checkpoint)", f"  ✅ {name} (체크포인트에서 복원)"))
             files_data[file_path] = dict(restored_files_data[name])
             if not lang_matches and files_data[file_path].get("summary"):
                 # A summary already captured in a stale-language checkpoint
@@ -608,9 +638,9 @@ def pack(
                 "summary": reused_summary or media_summary(file_path, media_kind),
             }
             if reused_summary:
-                print(f"  ♻️  {name} (변경 없음, 이전 요약 재사용)")
+                print(pick(f"  ♻️  {name} (unchanged, reusing previous summary)", f"  ♻️  {name} (변경 없음, 이전 요약 재사용)"))
             else:
-                print(f"  🖼️  {name} (미디어 파일, LLM 미사용)")
+                print(pick(f"  🖼️  {name} (media file, no LLM used)", f"  🖼️  {name} (미디어 파일, LLM 미사용)"))
             continue
 
         sigs = extract_signatures(file_path)
@@ -633,7 +663,7 @@ def pack(
             signatures_map[file_path] = sigs
 
         if reused_summary:
-            print(f"  ♻️  {name} (변경 없음, 이전 요약 재사용)")
+            print(pick(f"  ♻️  {name} (unchanged, reusing previous summary)", f"  ♻️  {name} (변경 없음, 이전 요약 재사용)"))
         else:
             print(f"  ✅ {name}")
 
@@ -653,11 +683,14 @@ def pack(
         fp: data for fp, data in files_data.items() if not data.get("summary")
     }
     if use_llm:
-        print("\n🤖 LLM 분석 중...")
+        print(pick("\n🤖 Analyzing with LLM...", "\n🤖 LLM 분석 중..."))
         for fp, summary in summarizer.generate_summaries(pending, root, lang=lang).items():
             files_data[fp]["summary"] = summary
     else:
-        print("\n📐 구조 정보만으로 요약 생성 중 (--no-llm, LLM 미사용)...")
+        print(pick(
+            "\n📐 Generating summaries from structural info only (--no-llm, LLM unused)...",
+            "\n📐 구조 정보만으로 요약 생성 중 (--no-llm, LLM 미사용)...",
+        ))
         for fp, summary in summarizer.generate_structural_summaries(pending, root, lang=lang).items():
             files_data[fp]["summary"] = summary
 
@@ -727,7 +760,7 @@ def pack(
     # run is about to claim.
     rules = restored_rules if (use_llm and lang_matches) else []
     if not rules and use_llm:
-        print("  📋 코딩 룰 추출 중...")
+        print(pick("  📋 Extracting coding rules...", "  📋 코딩 룰 추출 중..."))
         while not rules:
             rules_response = analyze_rules(signatures_map, lang=lang)
             try:
@@ -751,7 +784,7 @@ def pack(
                 break
 
             result = ckpt.handle_llm_failure(
-                "rules", "코딩 룰",
+                "rules", pick("coding rules", "코딩 룰"),
                 ckpt.build_snapshot(root, files_data, lang=lang),
                 root_path,
                 interactive=interactive,
@@ -770,15 +803,15 @@ def pack(
                 # empty list.
                 rules = [r.strip() for r in result.split(",") if r.strip()]
     elif rules:
-        print("  📋 코딩 룰 (체크포인트에서 복원)")
+        print(pick("  📋 Coding rules (restored from checkpoint)", "  📋 코딩 룰 (체크포인트에서 복원)"))
     else:
-        print("  📋 코딩 룰 추출 건너뜀 (--no-llm)")
+        print(pick("  📋 Skipping coding rule extraction (--no-llm)", "  📋 코딩 룰 추출 건너뜀 (--no-llm)"))
 
     # generate prompt (restored from checkpoint if available)
     # Same use_llm/lang_matches guard as rules above, and for the same reason.
     prompt = restored_prompt if (use_llm and lang_matches) else ""
     if not prompt and use_llm:
-        print("  ✍️  AI 가이드 생성 중...")
+        print(pick("  ✍️  Generating AI guide...", "  ✍️  AI 가이드 생성 중..."))
         while not prompt:
             prompt_response = analyze_prompt(
                 project_name=project_name,
@@ -803,7 +836,7 @@ def pack(
                     break
 
             result = ckpt.handle_llm_failure(
-                "prompt", "AI 가이드",
+                "prompt", pick("AI guide", "AI 가이드"),
                 ckpt.build_snapshot(root, files_data, rules, lang=lang),
                 root_path,
                 interactive=interactive,
@@ -815,16 +848,19 @@ def pack(
             else:
                 prompt = result
     elif prompt:
-        print("  ✍️  AI 가이드 (체크포인트에서 복원)")
+        print(pick("  ✍️  AI guide (restored from checkpoint)", "  ✍️  AI 가이드 (체크포인트에서 복원)"))
     else:
-        print("  ✍️  AI 가이드 생성 건너뜀 (--no-llm)")
+        print(pick("  ✍️  Skipping AI guide generation (--no-llm)", "  ✍️  AI 가이드 생성 건너뜀 (--no-llm)"))
         prompt = STRUCTURAL_ONLY_NOTE.get(lang, STRUCTURAL_ONLY_NOTE["en"])
 
     # Per-folder summaries -- see folder_summary.py's own module docstring
     # for why this is a single best-effort call (structural fallback per
     # folder on any failure), not wired into the checkpoint/resume system
     # rules/prompt/per-file summaries all get.
-    print("  🗂️  폴더 요약 생성 중..." if use_llm else "  🗂️  폴더 요약 생성 중 (구조 정보 기반)...")
+    print(pick("  🗂️  Generating folder summaries...", "  🗂️  폴더 요약 생성 중...") if use_llm else pick(
+        "  🗂️  Generating folder summaries (structural info only)...",
+        "  🗂️  폴더 요약 생성 중 (구조 정보 기반)...",
+    ))
     folders = (
         folder_summary.generate_folder_summaries(rel_files_data, lang=lang)
         if use_llm
@@ -838,7 +874,7 @@ def pack(
     # detail.json by save_aif() and not part of what's loaded by default).
     # files_data is fully populated with summaries by now, so this reflects
     # the real savings an AI gets from reading aif.json.
-    print("\n📊 토큰 분석 중...")
+    print(pick("\n📊 Analyzing tokens...", "\n📊 토큰 분석 중..."))
     token_results, _ = analyze_tokens_with_payload(selected, files_data)
 
     # Security-scan transparency: how many files step 2's scan_files() flagged
@@ -961,7 +997,7 @@ def resolve_output_path(aif: dict, output_path: str | None) -> Path:
     return Path(output_path)
 
 
-def save_aif(aif: dict, output_path: str | None = None) -> None:
+def save_aif(aif: dict, output_path: str | None = None, progress_lang: str = "ko") -> None:
     """Writes the AIF result to output_path, or to result/<project name>.json if
     output_path isn't given (see resolve_output_path()) — mirroring
     checkpoint.CHECKPOINT_DIR, anchored to the repo root rather than the
@@ -981,7 +1017,17 @@ def save_aif(aif: dict, output_path: str | None = None) -> None:
       hash} snapshot of what was packed, for freshness.check_freshness() to
       compare against later -- not part of aif.json itself, since it's
       packaging-internal bookkeeping an AI reading the project has no use for.
+
+    progress_lang -- same meaning as pack()'s own param of the same name
+    (see its docstring), set here too rather than relying only on pack()'s
+    own contextvars.ContextVar: gui/pack_service.py's submit_review() calls
+    this well after the job's original pack() run has already returned
+    (once a human submits the review form), on a different Flask request
+    -- a fresh context with no memory of what pack() set earlier, so this
+    function needs its own explicit copy of whichever language that job
+    was started with rather than silently falling back to "ko".
     """
+    _set_progress_lang(progress_lang)
     output_path = resolve_output_path(aif, output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -998,15 +1044,15 @@ def save_aif(aif: dict, output_path: str | None = None) -> None:
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(lean_aif, f, ensure_ascii=False, indent=2)
-    print(f"\n✅ AIF.json 저장됨: {output_path}")
+    print(pick(f"\n✅ AIF.json saved: {output_path}", f"\n✅ AIF.json 저장됨: {output_path}"))
 
     detail_path = output_path.with_name(f"{output_path.stem}.detail.json")
     with open(detail_path, "w", encoding="utf-8") as f:
         json.dump(detail, f, ensure_ascii=False, indent=2)
-    print(f"📦 상세 정보(compressed) 저장됨: {detail_path}")
+    print(pick(f"📦 Detail (compressed) saved: {detail_path}", f"📦 상세 정보(compressed) 저장됨: {detail_path}"))
 
     if manifest is not None:
         cache_path = output_path.with_name(f"{output_path.stem}.cache.json")
         with open(cache_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f, ensure_ascii=False, indent=2)
-        print(f"🗂️  캐시(해시) 저장됨: {cache_path}")
+        print(pick(f"🗂️  Cache (hash) saved: {cache_path}", f"🗂️  캐시(해시) 저장됨: {cache_path}"))

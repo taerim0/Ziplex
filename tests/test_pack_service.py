@@ -166,6 +166,7 @@ def test_get_job_status_includes_retry_params(tmp_path, monkeypatch):
         "no_llm": False,
         "selected_files": ["main.py"],
         "lang": "en",
+        "progress_lang": "ko",
     }
     _wait(job_id)
 

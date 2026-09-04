@@ -195,6 +195,12 @@ def api_pack_start():
     defensive fallback. Optional `resume` (default False) is set only by
     the error screen's "다시 시도" button, never by a fresh pack-form
     submission -- see start_pack_job()'s own docstring for what it changes.
+
+    Optional `progress_lang` -- unrelated to `lang` above, see
+    pack_service.start_pack_job()'s own docstring -- is the frontend's
+    current display language (`js/i18n.js`'s `getLang()`, sent by
+    `js/pack.js` alongside this request), not a packed-content choice;
+    missing/unrecognized falls back to "ko", today's existing default.
     """
     data = request.get_json(silent=True) or {}
     project_path = (data.get("project_path") or "").strip()
@@ -213,9 +219,10 @@ def api_pack_start():
     no_llm = bool(data.get("no_llm"))
     lang = data.get("lang") if data.get("lang") in LANGUAGE_NAMES else "en"
     resume = bool(data.get("resume"))
+    progress_lang = data.get("progress_lang") if data.get("progress_lang") in ("en", "ko") else "ko"
     job_id = pack_service.start_pack_job(
         project_path, output_path, no_cache=no_cache, no_llm=no_llm, selected_files=selected_files, lang=lang,
-        resume=resume,
+        resume=resume, progress_lang=progress_lang,
     )
     return jsonify({"job_id": job_id})
 

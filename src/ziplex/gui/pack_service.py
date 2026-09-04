@@ -378,14 +378,14 @@ def request_cancel(job_id: str, save: bool) -> bool:
 
 def _run(
     job: dict, project_path: str, no_cache: bool, no_llm: bool, selected_files: list[str],
-    result_dir: Path | None = None, lang: str = "en", resume: bool = False,
+    result_dir: Path | None = None, lang: str = "en", resume: bool = False, progress_lang: str = "ko",
 ) -> None:
     try:
         with _capture_for_job(job):
             aif = packager.pack(
                 project_path, interactive=False, use_cache=not no_cache, use_llm=not no_llm,
                 preselected=selected_files, check_cancelled=_check_cancelled_for(job),
-                result_dir=result_dir, lang=lang,
+                result_dir=result_dir, lang=lang, progress_lang=progress_lang,
                 # resume (only ever True for the error screen's "다시 시도"
                 # button, see start_pack_job()'s own docstring) forces a
                 # leftover checkpoint to always be resumed regardless of
@@ -423,7 +423,7 @@ def _run(
 
 def start_pack_job(
     project_path: str, output_path: str | None = None, no_cache: bool = False, no_llm: bool = False,
-    selected_files: list[str] | None = None, lang: str = "en", resume: bool = False,
+    selected_files: list[str] | None = None, lang: str = "en", resume: bool = False, progress_lang: str = "ko",
 ) -> str:
     """Kicks off one pack() run in a background thread and returns its job id
     immediately. selected_files (relative names, from list_selectable_files()'s
@@ -447,6 +447,16 @@ def start_pack_job(
     controls (the language every LLM-written value, plus Ziplex's own fixed
     strings, is actually written in). "en" is both the default and the
     recommended choice, matching the pack form's own dropdown.
+
+    progress_lang is unrelated to `lang` above -- it's packager.pack()'s
+    own same-named param (which language its progress/status `print()`s,
+    captured into this job's own log, are written in), sourced from
+    whatever display language the browser's currently on (`js/i18n.js`'s
+    `getLang()`) rather than the packed-content `lang` dropdown, so a human
+    watching this job's log sees it match the rest of the page they're
+    already reading. Stashed on the job (see `progress_lang` below) since
+    submit_review()'s own later save_aif() call needs the same value on a
+    separate request/thread that has no other way to know it.
 
     output_path resolution (settings.py): a caller-given output_path (the
     pack form's "출력 경로" field, non-blank) is used as-is for this run and
@@ -510,6 +520,7 @@ def start_pack_job(
         "no_llm": no_llm,
         "selected_files": selected_files or [],
         "lang": lang,
+        "progress_lang": progress_lang,
         "retry_output_path": original_output_path,
         "lock": threading.Lock(),
         "cancel_action": None,  # set by request_cancel(), consumed by _check_cancelled_for()
@@ -519,7 +530,8 @@ def start_pack_job(
         _jobs[job_id] = job
         _evict_old_finished_jobs()
     thread = threading.Thread(
-        target=_run, args=(job, project_path, no_cache, no_llm, selected_files or [], result_dir, lang, resume),
+        target=_run,
+        args=(job, project_path, no_cache, no_llm, selected_files or [], result_dir, lang, resume, progress_lang),
         daemon=True,
     )
     thread.start()
@@ -580,6 +592,7 @@ def get_job_status(job_id: str, since: int = 0) -> dict | None:
                 "no_llm": job["no_llm"],
                 "selected_files": job["selected_files"],
                 "lang": job["lang"],
+                "progress_lang": job["progress_lang"],
             },
         }
 
@@ -815,7 +828,7 @@ def submit_review(
     try:
         with _lock_for_path(str(result_path)), _capture_for_job(job):
             aif = finalize_aif(aif)
-            packager.save_aif(aif, output_path)
+            packager.save_aif(aif, output_path, progress_lang=job["progress_lang"])
     except Exception as e:
         with job["lock"]:
             job["state"] = "error"

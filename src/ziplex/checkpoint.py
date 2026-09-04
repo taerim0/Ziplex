@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .file.textutil import relative_key as _rel_key
 from .paths import REPO_ROOT
+from .progress_i18n import pick
 
 CHECKPOINT_DIR = REPO_ROOT / "checkpoint"
 
@@ -65,7 +66,7 @@ def save_checkpoint(root_path: str, data: dict) -> None:
     path = _checkpoint_path(root_path)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    print(f"\n  💾 체크포인트 저장됨: {path}")
+    print(pick(f"\n  💾 Checkpoint saved: {path}", f"\n  💾 체크포인트 저장됨: {path}"))
 
 
 def load_checkpoint(root_path: str) -> dict | None:
@@ -225,22 +226,22 @@ def handle_llm_failure(
     the caller gets a clean {} back and the checkpoint is there to resume
     from once the LLM is behaving again.
     """
-    print(f"\n  ⚠️  {name} {field} 생성 실패")
+    print(pick(f"\n  ⚠️  {name} {field} generation failed", f"\n  ⚠️  {name} {field} 생성 실패"))
 
     if not interactive:
-        print("  💾 비대화형 모드 → 체크포인트 저장 후 중단")
+        print(pick("  💾 Non-interactive mode -> saving checkpoint and stopping", "  💾 비대화형 모드 → 체크포인트 저장 후 중단"))
         save_checkpoint(root_path, current_aif)
         return "EXIT"
 
-    print("  [1] 재시도")
-    print("  [2] 직접 입력")
-    print("  [3] 저장 후 종료")
-    choice = input("  선택: ").strip()
+    print(pick("  [1] Retry", "  [1] 재시도"))
+    print(pick("  [2] Enter manually", "  [2] 직접 입력"))
+    print(pick("  [3] Save and exit", "  [3] 저장 후 종료"))
+    choice = input(pick("  Choice: ", "  선택: ")).strip()
 
     if choice == "1":
         return None
     elif choice == "2":
-        return input(f"  {field} 직접 입력: ").strip()
+        return input(pick(f"  Enter {field}: ", f"  {field} 직접 입력: ")).strip()
     elif choice == "3":
         save_checkpoint(root_path, current_aif)
         return "EXIT"
@@ -257,8 +258,8 @@ def resume_checkpoint_choice(interactive: bool) -> bool:
     if not interactive:
         return True
 
-    print(f"\n  📂 체크포인트 발견")
-    print("  [1] 이어서 진행")
-    print("  [2] 처음부터 시작")
-    choice = input("  선택: ").strip()
+    print(pick("\n  📂 Checkpoint found", "\n  📂 체크포인트 발견"))
+    print(pick("  [1] Resume", "  [1] 이어서 진행"))
+    print(pick("  [2] Start over", "  [2] 처음부터 시작"))
+    choice = input(pick("  Choice: ", "  선택: ")).strip()
     return choice != "2"
