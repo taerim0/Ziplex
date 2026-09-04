@@ -292,12 +292,17 @@ export async function renderPackJob(jobId) {
 
     // Shared confirm step for discardReview() -- reused by the Cancel
     // button below and the navigation guard just below it, so the same
-    // in-page modal (not window.confirm()'s native box) backs "취소"
-    // regardless of which path triggers it.
+    // in-page modal (not window.confirm()'s native box) backs it regardless
+    // of which path triggers it. Its own dedicated leaveWithoutSaving/
+    // stayCancel labels (not pack.guard.stay/pack.review.cancel, each
+    // shared with a different modal -- see their own i18n.js comment) spell
+    // out what each button actually does here, reported directly as
+    // unclear when this modal's "취소" read as ambiguous about which of
+    // "stay" or "leave" it meant.
     async function confirmDiscardReview() {
       return !!(await showConfirmModal(t("pack.review.confirmCancel"), [
-        { label: t("pack.guard.stay"), value: false, primary: true },
-        { label: t("pack.review.cancel"), value: true },
+        { label: t("pack.review.stayCancel"), value: false, primary: true },
+        { label: t("pack.review.leaveWithoutSaving"), value: true },
       ]));
     }
 

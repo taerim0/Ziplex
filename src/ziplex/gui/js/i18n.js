@@ -108,6 +108,13 @@ const I18N = {
     "pack.review.submit": "완료 및 저장",
     "pack.review.cancel": "취소",
     "pack.review.confirmCancel": "검토 중인 내용을 취소하고 버릴까요? 저장되지 않은 편집 내용이 모두 사라집니다.",
+    // The two confirmDiscardReview() button labels -- deliberately separate
+    // keys from pack.guard.stay/pack.review.cancel (see pack.js's own
+    // comment on that function) rather than reusing either: a bare "취소"
+    // on this specific modal didn't say what it actually does (leaves the
+    // review screen, discarding every edit) -- reported directly.
+    "pack.review.leaveWithoutSaving": "저장하지 않고 이동",
+    "pack.review.stayCancel": "취소 (머무르기)",
     "pack.review.projectName": "프로젝트 이름",
     "pack.review.aiGuide": "AI 가이드",
     "pack.review.codingRules": "코딩 룰",
@@ -276,6 +283,8 @@ const I18N = {
     "pack.review.submit": "Finish & Save",
     "pack.review.cancel": "Cancel",
     "pack.review.confirmCancel": "Cancel and discard this review? Any unsaved edits will be lost.",
+    "pack.review.leaveWithoutSaving": "Leave without saving",
+    "pack.review.stayCancel": "Cancel (stay)",
     "pack.review.projectName": "Project name",
     "pack.review.aiGuide": "AI guide",
     "pack.review.codingRules": "Coding rules",
