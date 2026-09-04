@@ -50,19 +50,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from .file.textutil import read_text as _safe_read_text
-
-try:
-    import tomllib
-except ImportError:  # Python < 3.11: no stdlib tomllib -- fall back to the
-    # actively-maintained pure-Python backport (identical loads()/
-    # TOMLDecodeError API), declared as a conditional dependency in
-    # pyproject.toml so this is the normal path on 3.10, not a degrade.
-    try:
-        import tomli as tomllib
-    except ImportError:  # backport missing too (a broken/incomplete
-        # install) -- degrade to the empty-dependency-list fallback
-        # documented above rather than raising.
-        tomllib = None
+from .toml_compat import tomllib
 
 # Caps dependency list length per manifest so a project with hundreds of npm
 # packages doesn't blow up aif.json's project section for a field that's

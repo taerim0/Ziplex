@@ -17,11 +17,12 @@ from .freshness import build_manifest, load_previous_summaries
 from .confidence import estimate_confidence, REVIEW_THRESHOLD
 from .config import collection_kwargs
 from .tech_stack import detect_tech_stack
+from .paths import REPO_ROOT
 from . import checkpoint as ckpt
 from . import summarizer
 from . import folder_summary
 
-RESULT_DIR = Path(__file__).parent.parent.parent / "result"
+RESULT_DIR = REPO_ROOT / "result"
 
 # The AI-guide text a structural-only pack (use_llm=False) ships in place of
 # an actual analyze_prompt() result -- so a reader (human or agent) sees why
@@ -874,6 +875,19 @@ def pack(
             # not recomputed here.
             "tech_stack": tech_stack,
             "security_scan": security_scan,
+            # The one-off --include/--ignore CLI extras this specific pack
+            # ran with, on top of whatever .ziplex.json already says (that
+            # file persists on disk, so a later freshness check can already
+            # re-derive it -- these extras otherwise can't, since nothing
+            # else remembers them). Always attached ({[], []} when none were
+            # given), same "cheap fact, zero/empty when N/A" convention
+            # tech_stack/security_scan already use -- check_freshness_scoped()
+            # accepts them back as extra_include/extra_ignore so a later
+            # freshness check (CLI, MCP, GUI) can reconstruct the exact scope
+            # this pack used instead of diffing against an unscoped full
+            # file tree and reporting every out-of-scope file as spuriously
+            # "added"/"removed".
+            "scope": {"include": include or [], "ignore": ignore or []},
             "format_notes": FORMAT_NOTES.get(lang, FORMAT_NOTES["en"]),
             # What language every LLM-written value (summaries/rules/prompt)
             # -- and, for use_llm=False, STRUCTURAL_ONLY_NOTE/the structural

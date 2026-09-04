@@ -17,8 +17,9 @@ import json
 from pathlib import Path
 
 from .file.textutil import relative_key as _rel_key
+from .paths import REPO_ROOT
 
-CHECKPOINT_DIR = Path(__file__).parent.parent.parent / "checkpoint"
+CHECKPOINT_DIR = REPO_ROOT / "checkpoint"
 
 
 def _checkpoint_path(root_path: str) -> Path:

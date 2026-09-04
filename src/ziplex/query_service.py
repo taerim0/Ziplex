@@ -24,7 +24,7 @@ from .file.relationship import (
 )
 from .file.textutil import parent_folder
 from .search import search_files, read_detail_range
-from .freshness import check_freshness_scoped
+from .freshness import check_freshness_scoped, load_pack_scope
 from .config import collect_and_scan
 
 
@@ -86,7 +86,8 @@ def _stale_warning(project_path: str | None, aif_path: str) -> dict | None:
     # correctly the first time) caught up and corrected the badge a moment
     # later. check_freshness_scoped() (freshness.py) now centralizes this
     # exact sequence so a third missed call site can't happen again.
-    report = check_freshness_scoped(project_path, manifest)
+    extra_include, extra_ignore = load_pack_scope(aif_path)
+    report = check_freshness_scoped(project_path, manifest, extra_include, extra_ignore)
     if not report.is_stale:
         return None
     return {"is_stale": True, "changed": report.changed, "added": report.added, "removed": report.removed}
@@ -276,7 +277,13 @@ def check_freshness(project_path: str, aif_path: str) -> dict:
     pack() itself would -- otherwise a project scoped with include/ignore
     patterns would get diffed against its *unscoped* full file tree here,
     reporting every out-of-scope file as spuriously "added" even
-    immediately after a fresh pack.
+    immediately after a fresh pack. `load_pack_scope()` additionally reads back
+    aif_path's own `project.scope` for the one-off --include/--ignore CLI
+    extras that specific pack ran with on top of .ziplex.json -- unlike
+    .ziplex.json, those aren't reproducible from disk on their own, so
+    without this a project packed with `pack --include ...` would still hit
+    the same spurious-"added" problem this docstring already describes,
+    just for the CLI-only part of its scope.
 
     check_freshness_scoped() (freshness.py) folds a previously-included
     dangerous file back into the comparison set -- without it, a file a
@@ -290,7 +297,8 @@ def check_freshness(project_path: str, aif_path: str) -> dict:
     directly (2026-08-26).
     """
     manifest = _load_json(str(_cache_path(aif_path)))
-    report = check_freshness_scoped(project_path, manifest)
+    extra_include, extra_ignore = load_pack_scope(aif_path)
+    report = check_freshness_scoped(project_path, manifest, extra_include, extra_ignore)
     return {
         "is_stale": report.is_stale,
         "changed": report.changed,

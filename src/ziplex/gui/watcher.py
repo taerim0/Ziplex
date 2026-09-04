@@ -33,7 +33,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from ..file.collector import DEFAULT_IGNORE
-from ..freshness import check_freshness_scoped
+from ..freshness import check_freshness_scoped, load_pack_scope
 
 # A single save can fire several OS events in quick succession (some
 # editors delete+recreate rather than write in place), and a git checkout/
@@ -164,7 +164,8 @@ def start_watch(project_path: str, aif_path: str) -> None:
     def recompute():
         try:
             manifest = _load_manifest(aif_path)
-            report = check_freshness_scoped(project_path, manifest)
+            extra_include, extra_ignore = load_pack_scope(aif_path)
+            report = check_freshness_scoped(project_path, manifest, extra_include, extra_ignore)
             with _watchers_lock:
                 entry = _watchers.get(key)
                 if entry is not None:

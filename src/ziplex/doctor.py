@@ -24,21 +24,13 @@ from . import __version__
 from . import checkpoint as _checkpoint
 from . import llm
 from . import settings as app_settings
+from .paths import REPO_ROOT
+from .toml_compat import tomllib
 
-try:
-    import tomllib
-except ImportError:  # Python <3.11: no stdlib tomllib -- same tomli
-    try:              # fallback tech_stack.py's own _load_toml() uses.
-        import tomli as tomllib
-    except ImportError:
-        tomllib = None
-
-# Same repo-root derivation checkpoint.py's own CHECKPOINT_DIR uses --
-# __file__ is src/ziplex/doctor.py, so .parent.parent.parent is the repo
-# root (or, for a real installed package, wherever pyproject.toml would be
-# if it were bundled, which it usually isn't -- _min_python() below
+# REPO_ROOT (or, for a real installed package, wherever pyproject.toml would
+# be if it were bundled, which it usually isn't -- _min_python() below
 # degrades to _FALLBACK_MIN_PYTHON in exactly that case).
-_PYPROJECT_PATH = Path(__file__).parent.parent.parent / "pyproject.toml"
+_PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 _FALLBACK_MIN_PYTHON = (3, 10)  # used only when pyproject.toml can't be read -- see _min_python()
 
 

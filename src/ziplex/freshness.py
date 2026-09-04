@@ -169,7 +169,38 @@ def freshness_candidate_files(scan_result: dict, root: str, manifest: dict[str, 
     return safe + included_before
 
 
-def check_freshness_scoped(project_path: str, manifest: dict[str, str]) -> FreshnessReport:
+def load_pack_scope(aif_path: str) -> tuple[list[str] | None, list[str] | None]:
+    """Reads back aif.json's own `project.scope` (packager.pack()'s record
+    of the one-off --include/--ignore CLI extras that pack ran with, see
+    that field's own comment) as check_freshness_scoped()'s
+    extra_include/extra_ignore -- a .ziplex.json is already reproducible
+    from disk on its own, but those CLI-only extras aren't persisted
+    anywhere else, so without this a later freshness check would diff
+    against an unscoped file tree and report every out-of-scope file as
+    spuriously added/removed.
+
+    (None, None) on any read failure, or for an aif.json packed before this
+    field existed -- every caller already treats that the same as "no
+    extra scope", check_freshness_scoped()'s own pre-existing default.
+    Shared by query_service.py (get_overview/list_files/check_freshness)
+    and gui/watcher.py (the live recompute) so this exact lookup can't drift
+    between the two the way the check_freshness_scoped() sequence itself
+    once did (see that function's own docstring).
+    """
+    try:
+        with open(aif_path, "r", encoding="utf-8") as f:
+            scope = json.load(f).get("project", {}).get("scope") or {}
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    return scope.get("include") or None, scope.get("ignore") or None
+
+
+def check_freshness_scoped(
+    project_path: str,
+    manifest: dict[str, str],
+    extra_include: list[str] | None = None,
+    extra_ignore: list[str] | None = None,
+) -> FreshnessReport:
     """collect_and_scan() -> freshness_candidate_files() -> check_freshness(),
     in one call. This is what every real freshness-check caller should use
     instead of open-coding that exact 3-step sequence itself.
@@ -186,8 +217,18 @@ def check_freshness_scoped(project_path: str, manifest: dict[str, str]) -> Fresh
     has to be made once -- the same reasoning config.py's own
     collect_and_scan() already applies one level up (this function calls
     that one, then the two functions above).
+
+    extra_include/extra_ignore are collect_and_scan()'s own same-named
+    params -- a project's .ziplex.json is already reproducible from disk on
+    its own, but a one-off `pack --include`/`--ignore` CLI scope isn't
+    persisted anywhere else, so without these a caller re-collecting here
+    would diff against an unscoped file tree and report every out-of-scope
+    file as spuriously added/removed. Pass packager.pack()'s own
+    `project.scope` (aif.json's record of exactly what a given pack used --
+    see that field's own comment) back in here; omit them (the default) for
+    the pre-existing "just respect .ziplex.json" behavior.
     """
-    scan_result = collect_and_scan(project_path)
+    scan_result = collect_and_scan(project_path, extra_include, extra_ignore)
     candidates = freshness_candidate_files(scan_result, project_path, manifest)
     return check_freshness(candidates, project_path, manifest)
 

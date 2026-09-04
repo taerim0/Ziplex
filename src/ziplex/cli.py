@@ -21,7 +21,7 @@ from .file.relationship import (
     build_tree, print_tree as print_dependency_tree, add_relationship, remove_relationship, CycleError,
 )
 from .search import search_files, read_detail_range
-from .freshness import check_freshness_scoped
+from .freshness import check_freshness_scoped, load_pack_scope
 from .skill_export import export_skill
 from .config import init_config, CONFIG_FILENAME, collection_kwargs as _collection_kwargs, collect_and_scan as _collect_and_scan
 from . import __version__
@@ -103,7 +103,14 @@ def _print_settings(settings: dict) -> None:
     for field in app_settings.EDITABLE_FIELDS:
         value = settings.get(field) or ""
         if not value:
-            print(f"  {field}: ({_SETTINGS_FIELD_HINTS[field]})")
+            # .get() with a generic fallback, not a bare index -- a field
+            # added to settings.EDITABLE_FIELDS without a matching entry
+            # here used to crash `ziplex settings` with an uncaught
+            # KeyError, breaking the "never raise" contract settings.py/
+            # config.py otherwise hold. _SETTINGS_FIELD_HINTS should still
+            # be kept in sync for a real explanation -- this is a safety
+            # net, not a reason to stop updating it.
+            print(f"  {field}: ({_SETTINGS_FIELD_HINTS.get(field, '미설정')})")
         elif field in _SECRET_FIELDS:
             print(f"  {field}: {_mask_secret(value)} (설정됨)")
         else:
@@ -564,7 +571,20 @@ def main():
         with open(args.cache_path, "r", encoding="utf-8") as f:
             manifest = json.load(f)
 
-        report = check_freshness_scoped(args.path, manifest)
+        # <name>.cache.json's sibling <name>.json (same convention
+        # query_service.py's _cache_path() derives in the other direction)
+        # -- read back for its own `project.scope`, so a project packed
+        # with a one-off `pack --include`/`--ignore` extra doesn't get
+        # diffed here against an unscoped file tree. Best-effort: any
+        # naming mismatch or read failure just means no extra scope, same
+        # as an aif.json packed before this field existed.
+        cache_path = Path(args.cache_path)
+        extra_include = extra_ignore = None
+        if cache_path.name.endswith(".cache.json"):
+            aif_path = cache_path.with_name(cache_path.name[: -len(".cache.json")] + ".json")
+            extra_include, extra_ignore = load_pack_scope(str(aif_path))
+
+        report = check_freshness_scoped(args.path, manifest, extra_include, extra_ignore)
 
         if not report.is_stale:
             print("✅ 최신 상태 — 변경된 파일 없음")
