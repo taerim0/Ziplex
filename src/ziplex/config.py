@@ -37,6 +37,14 @@ def load_config(project_path: str) -> dict:
     unreadable file, invalid JSON, or a JSON value that isn't an object all
     fall back to DEFAULT_CONFIG unchanged -- a broken config file shouldn't
     be able to block a pack, only fail to customize it.
+
+    Each of "include"/"ignore" is only accepted from the loaded JSON when
+    it's actually a list (of strings) -- a plausible typo like
+    `{"include": "src/**"}` (a bare string instead of a one-item list)
+    silently keeps that key's DEFAULT_CONFIG value instead of surviving
+    into collection_kwargs(), which concatenates it onto a list and would
+    otherwise raise TypeError on the very next pack/collect/tokens/tree
+    call for this project.
     """
     config = dict(DEFAULT_CONFIG)
     config_path = Path(project_path) / CONFIG_FILENAME
@@ -48,8 +56,9 @@ def load_config(project_path: str) -> dict:
 
     if isinstance(loaded, dict):
         for key in DEFAULT_CONFIG:
-            if key in loaded:
-                config[key] = loaded[key]
+            value = loaded.get(key)
+            if isinstance(value, list) and all(isinstance(item, str) for item in value):
+                config[key] = value
     return config
 
 

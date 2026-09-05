@@ -66,13 +66,18 @@ def collect_files(root_path: str, include: list[str] | None = None, ignore: list
     ignore_patterns = DEFAULT_IGNORE.copy()
     gitignore_path = root / ".gitignore"
     if gitignore_path.exists():
-        with open(gitignore_path, "r", encoding="utf-8") as f:
+        # read_text() (not a raw open()) so a non-UTF-8 .gitignore -- a
+        # stray CP1252 byte in a comment is plausible for a legacy repo --
+        # is skipped instead of crashing every CLI command that goes
+        # through collect_files() first.
+        gitignore_content = read_text(str(gitignore_path))
+        if gitignore_content is not None:
             gitignore_lines = [
                 line.strip()
-                for line in f.readlines()
+                for line in gitignore_content.splitlines()
                 if line.strip() and not line.startswith("#")
             ]
-        ignore_patterns.extend(gitignore_lines)
+            ignore_patterns.extend(gitignore_lines)
     if ignore:
         ignore_patterns.extend(ignore)
 

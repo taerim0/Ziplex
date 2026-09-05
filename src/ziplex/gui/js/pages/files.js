@@ -164,7 +164,13 @@ export async function renderFileDetail(name, params) {
       checked: "checked",
       onchange: async (e) => {
         includeTextRefs = e.target.checked;
-        showLoading();
+        // Scoped to relSection itself, not showLoading() -- that wipes
+        // the whole #app container, which detaches relSection from the
+        // live DOM (it's a child of #app) before drawRelationships() ever
+        // gets a chance to mutate it, permanently freezing the page on
+        // "Loading...".
+        relSection.innerHTML = "";
+        relSection.appendChild(el("p", { class: "muted loading", text: t("core.loading") }));
         try {
           const fresh = await fetchRelationships(name, includeTextRefs);
           drawRelationships(fresh.dependents, fresh.blastRadius);

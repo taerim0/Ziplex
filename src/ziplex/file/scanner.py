@@ -5,15 +5,19 @@ import re
 from ..file.textutil import read_text
 from .media import classify_media_file
 
-# fallback patterns used when secretlint fails/isn't available
+# fallback patterns used when secretlint fails/isn't available.
+# `\S` (not a mandatory quote) after "=" so a standard unquoted dotenv
+# assignment (API_KEY=sk-live-abc123, no quotes at all) matches too --
+# a quote-only pattern used to require API_KEY="..."/API_KEY='...' and
+# silently let the far more common unquoted convention straight through.
 SENSITIVE_PATTERNS = [
-    r'AWS_SECRET\s*=\s*["\']',
-    r'API_KEY\s*=\s*["\']',
-    r'PASSWORD\s*=\s*["\']',
-    r'SECRET_KEY\s*=\s*["\']',
-    r'PRIVATE_KEY\s*=\s*["\']',
-    r'ACCESS_TOKEN\s*=\s*["\']',
-    r'DATABASE_URL\s*=\s*["\']',
+    r'AWS_SECRET\s*=\s*\S',
+    r'API_KEY\s*=\s*\S',
+    r'PASSWORD\s*=\s*\S',
+    r'SECRET_KEY\s*=\s*\S',
+    r'PRIVATE_KEY\s*=\s*\S',
+    r'ACCESS_TOKEN\s*=\s*\S',
+    r'DATABASE_URL\s*=\s*\S',
 ]
 
 
