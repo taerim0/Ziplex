@@ -137,6 +137,55 @@ def test_start_watch_is_idempotent_for_the_same_project(tmp_path, monkeypatch):
     assert len(watcher._watchers) == 1
 
 
+def test_a_late_firing_recompute_from_an_older_start_watch_does_not_clobber_a_newer_report(tmp_path, monkeypatch):
+    # Real race: recompute()'s closure captures aif_path from whichever
+    # start_watch() call created it, but writes into _watchers[key] keyed
+    # by project_path alone -- a still-in-flight recompute() from an older
+    # call (e.g. its debounce timer already scheduled before a second
+    # start_watch() for the same project, pointed at a *different*
+    # aif_path/manifest, replaced the entry) must not overwrite the newer
+    # watcher's report with data computed against the old aif_path.
+    monkeypatch.setattr(watcher, "DEBOUNCE_SECONDS", 0.05)
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    # v1's manifest deliberately doesn't match the real file -- "stale".
+    aif_path_v1 = tmp_path / "out1" / "project.json"
+    aif_path_v1.parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "out1" / "project.cache.json").write_text(
+        json.dumps({"main.py": "deliberately-wrong-hash"}), encoding="utf-8"
+    )
+    # v2's manifest is the real, current one -- "fresh".
+    aif_path_v2 = tmp_path / "out2" / "project.json"
+    aif_path_v2.parent.mkdir(parents=True, exist_ok=True)
+    manifest_v2 = build_manifest([str(project / "main.py")], str(project))
+    (tmp_path / "out2" / "project.cache.json").write_text(json.dumps(manifest_v2), encoding="utf-8")
+
+    captured = {}
+    real_init = watcher._DebouncedHandler.__init__
+
+    def capturing_init(self, root, ignore_spec, on_change):
+        captured["fn"] = on_change
+        real_init(self, root, ignore_spec, on_change)
+
+    monkeypatch.setattr(watcher._DebouncedHandler, "__init__", capturing_init)
+
+    watcher.start_watch(str(project), str(aif_path_v1))
+    old_recompute = captured["fn"]  # the v1 watch's own recompute closure
+    assert watcher.get_status(str(project))["is_stale"] is True
+
+    # A second start_watch() for the same project, now pointed at v2 --
+    # simulates re-packing to a new output path.
+    watcher.start_watch(str(project), str(aif_path_v2))
+    assert watcher.get_status(str(project))["is_stale"] is False
+
+    # Simulate the v1 watch's debounce timer finally firing late, after
+    # already having been replaced above.
+    old_recompute()
+
+    assert watcher.get_status(str(project))["is_stale"] is False
+
+
 def test_stop_watch_removes_and_stops_the_observer(tmp_path, monkeypatch):
     monkeypatch.setattr(watcher, "DEBOUNCE_SECONDS", 0.05)
     project, aif_path = _make_project_with_manifest(tmp_path)

@@ -155,8 +155,17 @@ def clear_all_checkpoints() -> int:
         return 0
     removed = 0
     for path in CHECKPOINT_DIR.glob("*.json"):
-        path.unlink()
-        removed += 1
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            # Deleted between glob() and here -- a concurrent successful
+            # pack() finishing and removing its own checkpoint (via
+            # delete_checkpoint()) while this loop is still running. Same
+            # race list_checkpoints()'s own stat() call already guards
+            # against, further up; nothing left to remove, so this file is
+            # skipped rather than aborting the rest of the batch.
+            continue
     return removed
 
 
@@ -173,13 +182,22 @@ def build_snapshot(root: Path, files_data: dict, rules: list = None, prompt: str
     stale and needs regenerating instead of silently mixing languages under
     one `project.language` value. See unpack_snapshot()'s own docstring and
     packager.py's `lang_matches`.
+
+    rules=None (the default) means "not computed yet" -- every call site
+    checkpointing mid-rules-extraction (or before it) passes nothing here.
+    A caller that already has a real answer passes it explicitly, even an
+    empty list: `rules=[]` is a legitimate "this trivial project has no
+    inferable coding rules" result, and stored as `[]` (not coalesced into
+    the same "not computed" state None represents) so unpack_snapshot()
+    can tell the two apart -- see that function's own docstring for why
+    that distinction matters.
     """
     return {
         # root.resolve().name, not root.name -- root itself stays unresolved
         # (needed as-is for _rel_key(fp, root) below), but resolving just for
         # the name avoids the same "" result Path(".").name gives.
         "project": {"name": root.resolve().name, "prompt": prompt, "language": lang},
-        "rules": rules or [],
+        "rules": rules,
         "files_data": {
             _rel_key(fp, root): d
             for fp, d in files_data.items()
@@ -187,31 +205,46 @@ def build_snapshot(root: Path, files_data: dict, rules: list = None, prompt: str
     }
 
 
-def unpack_snapshot(checkpoint: dict | None) -> tuple[list, str, dict, str]:
+def unpack_snapshot(checkpoint: dict | None) -> tuple[list, str, dict, str, bool]:
     """The read-side counterpart to build_snapshot() -- pulls (rules, prompt,
-    files_data, lang) back out of a loaded checkpoint, so a caller restoring
-    from one never has to know this shape's exact keys itself. Keeps the
-    shape defined in exactly one place: a future change to build_snapshot()'s
-    keys has to change this function right alongside it, in the same file,
-    instead of silently drifting from a raw dict-indexing read site
-    somewhere else that build_snapshot() has no visibility into.
+    files_data, lang, rules_computed) back out of a loaded checkpoint, so a
+    caller restoring from one never has to know this shape's exact keys
+    itself. Keeps the shape defined in exactly one place: a future change to
+    build_snapshot()'s keys has to change this function right alongside it,
+    in the same file, instead of silently drifting from a raw dict-indexing
+    read site somewhere else that build_snapshot() has no visibility into.
 
     checkpoint=None (nothing to resume, e.g. load_checkpoint() found
     nothing) returns the same empty defaults an absent checkpoint already
     implied before this function existed -- lang defaults to "en" in that
-    case too, matching pack()'s own default.
+    case too, matching pack()'s own default; rules_computed is False, same
+    as any checkpoint that never got as far as computing real rules.
 
-    lang defaults to "en" when reading a checkpoint saved before this field
-    existed, same backward-compat convention `project.language`'s own
-    missing-field default (packager.py/freshness.py) already uses.
+    rules_computed is True only when the checkpoint's own "rules" field is
+    not None -- i.e. build_snapshot() was called with a real answer, even a
+    genuinely empty one. Without this, packager.py's own `if not rules:`
+    check (rules is always a list either way, for backward compatibility)
+    can't tell "nothing was ever restored" apart from "a checkpoint
+    legitimately restored a real, empty rules list" -- both look identically
+    falsy -- and used to re-run analyze_rules() (a real LLM call) on resume
+    even for a checkpoint that had already correctly answered "no rules for
+    this project."
+
+    A checkpoint saved before this field existed has no "rules" key at all
+    (checkpoint.get("rules") returns None the same way an explicit None
+    would), so rules_computed is conservatively False there too -- the same
+    "just re-extract it" behavior an older checkpoint already got before
+    this fix existed, not a regression for it.
     """
     if not checkpoint:
-        return [], "", {}, "en"
-    rules = checkpoint.get("rules", [])
+        return [], "", {}, "en", False
+    raw_rules = checkpoint.get("rules")
+    rules_computed = raw_rules is not None
+    rules = raw_rules if rules_computed else []
     prompt = checkpoint.get("project", {}).get("prompt", "")
     files_data = checkpoint.get("files_data", {})
     lang = checkpoint.get("project", {}).get("language", "en")
-    return rules, prompt, files_data, lang
+    return rules, prompt, files_data, lang, rules_computed
 
 
 def handle_llm_failure(

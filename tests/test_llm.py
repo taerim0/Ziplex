@@ -74,8 +74,9 @@ def test_resolve_api_key_re_resolves_on_every_call_not_cached(monkeypatch, tmp_p
 
 
 class _FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self.status_code = status_code
 
     def json(self):
         return self._payload
@@ -119,6 +120,51 @@ def test_generate_retries_past_a_transport_level_exception(monkeypatch):
 
     monkeypatch.setattr(llm.requests, "post", fake_post)
     provider = llm.GeminiProvider(api_key="x")
+
+    result = provider.generate("prompt", retry=3)
+
+    assert result == '{"summary": "ok"}'
+    assert calls["n"] == 2
+
+
+def test_gemini_generate_retries_when_response_body_is_not_a_json_object(monkeypatch):
+    # Syntactically valid JSON that isn't an object (a bare `null`) used to
+    # crash uncaught: `"candidates" in data` raises TypeError for anything
+    # but a dict/list/str, escaping generate() entirely instead of being
+    # retried the same way a malformed/non-JSON body already was.
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def fake_post(url, json, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _FakeResponse(None)
+        return _FakeResponse({"candidates": [{"content": {"parts": [{"text": '{"summary": "ok"}'}]}}]})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.GeminiProvider(api_key="x")
+
+    result = provider.generate("prompt", retry=3)
+
+    assert result == '{"summary": "ok"}'
+    assert calls["n"] == 2
+
+
+def test_openai_generate_retries_when_response_body_is_not_a_json_object(monkeypatch):
+    # OpenAIProvider is the provider most likely to hit this in practice --
+    # it's explicitly meant to point at local servers (Ollama/LM Studio/
+    # vLLM/llama.cpp) that can return a non-object body while starting up.
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _FakeResponse(None)
+        return _FakeResponse({"choices": [{"message": {"content": '{"summary": "ok"}'}}]})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.OpenAIProvider(api_key="x")
 
     result = provider.generate("prompt", retry=3)
 

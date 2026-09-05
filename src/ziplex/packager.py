@@ -404,25 +404,29 @@ def pack(
     # discard the checkpoint that same job just saved on its own failure.
     should_discard_checkpoint = (not use_cache) if discard_checkpoint is None else discard_checkpoint
     checkpoint = ckpt.load_checkpoint(root_path)
-    # A forced resume (discard_checkpoint is False, only ever the GUI retry
-    # flow) still has to actually be *this* job's own checkpoint before it's
-    # trusted -- checkpoints are keyed by project path only
+    # Any run with a caller-given preselected file set (every GUI job, forced
+    # resume or not) still has to actually be *this* run's own checkpoint
+    # before it's trusted -- checkpoints are keyed by project path only
     # (checkpoint._checkpoint_path()), never by which job produced them, so
     # two overlapping pack attempts for the same project (a second browser
-    # tab, or a fresh "패킹 시작" left open while an earlier failed job's
-    # error screen never got retried) could otherwise let this retry
-    # silently resume a *different* attempt's partial progress instead of
-    # its own -- a real gap caught by code review. A checkpoint whose own
-    # restored file set isn't a subset of what this retry is actually about
-    # to select clearly belongs to a different run; discard it unconditionally
+    # tab, or a fresh "패킹 시작" started on a different file selection while
+    # an earlier failed job's checkpoint is still sitting there) could
+    # otherwise let this run silently resume a *different* attempt's partial
+    # progress instead of its own -- a real gap caught by code review, and
+    # (a second review pass) one that used to only guard the GUI's explicit
+    # retry-after-failure path (discard_checkpoint is False), leaving every
+    # ordinary fresh job with use_cache=True's default (discard_checkpoint is
+    # None) exposed to the identical scenario. A checkpoint whose own
+    # restored file set isn't a subset of what this run is actually about to
+    # select clearly belongs to a different run; discard it unconditionally
     # in that case -- "does this checkpoint belong to me" and "should I trust
     # my own summary cache" (use_cache) are independent questions, so falling
     # back to `not use_cache` here (a second code-review pass caught this:
     # with use_cache=True, `not use_cache` is False, silently un-doing the
     # very mismatch this check just detected and resuming the foreign
     # checkpoint's rules/prompt anyway) is wrong regardless of use_cache.
-    if checkpoint and discard_checkpoint is False and preselected is not None:
-        _, _, candidate_files_data, _ = ckpt.unpack_snapshot(checkpoint)
+    if checkpoint and preselected is not None:
+        _, _, candidate_files_data, _, _ = ckpt.unpack_snapshot(checkpoint)
         if not set(candidate_files_data.keys()) <= set(preselected):
             should_discard_checkpoint = True
     if checkpoint and (should_discard_checkpoint or not ckpt.resume_checkpoint_choice(interactive)):
@@ -430,7 +434,7 @@ def pack(
         ckpt.delete_checkpoint(root_path)
 
     # restore from checkpoint
-    restored_rules, restored_prompt, restored_files_data, restored_lang = ckpt.unpack_snapshot(checkpoint)
+    restored_rules, restored_prompt, restored_files_data, restored_lang, restored_rules_computed = ckpt.unpack_snapshot(checkpoint)
     # True only when there's actually a checkpoint to compare against -- a
     # fresh run (no checkpoint) has nothing stale to discard, so restored_*
     # (already the ""/[]/{} defaults from unpack_snapshot(None)) are used
@@ -447,6 +451,14 @@ def pack(
             f"  ⚠️  Checkpoint was generated in a different language ({restored_lang}) -- regenerating rules/AI guide/summaries in {lang}",
             f"  ⚠️  체크포인트가 다른 언어({restored_lang})로 생성됨 -- rules/AI 가이드/요약을 {lang}(으)로 다시 생성합니다",
         ))
+
+    # Threaded into every _maybe_stop() call between here and the real rules
+    # extraction below, instead of restored_rules directly: preserves not
+    # just the restored value but *whether it was ever actually computed* --
+    # a checkpoint saved before rules extraction ran (restored_rules_computed
+    # False) must not be re-saved as if `restored_rules` (always a list, `[]`
+    # by default) were itself a genuine, computed answer.
+    carried_rules = restored_rules if (restored_rules_computed and use_llm and lang_matches) else None
 
     # 1. Collect files
     print(pick("\n📁 Collecting files...", "\n📁 파일 수집 중..."))
@@ -574,7 +586,7 @@ def pack(
     text_refs_by_path: dict[str, list[str]] = {}
 
     for file_path in selected:
-        if _maybe_stop(check_cancelled, root_path, root, files_data, restored_rules, restored_prompt, lang):
+        if _maybe_stop(check_cancelled, root_path, root, files_data, carried_rules, restored_prompt, lang):
             return {}
 
         name = _rel_key(file_path, root)
@@ -667,7 +679,7 @@ def pack(
         else:
             print(f"  ✅ {name}")
 
-    if _maybe_stop(check_cancelled, root_path, root, files_data, restored_rules, restored_prompt, lang):
+    if _maybe_stop(check_cancelled, root_path, root, files_data, carried_rules, restored_prompt, lang):
         return {}
 
     # 5. Summary generation -- LLM-based (the default) or, with use_llm=False,
@@ -730,7 +742,7 @@ def pack(
     # landing there would sit in job["cancel_action"] unconsumed until
     # pack() finishes on its own (reviewing state), never actually taking
     # effect.
-    if _maybe_stop(check_cancelled, root_path, root, files_data, restored_rules, restored_prompt, lang):
+    if _maybe_stop(check_cancelled, root_path, root, files_data, carried_rules, restored_prompt, lang):
         return {}
 
     # Computed once here (not just at final assembly, where this used to be
@@ -758,8 +770,18 @@ def pack(
     # checkpoint saved under a different `lang` has rules written in that
     # stale language, which would contradict the `project.language` this
     # run is about to claim.
-    rules = restored_rules if (use_llm and lang_matches) else []
-    if not rules and use_llm:
+    # have_restored_rules -- not just `rules` truthiness -- is what decides
+    # whether extraction actually needs to run: `rules` is always a list
+    # (never None, for backward-compat callers), so a checkpoint that
+    # legitimately restored a real, empty rules=[] answer is otherwise
+    # indistinguishable from "nothing was ever restored" (also rules=[]),
+    # and used to silently re-run analyze_rules() -- a real LLM call --
+    # every time a resumed run's own checkpoint happened to have already
+    # answered "no rules for this project." restored_rules_computed (see
+    # checkpoint.unpack_snapshot()'s own docstring) is the actual signal.
+    have_restored_rules = restored_rules_computed and use_llm and lang_matches
+    rules = restored_rules if have_restored_rules else []
+    if not have_restored_rules and use_llm:
         print(pick("  📋 Extracting coding rules...", "  📋 코딩 룰 추출 중..."))
         while not rules:
             rules_response = analyze_rules(signatures_map, lang=lang)
@@ -802,7 +824,7 @@ def pack(
                 # `while not rules:` only re-loops on a genuinely
                 # empty list.
                 rules = [r.strip() for r in result.split(",") if r.strip()]
-    elif rules:
+    elif have_restored_rules:
         print(pick("  📋 Coding rules (restored from checkpoint)", "  📋 코딩 룰 (체크포인트에서 복원)"))
     else:
         print(pick("  📋 Skipping coding rule extraction (--no-llm)", "  📋 코딩 룰 추출 건너뜀 (--no-llm)"))

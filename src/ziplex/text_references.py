@@ -92,12 +92,19 @@ def find_text_references(content: str, self_path: str, other_paths: list[str]) -
         if other == self_path:
             continue
         filename = other.rsplit("/", 1)[-1]
-        if _contains_token(content, other) or _contains_token(content, filename):
+        # strict_path_boundary=True only for the full-path form: "/" is a
+        # normal, expected delimiter right before a bare filename ("res://
+        # player.gd", "scenes/player.gd" both legitimately precede a
+        # filename match with a directory), but a *full* relative path is a
+        # different story -- see _contains_token()'s own docstring for why
+        # a plain "/" boundary there lets a shorter path false-match as a
+        # suffix of a longer, unrelated one.
+        if _contains_token(content, other, strict_path_boundary=True) or _contains_token(content, filename):
             found.append(other)
     return found
 
 
-def _contains_token(content: str, token: str) -> bool:
+def _contains_token(content: str, token: str, strict_path_boundary: bool = False) -> bool:
     """Word-boundary-anchored substring search. re.escape(token) so path
     separators/dots in it are matched literally, not as regex metacharacters.
     (?<!\\w)/(?!\\w) rather than plain \\b: \\b only fires at a \\w/\\W
@@ -106,6 +113,23 @@ def _contains_token(content: str, token: str) -> bool:
     require what we actually want -- only an *adjacent letter/digit/
     underscore* should disqualify a match as "part of a different, larger
     token" (a leading "/" or "." is a normal, expected path delimiter, not a
-    sign of a false positive).
+    sign of a false positive) -- *except* right before a full relative path,
+    where treating "/" as a harmless boundary lets a shorter collected
+    file's path false-match as a substring of a longer, unrelated file's
+    path whenever a "/" sits at the split point (e.g. content naming only
+    "sub/scenes/player.gd" would otherwise also match the unrelated token
+    "scenes/player.gd").
+
+    strict_path_boundary additionally requires that a leading "/" not be a
+    bare directory separator continuing a longer path -- only a URI-scheme-
+    style "//" (Godot's res://, a rare double-slash) or the true start of
+    content/line still counts as a valid boundary there. Left off (the
+    default) for a bare filename match, where any directory prefix is a
+    normal, expected way to reference it.
     """
-    return re.search(rf"(?<!\w){re.escape(token)}(?!\w)", content) is not None
+    escaped = re.escape(token)
+    if strict_path_boundary:
+        pattern = rf"(?:(?<![\w/])|(?<=//)){escaped}(?!\w)"
+    else:
+        pattern = rf"(?<!\w){escaped}(?!\w)"
+    return re.search(pattern, content) is not None

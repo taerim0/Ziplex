@@ -1190,7 +1190,13 @@ def test_pack_includes_a_checkpoint_restored_dependency_only_file_in_rules_input
         str(project),
         {
             "project": {"name": "project", "prompt": ""},
-            "rules": [],
+            # "rules" deliberately omitted (not []) -- rules were never
+            # actually computed by whatever run saved this checkpoint, so
+            # extraction must still run on resume (see checkpoint.
+            # unpack_snapshot()'s rules_computed docstring: an explicit []
+            # here would instead mean "already computed, no rules," and
+            # this test needs the real analyze_rules() prompt to fire so
+            # it can inspect what signatures_map was actually sent).
             "files_data": {
                 "deps_only.py": {
                     "signatures": [],
@@ -1366,6 +1372,40 @@ def test_pack_discard_checkpoint_false_discards_a_mismatch_even_with_use_cache_t
     assert not checkpoint._checkpoint_path(str(project)).exists()
 
 
+def test_pack_default_discard_checkpoint_also_discards_a_mismatch(tmp_path, monkeypatch):
+    # Regression for a real gap a full-repo code review caught: the mismatch
+    # guard above used to only run when discard_checkpoint was explicitly
+    # False (the GUI's own retry-after-failure flow) -- an ordinary fresh
+    # job (discard_checkpoint left at its None default, use_cache=True's own
+    # default) hit the identical "leftover checkpoint from an unrelated file
+    # selection" scenario without ever running the check at all, silently
+    # reusing a foreign checkpoint's rules/prompt for this run's own,
+    # unrelated file selection.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    checkpoint.save_checkpoint(
+        str(project),
+        {
+            "project": {"name": "project", "prompt": "restored prompt"},
+            "rules": ["Rule A"],
+            # A different (unrelated) job's own checkpoint -- "other.py" was
+            # never part of this call's own preselected list below.
+            "files_data": {"other.py": {"signatures": [], "dependencies": [], "api": [], "compressed": "", "summary": "x"}},
+        },
+    )
+
+    # Neither use_cache nor discard_checkpoint given here -- today's true
+    # default for a brand-new GUI/CLI pack job.
+    aif = packager.pack(str(project), auto=True, interactive=False, preselected=["main.py"])
+
+    assert aif["rules"] == ["mock rule: methods use camelCase"]
+    assert "other.py" not in aif["files"]
+    assert not checkpoint._checkpoint_path(str(project)).exists()
+
+
 def test_pack_use_cache_false_never_prompts_to_resume(tmp_path, monkeypatch):
     # use_cache=False must short-circuit before resume_checkpoint_choice()
     # even when interactive=True -- asking "resume or discard?" makes no
@@ -1451,6 +1491,49 @@ def test_pack_check_cancelled_save_checkpoints_only_progress_made_so_far(tmp_pat
     assert aif == {}
     saved = json.loads(checkpoint._checkpoint_path(str(project)).read_text(encoding="utf-8"))
     assert len(saved["files_data"]) == 1  # the first file's checkpoint-check passed; stopped before the second
+
+
+def test_pack_does_not_re_extract_rules_for_a_checkpoint_with_a_genuine_empty_answer(tmp_path, monkeypatch):
+    # Regression: `if not rules and use_llm:` couldn't tell "nothing was
+    # ever restored" apart from "a checkpoint legitimately restored a real,
+    # empty rules=[] answer" -- both are equally falsy -- and used to
+    # re-run analyze_rules() (a real, re-billed LLM call) on resume even
+    # when the checkpoint had already correctly answered "no rules for this
+    # trivial project."
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    captured_prompts = []
+
+    class _CapturingMockProvider(llm.MockProvider):
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
+            captured_prompts.append(prompt)
+            return super().generate(prompt, retry)
+
+    monkeypatch.setattr(llm, "_provider", _CapturingMockProvider())
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    checkpoint.save_checkpoint(
+        str(project),
+        {
+            "project": {"name": "project", "prompt": "restored prompt"},
+            # A genuine, already-computed empty answer -- not "never ran".
+            "rules": [],
+            "files_data": {
+                "main.py": {
+                    "signatures": ["add(a, b)"], "dependencies": [], "api": [],
+                    "compressed": "def add(a, b): ...", "summary": "adds two numbers",
+                }
+            },
+        },
+    )
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+
+    assert aif["rules"] == []
+    rules_prompts = [p for p in captured_prompts if '"rules"' in p]
+    assert not rules_prompts, "analyze_rules() must not be re-called for an already-computed empty answer"
 
 
 def test_pack_check_cancelled_save_preserves_rules_restored_from_a_prior_checkpoint(tmp_path, monkeypatch):

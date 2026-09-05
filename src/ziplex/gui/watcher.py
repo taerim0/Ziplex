@@ -160,6 +160,16 @@ def start_watch(project_path: str, aif_path: str) -> None:
     """
     key = _abs_key(project_path)
     root = Path(project_path)
+    # Unique per start_watch() call, identity-compared below -- lets
+    # recompute() tell whether the watcher it was built for is still the
+    # live one for `key` by the time it actually runs. Without this, a
+    # still-in-flight recompute() from an *older* call (its debounce timer
+    # already scheduled before a newer start_watch() replaced this entry --
+    # e.g. re-packing the same project to a new output path while an older
+    # browser tab still watches the old aif_path) could overwrite a newer
+    # watcher's report with a stale aif_path's data, since both closures
+    # write into the same `_watchers[key]` slot.
+    token = object()
 
     def recompute():
         try:
@@ -168,7 +178,7 @@ def start_watch(project_path: str, aif_path: str) -> None:
             report = check_freshness_scoped(project_path, manifest, extra_include, extra_ignore)
             with _watchers_lock:
                 entry = _watchers.get(key)
-                if entry is not None:
+                if entry is not None and entry.get("token") is token:
                     entry["report"] = {
                         "is_stale": report.is_stale,
                         "changed": report.changed,
@@ -195,7 +205,7 @@ def start_watch(project_path: str, aif_path: str) -> None:
         observer.start()
 
         with _watchers_lock:
-            _watchers[key] = {"observer": observer, "report": None, "started_at": time.time()}
+            _watchers[key] = {"observer": observer, "report": None, "started_at": time.time(), "token": token}
             _evict_old_watchers(key)
 
     recompute()

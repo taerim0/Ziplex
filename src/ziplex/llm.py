@@ -256,6 +256,16 @@ class GeminiProvider:
                     "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}},
                 }, timeout=REQUEST_TIMEOUT)
                 data = response.json()
+                if not isinstance(data, dict):
+                    # Syntactically valid JSON that isn't an object (a bare
+                    # `null`, most plausibly from a local server that isn't
+                    # fully started) -- routed through the same except
+                    # branch below rather than falling through to
+                    # `"candidates" in data`, which raises an uncaught
+                    # TypeError for a non-dict/list/str body and would
+                    # otherwise crash summarizer.py's thread pool outright
+                    # instead of retrying or checkpointing.
+                    raise json.JSONDecodeError("response body is not a JSON object", "", 0)
             except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
                 # A transport-level failure (DNS, connection reset, read
                 # timeout) or a non-JSON response body (a proxy's HTML error
@@ -370,6 +380,13 @@ class OpenAIProvider:
                     f"{self.base_url}/chat/completions", headers=headers, json=body, timeout=REQUEST_TIMEOUT
                 )
                 data = response.json()
+                if not isinstance(data, dict):
+                    # See GeminiProvider.generate()'s matching comment --
+                    # this class is the one most likely to hit it in
+                    # practice, since it's explicitly meant to point at
+                    # local servers (Ollama/LM Studio/vLLM/llama.cpp) that
+                    # can return a non-object body while still starting up.
+                    raise json.JSONDecodeError("response body is not a JSON object", "", 0)
             except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
                 # Same transient-failure treatment as GeminiProvider's own
                 # generate() -- see that method's comment for why.
@@ -455,6 +472,9 @@ class ClaudeProvider:
             try:
                 response = requests.post(self.API_URL, headers=headers, json=body, timeout=REQUEST_TIMEOUT)
                 data = response.json()
+                if not isinstance(data, dict):
+                    # See GeminiProvider.generate()'s matching comment.
+                    raise json.JSONDecodeError("response body is not a JSON object", "", 0)
             except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
                 wait = _retry_wait(attempt)
                 print(pick(
