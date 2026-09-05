@@ -3,7 +3,7 @@ import pytest
 from ziplex.file.relationship import (
     build_tree, has_cycle, move_file, add_dependency, remove_dependency, build_stem_map, CycleError,
     get_dependents, get_blast_radius, has_relationship_cycle, add_relationship, remove_relationship,
-    resolve_dependency,
+    resolve_dependency, _flatten_stem_map,
 )
 
 
@@ -117,6 +117,19 @@ def test_resolve_dependency_matches_exact_filename_even_with_a_stem_collision():
     stem_map = build_stem_map(["Config.h", "Config.cpp"])
     assert resolve_dependency("Config.cpp", stem_map) == "Config.cpp"
     assert resolve_dependency("Config.h", stem_map) == "Config.h"
+
+
+def test_resolve_dependency_accepts_a_precomputed_all_names_set():
+    # A code-review finding: resolve_dependency()'s exact-filename check used
+    # to rescan every stem_map group on every call (O(files) per call,
+    # O(files^2) across a whole build_tree()/has_cycle() walk). Callers that
+    # resolve many dependencies against the same stem_map now build this set
+    # once and pass it through -- must give the same answer either way.
+    stem_map = build_stem_map(["Config.h", "Config.cpp"])
+    all_names = _flatten_stem_map(stem_map)
+    assert all_names == {"Config.h", "Config.cpp"}
+    assert resolve_dependency("Config.cpp", stem_map, all_names) == "Config.cpp"
+    assert resolve_dependency("Config.cpp", stem_map) == "Config.cpp"  # still works with all_names omitted
 
 
 def test_resolve_dependency_prefers_header_extension_for_a_bare_stem_collision():

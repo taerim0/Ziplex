@@ -400,14 +400,21 @@ def api_relationships_unlink():
 def api_dependents():
     aif_path = request.args["aif_path"]
     file = request.args["file"]
-    return jsonify(query_service.get_dependents(aif_path, file))
+    # Defaults to True (every text_references.py mention included), same as
+    # query_service.get_dependents()'s own default -- the MCP server already
+    # exposes this param, matching it here closes the one place the GUI's
+    # relationship views couldn't offer the "certain relationships only"
+    # filter (see AGENTS.md's get_dependents/get_blast_radius bullet).
+    include_text_refs = request.args.get("include_text_refs", default="true") == "true"
+    return jsonify(query_service.get_dependents(aif_path, file, include_text_refs=include_text_refs))
 
 
 @app.route("/api/blast_radius")
 def api_blast_radius():
     aif_path = request.args["aif_path"]
     file = request.args["file"]
-    return jsonify(query_service.get_blast_radius(aif_path, file))
+    include_text_refs = request.args.get("include_text_refs", default="true") == "true"
+    return jsonify(query_service.get_blast_radius(aif_path, file, include_text_refs=include_text_refs))
 
 
 @app.route("/api/detail")

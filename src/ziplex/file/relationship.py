@@ -37,6 +37,22 @@ def build_stem_map(file_names) -> dict:
 _HEADER_EXTENSIONS = (".h", ".hpp", ".hh", ".hxx")
 
 
+def _flatten_stem_map(stem_map: dict) -> set:
+    """Flat set of every file name appearing anywhere in stem_map's value
+    lists -- every file name appears in exactly one stem group (its own),
+    so this is just their union. Exists so resolve_dependency()'s
+    exact-filename check can be an O(1) set lookup instead of scanning
+    every stem group on every single call: a caller that resolves many
+    dependencies against the same stem_map (build_tree/has_cycle/
+    move_file/add_dependency/remove_dependency, each already building
+    stem_map once up front) builds this once too and passes it through,
+    turning what used to be an O(files) rescan per dependency into an
+    O(1) lookup -- the difference between an O(N) and an O(N^2) graph
+    rebuild on a project with many files.
+    """
+    return {name for names in stem_map.values() for name in names}
+
+
 def _pick_candidate(candidates: list[str]) -> str:
     """Disambiguates resolve_dependency()'s bare-stem match when more than
     one collected file shares that stem. A single candidate returns
@@ -56,8 +72,15 @@ def _pick_candidate(candidates: list[str]) -> str:
     return candidates[0]
 
 
-def resolve_dependency(dep: str, stem_map: dict) -> str | None:
+def resolve_dependency(dep: str, stem_map: dict, all_names: set | None = None) -> str | None:
     """Matches a dependencies entry against an internal project file name.
+
+    all_names is the flat set _flatten_stem_map(stem_map) would build --
+    pass it explicitly when resolving many dependencies against the same
+    stem_map (this function's own docstring on the exact-filename check
+    below explains why); left as None and computed on the fly here for a
+    one-off caller (a test, corrector.py's interactive loop) that doesn't
+    already have one lying around.
 
     dep can come in three shapes:
     - a raw dotted import path extracted by Tree-sitter (e.g.
@@ -85,7 +108,7 @@ def resolve_dependency(dep: str, stem_map: dict) -> str | None:
     bare-stem match (the second and third checks) needs _pick_candidate()
     to disambiguate multiple same-stem files.
     """
-    if any(dep in names for names in stem_map.values()):
+    if dep in (all_names if all_names is not None else _flatten_stem_map(stem_map)):
         return dep
     candidates = stem_map.get(dep) or stem_map.get(dep.split(".")[-1])
     return _pick_candidate(candidates) if candidates else None
@@ -123,7 +146,9 @@ class CycleError(Exception):
         super().__init__(f"{from_file!r} depending on {to_file!r} would create a cycle")
 
 
-def has_cycle(files: dict, stem_map: dict, from_file: str, to_file: str) -> bool:
+def has_cycle(
+    files: dict, stem_map: dict, from_file: str, to_file: str, all_names: set | None = None
+) -> bool:
     """Checks whether from_file already (transitively) depends on to_file.
 
     move_file() is about to add the edge "to_file depends on from_file" (a
@@ -132,7 +157,14 @@ def has_cycle(files: dict, stem_map: dict, from_file: str, to_file: str) -> bool
     by walking its own existing dependency chain (from_file -> ... -> to_file)
     -- the new edge would then complete the loop to_file -> from_file -> ...
     -> to_file. So this walks from from_file, not to_file.
+
+    all_names is resolve_dependency()'s own same-named param -- computed
+    once here (not per dependency) when the caller doesn't already have one,
+    since this walk can call resolve_dependency() many times over a large
+    project.
     """
+    if all_names is None:
+        all_names = _flatten_stem_map(stem_map)
     visited = set()
     queue = [from_file]
     while queue:
@@ -143,7 +175,7 @@ def has_cycle(files: dict, stem_map: dict, from_file: str, to_file: str) -> bool
             continue
         visited.add(current)
         for dep in files.get(current, {}).get("dependencies", []):
-            matched = resolve_dependency(dep, stem_map)
+            matched = resolve_dependency(dep, stem_map, all_names)
             if matched:
                 queue.append(matched)
     return False
@@ -167,7 +199,8 @@ def move_file(files: dict, file_name: str, new_parent: str) -> dict:
         raise ValueError("a file can't be its own parent")
 
     stem_map = build_stem_map(files.keys())
-    if has_cycle(files, stem_map, file_name, new_parent):
+    all_names = _flatten_stem_map(stem_map)
+    if has_cycle(files, stem_map, file_name, new_parent, all_names):
         # the edge this move adds is new_parent -> file_name (new_parent now
         # depends on file_name), so that's the edge CycleError should name --
         # not (file_name, new_parent), which is has_cycle()'s own internal
@@ -177,7 +210,7 @@ def move_file(files: dict, file_name: str, new_parent: str) -> dict:
     # remove file_name from wherever it's currently listed as a dependency
     for data in files.values():
         deps = data.get("dependencies", [])
-        data["dependencies"] = [d for d in deps if resolve_dependency(d, stem_map) != file_name]
+        data["dependencies"] = [d for d in deps if resolve_dependency(d, stem_map, all_names) != file_name]
         # text_dependencies is always an exact-filename subset of
         # dependencies (see build_tree()'s docstring) -- a plain equality
         # check keeps it in sync without needing resolve_dependency() again.
@@ -218,16 +251,21 @@ def add_dependency(files: dict, file_name: str, target: str) -> dict:
         raise ValueError("a file can't depend on itself")
 
     stem_map = build_stem_map(files.keys())
+    all_names = _flatten_stem_map(stem_map)
     # the edge being added is file_name -> target; it closes a cycle exactly
     # when target can already (transitively) reach file_name.
-    if has_cycle(files, stem_map, target, file_name):
+    if has_cycle(files, stem_map, target, file_name, all_names):
         raise CycleError(file_name, target)
 
     deps = files[file_name].setdefault("dependencies", [])
-    if not any(resolve_dependency(d, stem_map) == target for d in deps):
+    if not any(resolve_dependency(d, stem_map, all_names) == target for d in deps):
         deps.append(target)
     else:
-        _drop_text_dep(files[file_name], "text_dependencies", lambda d: resolve_dependency(d, stem_map) != target)
+        _drop_text_dep(
+            files[file_name],
+            "text_dependencies",
+            lambda d: resolve_dependency(d, stem_map, all_names) != target,
+        )
 
     return files
 
@@ -246,10 +284,15 @@ def remove_dependency(files: dict, file_name: str, target: str) -> dict:
         raise ValueError(f"unknown file: {file_name}")
 
     stem_map = build_stem_map(files.keys())
+    all_names = _flatten_stem_map(stem_map)
     deps = files[file_name].get("dependencies", [])
-    files[file_name]["dependencies"] = [d for d in deps if resolve_dependency(d, stem_map) != target]
+    files[file_name]["dependencies"] = [
+        d for d in deps if resolve_dependency(d, stem_map, all_names) != target
+    ]
 
-    _drop_text_dep(files[file_name], "text_dependencies", lambda d: resolve_dependency(d, stem_map) != target)
+    _drop_text_dep(
+        files[file_name], "text_dependencies", lambda d: resolve_dependency(d, stem_map, all_names) != target
+    )
 
     return files
 
@@ -356,6 +399,7 @@ def build_tree(files: dict) -> dict:
     `include_text_refs` param for the consumer side of this.
     """
     stem_map = build_stem_map(files.keys())
+    all_names = _flatten_stem_map(stem_map)
     tree = {}
 
     for name, data in files.items():
@@ -364,7 +408,7 @@ def build_tree(files: dict) -> dict:
         internal, external = [], []
         code_targets, text_only_targets = set(), set()
         for dep in deps:
-            matched = resolve_dependency(dep, stem_map)
+            matched = resolve_dependency(dep, stem_map, all_names)
             if matched == name:
                 continue  # a file referencing itself isn't a real relationship in either direction
             if matched:

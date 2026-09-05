@@ -213,6 +213,7 @@ const I18N = {
     "fileDetail.blastRadius": "Blast radius (이 파일 변경 시 영향받는 전체 범위)",
     "fileDetail.noContent": "(내용 없음)",
     "fileDetail.copyAll": "📋 전체 복사",
+    "fileDetail.includeTextRefs": "텍스트 언급(파일명만 일치)도 포함",
 
     "search.patternPlaceholder": "정규식 패턴 (예: TODO|FIXME)",
     "search.searching": "검색 중...",
@@ -383,6 +384,7 @@ const I18N = {
     "fileDetail.blastRadius": "Blast radius (everything affected if this file changes)",
     "fileDetail.noContent": "(no content)",
     "fileDetail.copyAll": "📋 Copy All",
+    "fileDetail.includeTextRefs": "Include text-only mentions (filename match, not a real import)",
 
     "search.patternPlaceholder": "Regex pattern (e.g. TODO|FIXME)",
     "search.searching": "Searching...",

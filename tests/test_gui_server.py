@@ -700,6 +700,53 @@ def test_api_blast_radius(client, tmp_path):
     assert res.get_json() == ["b.py"]
 
 
+def _write_text_ref_aif(tmp_path):
+    # b.py's only link to a.py is a text_references.py filename mention, not
+    # a real import -- the shape include_text_refs=False is supposed to
+    # exclude.
+    aif_path = tmp_path / "textref.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "sample", "prompt": "A sample project."},
+        "files": {
+            "a.py": {"summary": "does a thing"},
+            "b.py": {"summary": "mentions a.py in a docstring"},
+        },
+        "relationships": {
+            "a.py": {"internal": [], "external": [], "internal_text_refs": []},
+            "b.py": {"internal": ["a.py"], "external": [], "internal_text_refs": ["a.py"]},
+        },
+    }), encoding="utf-8")
+    return str(aif_path)
+
+
+def test_api_dependents_include_text_refs_false_excludes_text_only_match(client, tmp_path):
+    # A code-review finding: /api/dependents used to hard-code the default
+    # and never read this param from the request at all, so the GUI had no
+    # way to reach query_service.py's "certain relationships only" view --
+    # already real end-to-end and already exposed by the MCP server.
+    aif_path = _write_text_ref_aif(tmp_path)
+    res = client.get("/api/dependents", query_string={"aif_path": aif_path, "file": "a.py"})
+    assert res.get_json() == ["b.py"]
+
+    res = client.get(
+        "/api/dependents",
+        query_string={"aif_path": aif_path, "file": "a.py", "include_text_refs": "false"},
+    )
+    assert res.get_json() == []
+
+
+def test_api_blast_radius_include_text_refs_false_excludes_text_only_match(client, tmp_path):
+    aif_path = _write_text_ref_aif(tmp_path)
+    res = client.get("/api/blast_radius", query_string={"aif_path": aif_path, "file": "a.py"})
+    assert res.get_json() == ["b.py"]
+
+    res = client.get(
+        "/api/blast_radius",
+        query_string={"aif_path": aif_path, "file": "a.py", "include_text_refs": "false"},
+    )
+    assert res.get_json() == []
+
+
 def test_api_detail(client, tmp_path):
     aif_path = _write_sample_aif(tmp_path)
     res = client.get("/api/detail", query_string={"aif_path": aif_path, "file": "a.py"})

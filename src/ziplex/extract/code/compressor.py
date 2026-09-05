@@ -90,19 +90,21 @@ def compress_code(code: str, ext: str) -> str | None:
     # collect the line ranges covered by function bodies
     body_ranges = []
     _collect_bodies(tree.root_node, body_ranges, function_types)
+    # body start line -> its end line, an O(1) lookup per source line below
+    # instead of rescanning the whole body_ranges list on every line -- a
+    # file with many top-level functions used to make this loop
+    # O(lines * functions) instead of O(lines).
+    body_starts = dict(body_ranges)
 
     # strip bodies line by line
     result = []
     i = 0
     while i < len(lines):
-        removed = False
-        for start, end in body_ranges:
-            if i == start:
-                result.append(MARKER)
-                i = end + 1
-                removed = True
-                break
-        if not removed:
+        end = body_starts.get(i)
+        if end is not None:
+            result.append(MARKER)
+            i = end + 1
+        else:
             result.append(lines[i])
             i += 1
 

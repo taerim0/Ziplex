@@ -113,14 +113,22 @@ export async function renderFiles() {
   } catch (e) { showError(e); }
 }
 
+async function fetchRelationships(name, includeTextRefs) {
+  const [dependents, blastRadius] = await Promise.all([
+    api("/api/dependents", { aif_path: getAif(), file: name, include_text_refs: includeTextRefs }),
+    api("/api/blast_radius", { aif_path: getAif(), file: name, include_text_refs: includeTextRefs }),
+  ]);
+  return { dependents, blastRadius };
+}
+
 export async function renderFileDetail(name, params) {
   nav.classList.remove("hidden");
   showLoading();
   try {
-    const [files, dependents, blastRadius, detail] = await Promise.all([
+    let includeTextRefs = true;
+    const [files, { dependents, blastRadius }, detail] = await Promise.all([
       api("/api/files", { aif_path: getAif() }),
-      api("/api/dependents", { aif_path: getAif(), file: name }),
-      api("/api/blast_radius", { aif_path: getAif(), file: name }),
+      fetchRelationships(name, includeTextRefs),
       api("/api/detail", { aif_path: getAif(), file: name, start_line: params.get("start"), end_line: params.get("end") }),
     ]);
     const info = files[name] || {};
@@ -134,12 +142,43 @@ export async function renderFileDetail(name, params) {
 
     const fullText = () => `# ${name}\n\n${info.summary || ""}\n\n\`\`\`\n${detail.compressed}\n\`\`\``;
 
+    // A dependent/blast-radius entry reached only via text_references.py's
+    // filename-mention matching (a README naming this file, a Godot scene's
+    // ext_resource path) rather than a real import -- see
+    // file/relationship.py's build_tree() docstring. This toggle is the
+    // "certain relationships only" view query_service.py already supports
+    // (and the MCP server already exposes) -- until this checkbox, the GUI
+    // had no way to request it at all.
+    const relSection = el("div", {});
+    function drawRelationships(deps, blast) {
+      relSection.innerHTML = "";
+      relSection.appendChild(el("h3", { text: t("fileDetail.dependents") }));
+      relSection.appendChild(fileList(deps));
+      relSection.appendChild(el("h3", { text: t("fileDetail.blastRadius") }));
+      relSection.appendChild(fileList(blast));
+    }
+    drawRelationships(dependents, blastRadius);
+
+    const textRefCheckbox = el("input", {
+      type: "checkbox",
+      checked: "checked",
+      onchange: async (e) => {
+        includeTextRefs = e.target.checked;
+        showLoading();
+        try {
+          const fresh = await fetchRelationships(name, includeTextRefs);
+          drawRelationships(fresh.dependents, fresh.blastRadius);
+        } catch (err) { showError(err); }
+      },
+    });
+    const textRefToggle = el("label", { class: "muted" }, [textRefCheckbox, document.createTextNode(" " + t("fileDetail.includeTextRefs"))]);
+
     app.innerHTML = "";
     app.appendChild(el("div", { class: "card" }, [
       el("h1", { text: name }),
       el("p", { text: info.summary || "" }),
-      el("h3", { text: t("fileDetail.dependents") }), fileList(dependents),
-      el("h3", { text: t("fileDetail.blastRadius") }), fileList(blastRadius),
+      textRefToggle,
+      relSection,
       el("h3", { text: "Detail" }),
       el("pre", { text: detail.compressed || t("fileDetail.noContent") }),
       el("div", { class: "copy-row" }, copyButton(fullText, t("fileDetail.copyAll"))),
