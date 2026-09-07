@@ -1,4 +1,11 @@
-from ziplex.tokenizer import count_tokens, analyze_tokens_with_compression, analyze_tokens_with_payload, MODEL_ENCODINGS
+from ziplex.tokenizer import (
+    count_tokens,
+    analyze_tokens_with_compression,
+    analyze_tokens_with_payload,
+    is_approx_model,
+    MODEL_ENCODINGS,
+    MODEL_MAX_TOKENS,
+)
 
 
 def test_count_tokens_is_monotonic_with_length():
@@ -70,3 +77,35 @@ def test_analyze_tokens_with_payload_still_counts_a_media_files_summary(tmp_path
         # payload side must still reflect the real summary that ships
         assert results[model]["original"] == 0
         assert results[model]["compressed"] > 0
+
+
+def test_is_approx_model_flags_only_models_without_a_tiktoken_encoding():
+    for model in MODEL_ENCODINGS:
+        assert is_approx_model(model) is False
+    for model in MODEL_MAX_TOKENS:
+        if model not in MODEL_ENCODINGS:
+            assert is_approx_model(model) is True
+
+
+def test_analyze_tokens_with_compression_covers_claude_and_gemini_too(tmp_path):
+    # Claude/Gemini have no public tiktoken encoding -- their count is a
+    # character-based approximation (see APPROX_CHARS_PER_TOKEN), but they
+    # must still show up in the results with the same shape as every
+    # tiktoken-backed model, flagged as approximate rather than silently
+    # omitted or presented as an exact count.
+    file_path = tmp_path / "big.py"
+    file_path.write_text(
+        "def f():\n" + "    x = 1\n" * 50 + "    return x\n",
+        encoding="utf-8",
+    )
+
+    results, _ = analyze_tokens_with_compression([str(file_path)])
+
+    for model in ("Claude", "Gemini"):
+        assert model in results
+        assert results[model]["approx"] is True
+        assert results[model]["compressed"] < results[model]["original"]
+        assert results[model]["saved_pct"] > 0
+
+    for model in MODEL_ENCODINGS:
+        assert results[model]["approx"] is False

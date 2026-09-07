@@ -11,15 +11,47 @@ MODEL_ENCODINGS = {
     "GPT-4":   "cl100k_base",
 }
 
+# tiktoken only ships encodings for OpenAI's own model family -- Claude and
+# Gemini use their own, non-public tokenizers, so there's no exact count to
+# get here. APPROX_CHARS_PER_TOKEN is a rough stand-in (Anthropic's own docs
+# quote ~3.5-4 characters per token for English text as a reasonable
+# estimate; Gemini's publicly documented rule of thumb is close enough that
+# reusing the same constant for both beats pretending they're precise).
+# Every model in MODEL_MAX_TOKENS but not in MODEL_ENCODINGS is counted this
+# way -- see _count_for_model()/is_approx_model() below.
+APPROX_CHARS_PER_TOKEN = 4
+
 MODEL_MAX_TOKENS = {
     "GPT-4o":  128_000,
     "GPT-3.5": 16_000,
     "GPT-4":   128_000,
+    "Claude":  200_000,
+    "Gemini":  1_000_000,
 }
 
 def count_tokens(text: str, encoding_name: str) -> int:
     enc = tiktoken.get_encoding(encoding_name)
     return len(enc.encode(text))
+
+
+def is_approx_model(model: str) -> bool:
+    """True for a model in MODEL_MAX_TOKENS with no tiktoken encoding of its
+    own (Claude, Gemini) -- its token count is a character-based estimate,
+    not an exact one. Exposed so a caller (cli.py's printer, a future GUI
+    label) can mark an approximate figure as such instead of presenting it
+    with the same confidence as a real tiktoken count.
+    """
+    return model not in MODEL_ENCODINGS
+
+
+def _count_for_model(text: str, model: str) -> int:
+    """Token count for `model` -- an exact tiktoken count when one of its
+    own encodings exists (MODEL_ENCODINGS), otherwise APPROX_CHARS_PER_TOKEN
+    applied to `text`'s length (see that constant's own comment for why)."""
+    encoding = MODEL_ENCODINGS.get(model)
+    if encoding is not None:
+        return count_tokens(text, encoding)
+    return len(text) // APPROX_CHARS_PER_TOKEN
 
 
 def analyze_tokens(file_paths: list[str]) -> tuple:
@@ -31,9 +63,8 @@ def analyze_tokens(file_paths: list[str]) -> tuple:
         combined += f"\n### {file_path}\n{content}\n"
 
     results = {}
-    for model, encoding in MODEL_ENCODINGS.items():
-        token_count = count_tokens(combined, encoding)
-        max_tokens = MODEL_MAX_TOKENS[model]
+    for model, max_tokens in MODEL_MAX_TOKENS.items():
+        token_count = _count_for_model(combined, model)
         percentage = (token_count / max_tokens) * 100
         filled = int(percentage / 10)
         bar = "█" * filled + "░" * (10 - filled)
@@ -42,7 +73,8 @@ def analyze_tokens(file_paths: list[str]) -> tuple:
             "tokens": token_count,
             "max": max_tokens,
             "percentage": round(percentage, 1),
-            "bar": bar
+            "bar": bar,
+            "approx": is_approx_model(model),
         }
 
     return results, combined
@@ -61,10 +93,9 @@ def analyze_tokens_with_compression(file_paths: list[str]) -> tuple:
         compressed_text += f"\n### {file_path}\n{compressed}\n"
 
     results = {}
-    for model, encoding in MODEL_ENCODINGS.items():
-        original_count = count_tokens(original_text, encoding)
-        compressed_count = count_tokens(compressed_text, encoding)
-        max_tokens = MODEL_MAX_TOKENS[model]
+    for model, max_tokens in MODEL_MAX_TOKENS.items():
+        original_count = _count_for_model(original_text, model)
+        compressed_count = _count_for_model(compressed_text, model)
 
         saved = original_count - compressed_count
         saved_pct = round((saved / original_count) * 100, 1) if original_count > 0 else 0
@@ -83,6 +114,7 @@ def analyze_tokens_with_compression(file_paths: list[str]) -> tuple:
             "max":            max_tokens,
             "original_bar":   "█" * filled_o + "░" * (10 - filled_o),
             "compressed_bar": "█" * filled_c + "░" * (10 - filled_c),
+            "approx":         is_approx_model(model),
         }
 
     return results, compressed_text
@@ -129,10 +161,9 @@ def analyze_tokens_with_payload(file_paths: list[str], files_data: dict[str, dic
             original_text += f"\n### {file_path}\n{content}\n"
 
     results = {}
-    for model, encoding in MODEL_ENCODINGS.items():
-        original_count = count_tokens(original_text, encoding)
-        payload_count = count_tokens(payload_text, encoding)
-        max_tokens = MODEL_MAX_TOKENS[model]
+    for model, max_tokens in MODEL_MAX_TOKENS.items():
+        original_count = _count_for_model(original_text, model)
+        payload_count = _count_for_model(payload_text, model)
 
         saved = original_count - payload_count
         saved_pct = round((saved / original_count) * 100, 1) if original_count > 0 else 0
@@ -151,6 +182,7 @@ def analyze_tokens_with_payload(file_paths: list[str], files_data: dict[str, dic
             "max":            max_tokens,
             "original_bar":   "█" * filled_o + "░" * (10 - filled_o),
             "compressed_bar": "█" * filled_c + "░" * (10 - filled_c),
+            "approx":         is_approx_model(model),
         }
 
     return results, payload_text

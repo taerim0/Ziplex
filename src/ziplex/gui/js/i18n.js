@@ -201,6 +201,7 @@ const I18N = {
     "overview.fileCount": (v) => `파일 ${v.n}개`,
     "overview.techStackHeading": "기술 스택",
     "overview.techStackDeps": (v) => `(${v.n}개)`,
+    "overview.approxTag": " (근사치)",
 
     "files.searchPlaceholder": "파일명/요약 검색...",
     "files.rootFolder": "(최상위)",
@@ -372,6 +373,7 @@ const I18N = {
     "overview.fileCount": (v) => `${v.n} files`,
     "overview.techStackHeading": "Tech Stack",
     "overview.techStackDeps": (v) => `(${v.n})`,
+    "overview.approxTag": " (approx.)",
 
     "files.searchPlaceholder": "Search filename/summary...",
     "files.rootFolder": "(root)",

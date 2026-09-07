@@ -22,9 +22,12 @@ export async function renderOverview() {
       : null;
     // named `tok`, not `t` -- this file's own t() (i18n.js) would
     // otherwise be shadowed inside this callback's scope.
+    // tok.approx (Claude/Gemini -- no public tiktoken encoding, see
+    // tokenizer.py's is_approx_model()) gets a suffix so a character-based
+    // estimate is never shown with the same confidence as a real count.
     const tokenRows = Object.entries(data.tokens || {}).map(([model, tok]) =>
       el("tr", {}, [
-        el("td", { text: model }),
+        el("td", { text: tok.approx ? `${model}${t("overview.approxTag")}` : model }),
         el("td", { text: `${tok.original} → ${tok.compressed}` }),
         el("td", { text: `${tok.saved_pct}%` }),
       ])

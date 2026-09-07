@@ -54,6 +54,16 @@ def test_pack_runs_end_to_end_with_mock_provider(tmp_path, monkeypatch):
 
     assert "GPT-4o" in aif["tokens"]
     assert aif["tokens"]["GPT-4o"]["original"] > 0
+    # approx must survive into the saved aif.json, not just the tokenizer's
+    # own in-memory result -- a real bug this test would have caught: the
+    # aif assembly step used to hand-pick only original/compressed/saved_pct
+    # out of token_results, silently dropping approx for every reader of a
+    # saved pack (cli.py's pack-summary/--max-tokens prints, the GUI's
+    # Overview token table), even though the standalone `tokens` CLI command
+    # (which never goes through this filtering) showed it correctly.
+    assert aif["tokens"]["GPT-4o"]["approx"] is False
+    assert aif["tokens"]["Claude"]["approx"] is True
+    assert aif["tokens"]["Gemini"]["approx"] is True
 
     # security_scan is always attached, zeroed out when nothing was ever
     # flagged -- same "always present, zero when N/A" convention tech_stack

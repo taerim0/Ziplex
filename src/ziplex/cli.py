@@ -272,7 +272,7 @@ def _check_max_tokens(aif_tokens: dict, max_tokens: int, model: str) -> tuple[bo
 
     Returns (passed, actual_count). actual_count is None (and passed is
     always False) when `model` isn't a key in aif_tokens (aif["tokens"],
-    keyed by tokenizer.MODEL_ENCODINGS) -- lets the caller tell "over
+    keyed by tokenizer.MODEL_MAX_TOKENS) -- lets the caller tell "over
     budget" apart from "typo'd --max-tokens-model" instead of one silently
     reading as the other.
 
@@ -285,6 +285,18 @@ def _check_max_tokens(aif_tokens: dict, max_tokens: int, model: str) -> tuple[bo
         return False, None
     actual = model_data["compressed"]
     return actual <= max_tokens, actual
+
+
+def _model_label(model: str, data: dict) -> str:
+    """`model`, with a "(근사치)" suffix when its token count is a
+    character-based estimate rather than an exact tiktoken one
+    (data["approx"] -- see tokenizer.is_approx_model()). The one shared
+    place every token-count print site builds this label, so a reader never
+    sees an approximate figure (Claude/Gemini) presented with the same
+    confidence as a real count -- including the --max-tokens pass/fail
+    line, which used to build this inline and separately from the two
+    breakdown-table print sites, letting it drift out of sync with them."""
+    return f"{model} (근사치)" if data.get("approx") else model
 
 
 def main():
@@ -342,7 +354,8 @@ def main():
     p.add_argument("--max-tokens", type=int, default=None, metavar="N",
                     help="패킹된 aif.json의 파일별 payload가 N 토큰을 넘으면 종료 코드 1로 실패 -- CI에서 컨텍스트 예산 초과를 막는 용도")
     p.add_argument("--max-tokens-model", default="GPT-4o", metavar="MODEL",
-                    help="--max-tokens 판단 기준 모델 (기본값: GPT-4o, tokenizer.MODEL_ENCODINGS의 키 중 하나)")
+                    help="--max-tokens 판단 기준 모델 (기본값: GPT-4o, tokenizer.MODEL_MAX_TOKENS의 키 중 하나 -- "
+                         "Claude/Gemini는 tiktoken 인코딩이 없어 문자 수 기반 근사치)")
     p.add_argument("--lang", choices=list(LANGUAGE_NAMES), default="en",
                     help="패킹 결과(파일별 summary/rules/AI 가이드)의 언어 (기본값 및 권장값: en)")
 
@@ -463,7 +476,7 @@ def main():
         note = f" (미디어 자산 {media_count}개 제외)" if media_count else ""
         print(f"\n📊 토큰 분석 ({measured_count}개 파일{note})\n")
         for model, data in results.items():
-            print(f"{model}")
+            print(_model_label(model, data))
             print(f"  압축 전: {data['original']:,} / {data['max']:,} {data['original_bar']}")
             print(f"  압축 후: {data['compressed']:,} / {data['max']:,} {data['compressed_bar']}")
             print(f"  절감:    {data['saved']:,} 토큰 ({data['saved_pct']}% 감소)\n")
@@ -507,7 +520,7 @@ def main():
             print("📊 토큰 분석")
             print("=" * 50)
             for model, data in aif["tokens"].items():
-                print(f"  {model}: {data['original']} → {data['compressed']} ({data['saved_pct']}% 절감)")
+                print(f"  {_model_label(model, data)}: {data['original']} → {data['compressed']} ({data['saved_pct']}% 절감)")
 
             if args.max_tokens is not None:
                 passed, actual = _check_max_tokens(aif["tokens"], args.max_tokens, args.max_tokens_model)
@@ -515,11 +528,15 @@ def main():
                     print(f"\n⚠️  --max-tokens-model '{args.max_tokens_model}'은 알 수 없는 모델입니다"
                           f" (사용 가능: {', '.join(aif['tokens'].keys())})")
                     sys.exit(1)
-                elif not passed:
-                    print(f"\n❌ 토큰 예산 초과: {args.max_tokens_model} 기준 {actual:,} > {args.max_tokens:,} (--max-tokens)")
+                # actual isn't None, so args.max_tokens_model is a real key --
+                # safe to look up its data for the same approx label the two
+                # breakdown tables above already show for this model.
+                model_label = _model_label(args.max_tokens_model, aif["tokens"][args.max_tokens_model])
+                if not passed:
+                    print(f"\n❌ 토큰 예산 초과: {model_label} 기준 {actual:,} > {args.max_tokens:,} (--max-tokens)")
                     sys.exit(1)
                 else:
-                    print(f"\n✅ 토큰 예산 통과: {args.max_tokens_model} 기준 {actual:,} ≤ {args.max_tokens:,}")
+                    print(f"\n✅ 토큰 예산 통과: {model_label} 기준 {actual:,} ≤ {args.max_tokens:,}")
         elif args.max_tokens is not None:
             # pack() returned {} -- a checkpoint-and-exit on a repeated LLM
             # failure, or a cancelled/empty run -- so there's no aif["tokens"]
