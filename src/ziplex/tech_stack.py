@@ -232,6 +232,20 @@ def _parse_composer_json(path: Path) -> list[str]:
     return [n for n in names if n != "php"]
 
 
+# Strips a default (unprefixed) XML namespace declaration -- shared by
+# _parse_pom_xml() (Maven's own default namespace) and _parse_csproj()
+# (legacy pre-.NET-Core MSBuild's) so plain tag/attribute lookups work
+# without namespace-prefixed XPath, which ElementTree's limited XPath
+# subset can't express for a default namespace anyway. Matches either
+# quote style -- a hand-authored legacy manifest occasionally uses single
+# quotes, even though double-quoted is what every real toolchain emits.
+_DEFAULT_XMLNS_RE = re.compile(r"""\sxmlns=['"][^'"]*['"]""")
+
+
+def _strip_default_xmlns(content: str) -> str:
+    return _DEFAULT_XMLNS_RE.sub("", content, count=1)
+
+
 def _parse_pom_xml(path: Path) -> list[str]:
     content = _read_text(path)
     if content is None:
@@ -240,7 +254,7 @@ def _parse_pom_xml(path: Path) -> list[str]:
     # ("dependencies"/"dependency"/"artifactId") work without namespace-
     # prefixed XPath, which ElementTree's limited XPath subset can't express
     # for a default (unprefixed) namespace anyway.
-    content = re.sub(r'\sxmlns="[^"]*"', "", content, count=1)
+    content = _strip_default_xmlns(content)
     try:
         root = ET.fromstring(content)
     except ET.ParseError:
@@ -259,6 +273,72 @@ def _parse_pom_xml(path: Path) -> list[str]:
         artifact = dep.find("artifactId")
         if artifact is not None and artifact.text:
             names.append(artifact.text.strip())
+    return names
+
+
+def _parse_csproj(path: Path) -> list[str]:
+    content = _read_text(path)
+    if content is None:
+        return []
+    # Legacy (pre-.NET-Core) .csproj declares a default MSBuild namespace
+    # (xmlns="http://schemas.microsoft.com/developer/msbuild/2003"); modern
+    # SDK-style projects (the common case since .NET Core) have none. Strip
+    # it the same way _parse_pom_xml() does, so a plain tag/attribute lookup
+    # works for either shape without namespaced XPath.
+    content = _strip_default_xmlns(content)
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError:
+        return []
+    names = []
+    # root.iter(), not a fixed ItemGroup path -- a real multi-targeting
+    # .csproj can carry several conditional <ItemGroup>s (per target
+    # framework), and PackageReference can legally sit in any of them.
+    for pkg_ref in root.iter("PackageReference"):
+        include = pkg_ref.get("Include")
+        if include:
+            names.append(include)
+    return names
+
+
+# Gradle dependency-configuration keywords this recognizes -- the common
+# ones for declaring a real external dependency; excludes constraint-only/
+# platform-BOM-only configurations (same "don't count things that aren't a
+# real used dependency" restraint _parse_pom_xml() applies to
+# dependencyManagement). Matches both Groovy DSL (build.gradle) and Kotlin
+# DSL (build.gradle.kts) call syntax, which only differ in whether the
+# parens are present -- this regex doesn't care either way.
+_GRADLE_CONFIG_RE = re.compile(
+    r"\b(?:implementation|api|compileOnly|runtimeOnly|testImplementation|testCompileOnly|testRuntimeOnly|kapt|annotationProcessor)\b"
+)
+# A Maven-style "group:artifact" or "group:artifact:version" coordinate
+# string literal -- version (if present) is dropped, matching this module's
+# existing "declared name minus version" convention everywhere else.
+_GRADLE_COORD_RE = re.compile(r"""['"]([\w.\-]+:[\w.\-]+)(?::[\w.\-+]+)?['"]""")
+
+
+def _parse_gradle(path: Path) -> list[str]:
+    """Deliberately basic regex parsing, not a real Groovy/Kotlin-script
+    evaluator (Gradle build files are executable code, not a declarative
+    format any of this module's other parsers could fully replicate without
+    vendoring a JVM). Only catches a dependency given as a plain
+    "group:artifact:version" string literal -- misses one built from a
+    version catalog reference (`libs.guava`), a `project(":module")`
+    reference (internal, not an external dependency anyway), or one split
+    across `group`/`name`/`version` map-notation keys. Still covers the
+    large majority of real-world build.gradle files, the same "good enough,
+    free fact block" tradeoff this whole module already makes elsewhere.
+    """
+    text = _read_text(path)
+    if text is None:
+        return []
+    names = []
+    for line in text.splitlines():
+        if not _GRADLE_CONFIG_RE.search(line):
+            continue
+        match = _GRADLE_COORD_RE.search(line)
+        if match:
+            names.append(match.group(1))
     return names
 
 
@@ -296,14 +376,64 @@ _MANIFESTS = [
     ("Gemfile",          "Ruby",                     "bundler",     _parse_gemfile),
     ("composer.json",    "PHP",                       "composer",    _parse_composer_json),
     ("pom.xml",          "Java",                       "maven",       _parse_pom_xml),
+    ("build.gradle",     "Java/Kotlin",                 "gradle",      _parse_gradle),
+    ("build.gradle.kts", "Java/Kotlin",                 "gradle",      _parse_gradle),
 ]
+
+# .csproj is the one manifest _MANIFESTS' fixed-filename model can't express
+# directly -- a real .csproj is always named after its own project
+# (<ProjectName>.csproj), not a fixed filename the way every other manifest
+# here is (a real, previously-documented gap: AGENTS.md's .cs language notes
+# flagged this exact mismatch). Handled as its own top-level-only glob scan,
+# same non-recursive scope every other manifest lookup here already has.
+_CSPROJ_LANGUAGE = "C#"
+_CSPROJ_PACKAGE_MANAGER = "nuget"
+
+
+def _build_stack_entry(filename: str, language: str, package_manager, manifest_path: Path, parser) -> dict:
+    """Runs one manifest through its parser and shapes the result dict --
+    shared by both the fixed-filename _MANIFESTS loop and the .csproj glob
+    scan below, so the dedup/truncation/error-handling logic can't drift
+    between the two.
+    """
+    try:
+        raw_deps = parser(manifest_path)
+    except Exception:
+        raw_deps = []
+
+    if callable(package_manager):
+        try:
+            resolved_package_manager = package_manager(manifest_path)
+        except Exception:
+            resolved_package_manager = "poetry/pip"
+    else:
+        resolved_package_manager = package_manager
+
+    # de-dupe while preserving order (a manifest can list the same name
+    # twice, e.g. across dependencies/devDependencies)
+    seen = set()
+    deps = []
+    for dep in raw_deps:
+        if dep not in seen:
+            seen.add(dep)
+            deps.append(dep)
+
+    return {
+        "manifest": filename,
+        "language": language,
+        "package_manager": resolved_package_manager,
+        "dependencies": deps[:MAX_DEPENDENCIES],
+        "dependencies_truncated": len(deps) > MAX_DEPENDENCIES,
+    }
 
 
 def detect_tech_stack(root_path: str) -> list[dict]:
     """Scans root_path's top level for known package-manager manifest files.
     Returns one entry per manifest actually found, in _MANIFESTS' fixed
-    order -- so output is stable across runs/platforms, not directory-
-    listing order (which isn't guaranteed).
+    order (plus any .csproj files last -- see their own note above) -- so
+    output is stable across runs/platforms, not directory-listing order
+    (which isn't guaranteed for _MANIFESTS' own entries; the .csproj glob is
+    sorted explicitly for the same reason).
 
     Never raises (see module docstring): every parser above is already
     defensive about a manifest's *shape*, and the try/except here is a
@@ -319,34 +449,18 @@ def detect_tech_stack(root_path: str) -> list[dict]:
         manifest_path = root / filename
         if not manifest_path.is_file():
             continue
+        stacks.append(_build_stack_entry(filename, language, package_manager, manifest_path, parser))
 
-        try:
-            raw_deps = parser(manifest_path)
-        except Exception:
-            raw_deps = []
+    # .csproj: variable filename, so it can't live in _MANIFESTS above --
+    # scanned separately, top-level only (same non-recursive scope every
+    # other manifest here already has), sorted for output stability.
+    try:
+        csproj_files = sorted(root.glob("*.csproj"))
+    except OSError:
+        csproj_files = []
+    for csproj_path in csproj_files:
+        stacks.append(_build_stack_entry(
+            csproj_path.name, _CSPROJ_LANGUAGE, _CSPROJ_PACKAGE_MANAGER, csproj_path, _parse_csproj
+        ))
 
-        if callable(package_manager):
-            try:
-                resolved_package_manager = package_manager(manifest_path)
-            except Exception:
-                resolved_package_manager = "poetry/pip"
-        else:
-            resolved_package_manager = package_manager
-
-        # de-dupe while preserving order (a manifest can list the same name
-        # twice, e.g. across dependencies/devDependencies)
-        seen = set()
-        deps = []
-        for dep in raw_deps:
-            if dep not in seen:
-                seen.add(dep)
-                deps.append(dep)
-
-        stacks.append({
-            "manifest": filename,
-            "language": language,
-            "package_manager": resolved_package_manager,
-            "dependencies": deps[:MAX_DEPENDENCIES],
-            "dependencies_truncated": len(deps) > MAX_DEPENDENCIES,
-        })
     return stacks

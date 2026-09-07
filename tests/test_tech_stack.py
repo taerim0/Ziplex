@@ -125,6 +125,91 @@ def test_detects_composer_json_and_excludes_php_platform_entry(tmp_path):
     assert stacks[0]["dependencies"] == ["laravel/framework"]
 
 
+def test_detects_csproj_package_references(tmp_path):
+    _write(tmp_path / "MyApp.csproj", '\n'.join([
+        '<Project Sdk="Microsoft.NET.Sdk">',
+        "  <ItemGroup>",
+        '    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />',
+        '    <PackageReference Include="Serilog" Version="2.10.0" />',
+        "  </ItemGroup>",
+        "</Project>",
+    ]))
+    stacks = detect_tech_stack(str(tmp_path))
+    assert len(stacks) == 1
+    assert stacks[0]["manifest"] == "MyApp.csproj"
+    assert stacks[0]["language"] == "C#"
+    assert stacks[0]["package_manager"] == "nuget"
+    assert set(stacks[0]["dependencies"]) == {"Newtonsoft.Json", "Serilog"}
+
+
+def test_detects_csproj_with_legacy_msbuild_namespace(tmp_path):
+    _write(tmp_path / "Legacy.csproj", '\n'.join([
+        '<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">',
+        "  <ItemGroup>",
+        '    <PackageReference Include="log4net" Version="2.0.15" />',
+        "  </ItemGroup>",
+        "</Project>",
+    ]))
+    stacks = detect_tech_stack(str(tmp_path))
+    assert stacks[0]["dependencies"] == ["log4net"]
+
+
+def test_detects_csproj_with_single_quoted_xmlns(tmp_path):
+    # A hand-authored legacy manifest occasionally single-quotes its
+    # attributes -- every real toolchain emits double quotes, but the
+    # namespace-stripping regex shouldn't assume that.
+    _write(tmp_path / "Legacy.csproj", "\n".join([
+        "<Project xmlns='http://schemas.microsoft.com/developer/msbuild/2003'>",
+        "  <ItemGroup>",
+        '    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />',
+        "  </ItemGroup>",
+        "</Project>",
+    ]))
+    stacks = detect_tech_stack(str(tmp_path))
+    assert stacks[0]["dependencies"] == ["Newtonsoft.Json"]
+
+
+def test_detects_multiple_csproj_files_sorted(tmp_path):
+    _write(tmp_path / "Web.csproj", '<Project><ItemGroup><PackageReference Include="A" /></ItemGroup></Project>')
+    _write(tmp_path / "Api.csproj", '<Project><ItemGroup><PackageReference Include="B" /></ItemGroup></Project>')
+    stacks = detect_tech_stack(str(tmp_path))
+    assert [s["manifest"] for s in stacks] == ["Api.csproj", "Web.csproj"]
+
+
+def test_csproj_survives_malformed_xml(tmp_path):
+    _write(tmp_path / "Broken.csproj", "<Project><ItemGroup>")
+    stacks = detect_tech_stack(str(tmp_path))
+    assert stacks[0]["dependencies"] == []
+
+
+def test_detects_gradle_groovy_dsl_dependencies(tmp_path):
+    _write(tmp_path / "build.gradle", '\n'.join([
+        "dependencies {",
+        "    implementation 'org.springframework:spring-core:5.3.0'",
+        '    testImplementation "junit:junit:4.13"',
+        "    api project(':core')",  # internal reference, no coordinate -- not captured
+        "}",
+    ]))
+    stacks = detect_tech_stack(str(tmp_path))
+    assert len(stacks) == 1
+    assert stacks[0]["manifest"] == "build.gradle"
+    assert stacks[0]["language"] == "Java/Kotlin"
+    assert stacks[0]["package_manager"] == "gradle"
+    assert set(stacks[0]["dependencies"]) == {"org.springframework:spring-core", "junit:junit"}
+
+
+def test_detects_gradle_kotlin_dsl_dependencies(tmp_path):
+    _write(tmp_path / "build.gradle.kts", '\n'.join([
+        "dependencies {",
+        '    implementation("com.google.guava:guava:31.0-jre")',
+        '    compileOnly("org.projectlombok:lombok:1.18.24")',
+        "}",
+    ]))
+    stacks = detect_tech_stack(str(tmp_path))
+    assert stacks[0]["manifest"] == "build.gradle.kts"
+    assert set(stacks[0]["dependencies"]) == {"com.google.guava:guava", "org.projectlombok:lombok"}
+
+
 def test_detects_pom_xml_with_default_namespace(tmp_path):
     _write(tmp_path / "pom.xml", '\n'.join([
         '<project xmlns="http://maven.apache.org/POM/4.0.0">',
