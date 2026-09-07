@@ -90,16 +90,17 @@ def collect_files(root_path: str, include: list[str] | None = None, ignore: list
         dirnames[:] = [
             d for d in dirnames
             if not spec.match_file(
-                str(Path(dirpath).relative_to(root) / d) + "/"
+                (Path(dirpath).relative_to(root) / d).as_posix() + "/"
             )
         ]
 
         for filename in filenames:
             file_path = Path(dirpath) / filename
             relative = file_path.relative_to(root)
-            if spec.match_file(str(relative)):
+            relative_posix = relative.as_posix()
+            if spec.match_file(relative_posix):
                 continue
-            if include_spec is not None and not include_spec.match_file(str(relative)):
+            if include_spec is not None and not include_spec.match_file(relative_posix):
                 continue
 
             # No name-pattern list can enumerate every binary format a project

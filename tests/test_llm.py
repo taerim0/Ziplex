@@ -428,3 +428,19 @@ def test_generate_gives_up_gracefully_after_repeated_transport_failures(monkeypa
     provider = llm.GeminiProvider(api_key="x")
 
     assert provider.generate("prompt", retry=2) == "{}"
+
+
+def test_generate_uses_shared_session(monkeypatch):
+    called = []
+
+    def fake_session_post(url, **kwargs):
+        called.append(url)
+        return _FakeResponse({"candidates": [{"content": {"parts": [{"text": "{}"}]}}]})
+
+    monkeypatch.setattr(llm._session, "post", fake_session_post)
+    provider = llm.GeminiProvider(api_key="x")
+    provider.generate("prompt")
+
+    assert len(called) == 1
+    assert "generativelanguage.googleapis.com" in called[0]
+

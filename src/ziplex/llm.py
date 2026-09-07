@@ -26,6 +26,21 @@ load_dotenv()
 # -- it flows straight into the existing transient-failure retry below.
 REQUEST_TIMEOUT = 60
 
+# Shared session for HTTP Keep-Alive connection pooling across provider requests.
+# requests.Session uses urllib3.PoolManager under the hood, which is thread-safe
+# and reuses established TCP/TLS connections to each host across worker threads.
+_session = requests.Session()
+_ORIGINAL_REQUESTS_POST = requests.post
+
+
+def _post(url: str, **kwargs) -> requests.Response:
+    """Helper to perform HTTP POST requests using the shared connection-pooling session.
+    Honors monkeypatched requests.post (e.g. in test suites).
+    """
+    if requests.post is not _ORIGINAL_REQUESTS_POST:
+        return requests.post(url, **kwargs)
+    return _session.post(url, **kwargs)
+
 # Supported packed-content languages -- what a summary/rule/AI-guide value
 # actually gets *written in*, independent of the GUI's own display-language
 # switcher (js/i18n.js, a fixed dictionary translating the GUI's own chrome,
@@ -76,8 +91,7 @@ def _label_prefix(label: str) -> str:
     reported directly as missing: watching a pack fail with no indication
     of *which* file was the problem made it hard to tell whether one bad
     file was blocking everything or the whole API was down. Empty string
-    (analyze_relationships, dead code with no caller today) means no
-    prefix at all, not a stray "[]".
+    means no prefix at all, not a stray "[]".
     """
     return f"[{label}] " if label else ""
 
@@ -226,7 +240,7 @@ class GeminiProvider:
         prefix = _label_prefix(label)
         for attempt in range(retry):
             try:
-                response = requests.post(f"{self.url}?key={api_key}", json={
+                response = _post(f"{self.url}?key={api_key}", json={
                     "contents": [{"parts": [{"text": prompt}]}],
                     # Every prompt here is a short, single-shot extraction
                     # task (summarize this file in one line, list these
@@ -376,7 +390,7 @@ class OpenAIProvider:
 
         for attempt in range(retry):
             try:
-                response = requests.post(
+                response = _post(
                     f"{self.base_url}/chat/completions", headers=headers, json=body, timeout=REQUEST_TIMEOUT
                 )
                 data = response.json()
@@ -470,7 +484,7 @@ class ClaudeProvider:
 
         for attempt in range(retry):
             try:
-                response = requests.post(self.API_URL, headers=headers, json=body, timeout=REQUEST_TIMEOUT)
+                response = _post(self.API_URL, headers=headers, json=body, timeout=REQUEST_TIMEOUT)
                 data = response.json()
                 if not isinstance(data, dict):
                     # See GeminiProvider.generate()'s matching comment.
@@ -790,27 +804,3 @@ Respond with JSON only, nothing else.
 {{"<folder path>": "...", "<another folder path>": "..."}}
 """
     return generate(prompt, label="폴더 요약")
-
-def analyze_relationships(file_summaries: dict) -> str:
-    prompt = f"""
-Based on the file names and partial content below,
-extract only the direct dependency relationships between files.
-
-Rules:
-- Include only cases where one file directly references or uses another
-- Exclude cases that are merely related in topic
-- Use an empty array if there is no relationship
-
-Respond with JSON only, nothing else.
-
-File list:
-{file_summaries}
-
-{{
-  "relationships": {{
-    "fileA": ["fileB it directly references"],
-    "fileB": []
-  }}
-}}
-"""
-    return generate(prompt)
