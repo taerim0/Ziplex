@@ -43,6 +43,23 @@ MCP server to the internet) for the same reason.
 Run directly (after `pip install -e .`):
     ziplex-gui [--aif PATH] [--project PATH] [--port 5321]
     python -m ziplex.gui.gui_server [--aif PATH] [--project PATH] [--port 5321]
+
+`ziplex-gui` is registered under pyproject.toml's `[project.gui-scripts]`
+(not `[project.scripts]`, unlike `ziplex`/`ziplex-mcp`) -- setuptools builds
+its Windows launcher as a GUI-subsystem .exe from that group, so it never
+allocates a console of its own, whether double-clicked from Explorer/a
+taskbar shortcut or launched from an already-open terminal. That matters
+for exactly this module's own windowed branch below: a real console
+popping up alongside the native pywebview window (with its own, unrelated
+default icon) would undercut the "a real program, not a script" feel the
+window's own icon (see main()'s icon_path) is going for. print()/input()
+still work completely normally either way -- stdio is just a pair of
+unconnected pipes rather than a visible console when nothing supplied one
+(nobody's watching a window that was never shown to begin with), and
+`--no-window`'s own log/URL output still reaches a *real* console when one
+launched it, same as any GUI-subsystem app. `python -m
+ziplex.gui.gui_server` bypasses the generated launcher entirely -- it
+always runs under whatever console (if any) invoked `python` itself.
 """
 
 import argparse
@@ -631,9 +648,29 @@ def main():
     else:
         import webview
 
+        # Windows-only in practice (winforms.py reads _state["icon"] as a
+        # System.Drawing.Icon(path) for the native window's title bar
+        # entry; pywebview's own docstring claims GTK/QT-only, but the
+        # installed winforms backend honors it too). Harmless no-op on a
+        # platform/backend that ignores it -- webview.start() just falls back
+        # to its own default icon extraction.
+        icon_path = Path(__file__).parent / "assets" / "icon.ico"
+        # The Windows taskbar button for this window reads its icon from
+        # ziplex-gui.exe's own PE resources, not from anything set here or
+        # via webview.start(icon=...) below -- confirmed directly (matched
+        # the exe's own extracted icon, independent of any window, pixel-
+        # for-pixel against what the real taskbar showed). Patching that
+        # in-place after install was tried and reverted: pip/distlib's
+        # generated launcher appends a zip payload after the PE structure
+        # itself for its own bootstrap, and Win32's resource-update API
+        # (BeginUpdateResource/EndUpdateResource) doesn't preserve that
+        # trailing data -- confirmed directly too, the "patched" exe's
+        # very next launch failed immediately (exit code 1). No known-safe
+        # fix for a pip-generated launcher exe specifically; unfixed.
+
         window = webview.create_window("Ziplex", url, width=1100, height=800, js_api=_Api(webview))
         window.events.closing += lambda: _confirm_close_if_reviewing(window)
-        webview.start()
+        webview.start(icon=str(icon_path) if icon_path.is_file() else None)
 
 
 if __name__ == "__main__":

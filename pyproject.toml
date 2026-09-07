@@ -64,8 +64,18 @@ Repository = "https://github.com/taerim0/Ziplex"
 # server, a stdio MCP loop) instead of running once and exiting.
 [project.scripts]
 ziplex = "ziplex.cli:main"
-ziplex-gui = "ziplex.gui.gui_server:main"
 ziplex-mcp = "ziplex.mcp_server:main"
+
+# ziplex-gui lives in gui-scripts, not scripts, on purpose -- on Windows
+# this is the one distinction between a "console" and "GUI" launcher .exe
+# (Unix ignores it; both groups produce an identical plain wrapper there).
+# A console-subsystem exe always allocates its own console window, which
+# for a native pywebview app shows up as a second, wrongly-iconed taskbar
+# entry right next to the real one -- see gui_server.py's own module
+# docstring for the full story, including why --no-window's log/URL output
+# is unaffected.
+[project.gui-scripts]
+ziplex-gui = "ziplex.gui.gui_server:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "ziplex.__version__" }
@@ -80,4 +90,4 @@ where = ["src"]
 # are AI coding agents' own working notes for this repo, not runtime assets --
 # deliberately excluded from the built package.
 [tool.setuptools.package-data]
-"ziplex.gui" = ["index.html", "style.css", "js/*.js", "js/pages/*.js"]
+"ziplex.gui" = ["index.html", "style.css", "js/*.js", "js/pages/*.js", "assets/*.ico"]

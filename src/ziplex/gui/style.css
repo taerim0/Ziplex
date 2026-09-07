@@ -1,11 +1,26 @@
+/* Monochrome, low-saturation palette matching the Ziplex mark itself (a
+   plain black/white glyph, no color at all) -- --accent is a near-white
+   neutral used for emphasis (active nav, primary buttons, focus) rather
+   than a hue, so "this is the important one" reads through contrast and
+   weight the way the logo's own black-on-white does, not through a brand
+   color. --warn/--success/--danger stay real, distinguishable colors
+   (confidence/status still needs to be scannable at a glance) but
+   deliberately desaturated/dusty rather than vivid, so they read as this
+   same muted family instead of clashing accent colors dropped on top of it. */
 :root {
-  --bg: #1e1f24;
-  --panel: #26282f;
-  --border: #383a44;
-  --text: #e4e5ea;
-  --muted: #9a9ca8;
-  --accent: #6ea8fe;
-  --danger: #f2a154;
+  --bg: #121214;
+  --panel: #1a1a1d;
+  --border: #2c2c30;
+  --text: #ececee;
+  --muted: #8b8b91;
+  --accent: #d8d8dc;
+  --accent-rgb: 216, 216, 220;
+  --danger: #b5695c;
+  --danger-rgb: 181, 105, 92;
+  --warn: #b9a56a;
+  --warn-rgb: 185, 165, 106;
+  --success: #7f9c85;
+  --success-rgb: 127, 156, 133;
   --mono: "Consolas", "SFMono-Regular", Menlo, monospace;
   --topbar-height: 42px;
 }
@@ -75,7 +90,7 @@ body {
   font-size: 0.92em;
 }
 .topbar a:hover { opacity: 1; background: rgba(255, 255, 255, 0.05); }
-.topbar a.active { opacity: 1; color: var(--accent); background: rgba(110, 168, 254, 0.12); }
+.topbar a.active { opacity: 1; color: var(--accent); background: rgba(var(--accent-rgb), 0.12); }
 
 /* Sidebar, not a top hyperlink bar -- a local desktop program's own window
    chrome (a settings/utility app's nav) reads as "runs on your machine"
@@ -118,7 +133,7 @@ body {
   opacity: 1;
   color: var(--accent);
   border-left-color: var(--accent);
-  background: rgba(110, 168, 254, 0.1);
+  background: rgba(var(--accent-rgb), 0.1);
 }
 .sidebar .change-project {
   margin-top: auto;
@@ -139,7 +154,7 @@ body {
   width: fit-content;
   margin: 4px 20px 8px;
   background: var(--danger);
-  color: #241a0a;
+  color: #1c1917;
   padding: 2px 8px;
   border: none;
   border-radius: 10px;
@@ -239,10 +254,10 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
   font-size: 0.85em;
   font-weight: 600;
 }
-.pack-status.running { background: rgba(110, 168, 254, 0.15); color: var(--accent); }
-.pack-status.reviewing { background: rgba(226, 193, 75, 0.15); color: #e2c14b; }
-.pack-status.done { background: rgba(127, 208, 138, 0.15); color: #7fd08a; }
-.pack-status.error { background: rgba(242, 161, 84, 0.15); color: var(--danger); }
+.pack-status.running { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); }
+.pack-status.reviewing { background: rgba(var(--warn-rgb), 0.15); color: var(--warn); }
+.pack-status.done { background: rgba(var(--success-rgb), 0.15); color: var(--success); }
+.pack-status.error { background: rgba(var(--danger-rgb), 0.15); color: var(--danger); }
 
 .pack-log {
   max-height: 320px;
@@ -307,7 +322,7 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
   margin-bottom: 8px;
 }
 .dangerous-file-row .file-checklist-row { padding: 2px 4px 6px; margin: 0; }
-.dangerous-file-row .file-checklist-row:hover { background: rgba(242, 161, 84, 0.08); }
+.dangerous-file-row .file-checklist-row:hover { background: rgba(var(--danger-rgb), 0.08); }
 .dangerous-file-detail {
   margin-left: 24px;
   font-family: var(--mono);
@@ -395,7 +410,7 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
   margin: 0 0 6px;
   padding: 5px 8px;
   border-radius: 4px;
-  background: rgba(242, 161, 84, 0.12);
+  background: rgba(var(--danger-rgb), 0.12);
   color: var(--danger);
   font-weight: 600;
 }
@@ -440,7 +455,7 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
 }
 .rel-list-row:last-child { border-bottom: none; }
 .rel-list-row:hover { background: rgba(255, 255, 255, 0.04); }
-.rel-list-row.active { background: rgba(110, 168, 254, 0.15); color: var(--accent); }
+.rel-list-row.active { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); }
 .rel-list-name { overflow-wrap: anywhere; }
 .rel-dot {
   width: 6px;
@@ -466,7 +481,7 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
 .rel-node text { fill: var(--text); font-family: var(--mono); font-size: 11px; }
 .rel-node.external rect { stroke-dasharray: 3 3; }
 .rel-node.external text { fill: var(--muted); }
-.rel-node-center rect { fill: rgba(110, 168, 254, 0.12); stroke: var(--accent); }
+.rel-node-center rect { fill: rgba(var(--accent-rgb), 0.12); stroke: var(--accent); }
 .rel-node-center text { font-weight: 600; }
 .rel-graph-more { fill: var(--muted); font-size: 10px; font-family: var(--mono); }
 .rel-edge-line { fill: none; stroke: var(--border); stroke-width: 1.5; }
@@ -509,7 +524,7 @@ textarea { resize: vertical; }
 
 button {
   background: var(--accent);
-  color: #10131a;
+  color: #141416;
   border: none;
   border-radius: 6px;
   padding: 8px 14px;
@@ -534,7 +549,7 @@ button.secondary {
 
 .error {
   color: var(--danger);
-  background: rgba(242, 161, 84, 0.1);
+  background: rgba(var(--danger-rgb), 0.1);
   border: 1px solid var(--danger);
   border-radius: 6px;
   padding: 10px 14px;
@@ -549,11 +564,11 @@ th { color: var(--muted); font-weight: 500; font-size: 0.85em; }
 
 .confidence { font-family: var(--mono); font-size: 0.85em; margin-left: 4px; }
 .confidence.low { color: var(--danger); }
-.confidence.medium { color: #e2c14b; }
-.confidence.high { color: #7fd08a; }
+.confidence.medium { color: var(--warn); }
+.confidence.high { color: var(--success); }
 
 pre {
-  background: #17181c;
+  background: #0f0f11;
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 12px 14px;
@@ -571,7 +586,7 @@ pre {
 .search-result { margin-bottom: 14px; }
 .search-result .loc { color: var(--accent); font-family: var(--mono); font-size: 0.9em; cursor: pointer; }
 .search-result .loc:hover { text-decoration: underline; }
-.search-result mark { background: #6ea8fe55; color: inherit; }
+.search-result mark { background: rgba(var(--accent-rgb), 0.35); color: inherit; }
 .ctx-line { color: var(--muted); }
 .match-line { color: var(--text); font-weight: 600; }
 
