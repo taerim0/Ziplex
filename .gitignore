@@ -22,3 +22,15 @@ venv/
 # target project choosing to commit its own is a separate decision).
 .claude/worktrees/
 .claude/skills/
+
+# Google Antigravity IDE -- transient workspace state (session logs,
+# resource configs, permission registries), not meant to be committed --
+# same convention as .idea//.vscode/. Trial period (see AGENTS.md's nested-
+# doc list note): if the trial doesn't stick, deleting these local folders
+# plus uninstalling the IDE is the entire rollback, no git cleanup needed.
+# Deliberately NOT ignoring .agent/rules//.agents/rules/ here -- those would
+# hold actual project-convention content (this project's AGENTS.md
+# equivalent for Antigravity specifically), a real commit-or-not decision
+# for later, not transient state.
+.antigravitycli/
+.antigravity/
