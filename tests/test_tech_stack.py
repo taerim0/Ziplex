@@ -49,6 +49,9 @@ def test_detects_pyproject_toml_pep621_dependencies(tmp_path):
     stacks = detect_tech_stack(str(tmp_path))
     assert len(stacks) == 1
     assert set(stacks[0]["dependencies"]) == {"flask", "requests"}
+    # [project] present, no [tool.poetry.dependencies] -> unambiguously pip,
+    # not the old flat "poetry/pip" every pyproject.toml used to get.
+    assert stacks[0]["package_manager"] == "pip"
 
 
 def test_detects_pyproject_toml_poetry_dependencies_and_excludes_python_itself(tmp_path):
@@ -59,6 +62,20 @@ def test_detects_pyproject_toml_poetry_dependencies_and_excludes_python_itself(t
     ]))
     stacks = detect_tech_stack(str(tmp_path))
     assert stacks[0]["dependencies"] == ["flask"]
+    assert stacks[0]["package_manager"] == "poetry"
+
+
+def test_pyproject_toml_falls_back_to_poetry_pip_label_when_genuinely_ambiguous(tmp_path):
+    # Neither [project] nor [tool.poetry.dependencies] -- e.g. a
+    # build-backend-only manifest declaring no dependencies table at all.
+    # Nothing to disambiguate on, so the old flat label survives as the
+    # honest "could be either" fallback.
+    _write(tmp_path / "pyproject.toml", '\n'.join([
+        "[build-system]",
+        'requires = ["setuptools"]',
+    ]))
+    stacks = detect_tech_stack(str(tmp_path))
+    assert stacks[0]["package_manager"] == "poetry/pip"
 
 
 def test_detects_cargo_toml(tmp_path):

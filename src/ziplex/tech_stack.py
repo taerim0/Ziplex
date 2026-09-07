@@ -262,11 +262,35 @@ def _parse_pom_xml(path: Path) -> list[str]:
     return names
 
 
-# (manifest filename, language/ecosystem label, package-manager label, parser)
+def _pyproject_package_manager(path: Path) -> str:
+    """pyproject.toml alone is ambiguous -- both PEP 621 (pip, or any other
+    PEP 517 build backend reading the same [project] table) and Poetry
+    declare dependencies in it, under different tables. A real Poetry
+    project has [tool.poetry.dependencies]; distinguishing on that (rather
+    than the flat "poetry/pip" label every pyproject.toml manifest used to
+    get regardless of which one it actually is) costs nothing extra here --
+    _load_toml()/_dig() already parse this same file the same safe,
+    never-raises way _parse_pyproject_toml() does. "poetry/pip" survives
+    only as the last-resort label for a manifest with neither table (e.g. a
+    build-backend-only pyproject.toml declaring no dependencies at all, or
+    one that failed to parse) -- genuinely ambiguous, not just unchecked.
+    """
+    data = _load_toml(path)
+    if _dig(data, "tool", "poetry", "dependencies"):
+        return "poetry"
+    if _dig(data, "project"):
+        return "pip"
+    return "poetry/pip"
+
+
+# (manifest filename, language/ecosystem label, package-manager label (a
+# fixed string, or a callable taking the manifest Path and returning one --
+# see _pyproject_package_manager above for why pyproject.toml needs that),
+# parser)
 _MANIFESTS = [
     ("package.json",     "JavaScript/TypeScript", "npm",         _parse_package_json),
     ("requirements.txt", "Python",                 "pip",         _parse_requirements_txt),
-    ("pyproject.toml",   "Python",                 "poetry/pip",  _parse_pyproject_toml),
+    ("pyproject.toml",   "Python",                 _pyproject_package_manager,  _parse_pyproject_toml),
     ("Cargo.toml",       "Rust",                    "cargo",       _parse_cargo_toml),
     ("go.mod",           "Go",                      "go modules",  _parse_go_mod),
     ("Gemfile",          "Ruby",                     "bundler",     _parse_gemfile),
@@ -301,6 +325,14 @@ def detect_tech_stack(root_path: str) -> list[dict]:
         except Exception:
             raw_deps = []
 
+        if callable(package_manager):
+            try:
+                resolved_package_manager = package_manager(manifest_path)
+            except Exception:
+                resolved_package_manager = "poetry/pip"
+        else:
+            resolved_package_manager = package_manager
+
         # de-dupe while preserving order (a manifest can list the same name
         # twice, e.g. across dependencies/devDependencies)
         seen = set()
@@ -313,7 +345,7 @@ def detect_tech_stack(root_path: str) -> list[dict]:
         stacks.append({
             "manifest": filename,
             "language": language,
-            "package_manager": package_manager,
+            "package_manager": resolved_package_manager,
             "dependencies": deps[:MAX_DEPENDENCIES],
             "dependencies_truncated": len(deps) > MAX_DEPENDENCIES,
         })
