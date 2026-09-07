@@ -239,19 +239,22 @@ export async function renderPackJob(jobId) {
     return el("div", { class: `file-edit-row${flagged ? " needs-review" : ""}` }, children);
   }
 
-  // Same shape as fileEditor() above, minus confidence/signatures --
-  // folder_summary.py has no per-folder confidence signal, so every folder
-  // is shown for review rather than a triaged subset.
-  function folderEditor(entry, folderInputs) {
+  // Same shape as fileEditor() above -- folder confidence is an aggregate
+  // of its own member files' already-scored confidence (see
+  // folder_summary.group_confidence_by_folder()), not signatures of its
+  // own, so there's no signatures list to show even when flagged.
+  function folderEditor(entry, flagged, folderInputs) {
     const input = el("textarea", { rows: "2" });
     input.value = entry.summary || "";
     folderInputs[entry.folder] = input;
 
     const display = entry.folder === "." ? t("files.rootFolder") : entry.folder;
+    const level = confidenceLevel(entry.confidence);
     const header = el("div", { class: "file-edit-header" }, [
       el("span", { class: "file-edit-name", text: display }),
+      el("span", { class: `confidence ${level}`, text: entry.confidence.toFixed(2) }),
     ]);
-    return el("div", { class: "file-edit-row" }, [header, input]);
+    return el("div", { class: `file-edit-row${flagged ? " needs-review" : ""}` }, [header, input]);
   }
 
   async function showReviewState() {
@@ -399,7 +402,12 @@ export async function renderPackJob(jobId) {
     const autoKeptBox = el("div", {}, review.auto_kept.map(entry => fileEditor(entry, false, summaryInputs)));
 
     const folderInputs = {};
-    const foldersBox = el("div", {}, (review.folders || []).map(entry => folderEditor(entry, folderInputs)));
+    const folderNeedsReview = review.folders_needs_review || [];
+    const folderAutoKept = review.folders_auto_kept || [];
+    const folderNeedsReviewBox = el("div", {}, folderNeedsReview.length
+      ? folderNeedsReview.map(entry => folderEditor(entry, true, folderInputs))
+      : [el("p", { class: "muted", text: t("pack.review.noFolderNeedsReview") })]);
+    const folderAutoKeptBox = el("div", {}, folderAutoKept.map(entry => folderEditor(entry, false, folderInputs)));
 
     const submitError = el("div", { class: "error hidden" });
     const submitButton = el("button", { text: t("pack.review.submit") });
@@ -453,7 +461,9 @@ export async function renderPackJob(jobId) {
       el("h3", { text: t("pack.review.aiGuide") }), promptInput,
       el("h3", { text: t("pack.review.codingRules") }), rulesList,
       el("div", { class: "toolbar" }, [newRuleInput, addRuleButton]),
-      el("h3", { text: t("pack.review.folderSummariesHeader") }), foldersBox,
+      el("h3", { text: t("pack.review.folderSummariesHeader") }),
+      el("h4", { text: t("pack.review.needsReviewHeader", { n: folderNeedsReview.length }) }), folderNeedsReviewBox,
+      el("h4", { text: t("pack.review.autoKeptHeader", { n: folderAutoKept.length }) }), folderAutoKeptBox,
       el("h3", { text: t("pack.review.fileRelations") }),
       el("p", { class: "muted", text: t("pack.review.relationsHelp") }),
       relSection, treeError,

@@ -901,6 +901,10 @@ def pack(
         if use_llm
         else folder_summary.generate_structural_folder_summaries(rel_files_data, lang=lang)
     )
+    # Aggregate, not independently verified -- see group_confidence_by_folder()'s
+    # own docstring. Computed from rel_files_data, which already carries every
+    # file's real confidence.estimate_confidence() score by this point.
+    folder_confidences = folder_summary.group_confidence_by_folder(rel_files_data)
 
     # 6. Token counting
     # Compares raw project text against the actual per-file aif.json payload
@@ -967,14 +971,19 @@ def pack(
             "language": lang,
         },
         "rules": rules,
-        # {folder path: {"summary": "..."}}, one entry per folder that
-        # directly contains at least one collected file -- see
-        # folder_summary.py for how each summary is generated. Editable via
-        # edits.set_folder_summary() the same way per-file summaries/rules/
-        # prompt are (corrector.py's terminal flow, pack_service.py's GUI
-        # review flow) -- but without confidence-based triage of its own,
-        # since folder_summary.py has no per-folder confidence signal.
-        "folders": {folder: {"summary": summary} for folder, summary in folders.items()},
+        # {folder path: {"summary": "...", "confidence": float}}, one entry
+        # per folder that directly contains at least one collected file --
+        # see folder_summary.py for how each summary is generated and how
+        # `confidence` is aggregated (the average of its own member files'
+        # already-scored confidence, not an independent signal). Editable
+        # via edits.set_folder_summary() the same way per-file summaries/
+        # rules/prompt are (corrector.py's terminal flow, pack_service.py's
+        # GUI review flow) -- and, like per-file summaries, triaged by
+        # confidence.triage() rather than always shown in full.
+        "folders": {
+            folder: {"summary": summary, "confidence": folder_confidences.get(folder, 1.0)}
+            for folder, summary in folders.items()
+        },
         "tokens": {
             model: {
                 "original": data["original"],

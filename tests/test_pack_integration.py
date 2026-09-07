@@ -540,6 +540,11 @@ def test_pack_attaches_folder_summaries(tmp_path, monkeypatch):
     assert set(aif["folders"].keys()) == {".", "src"}
     assert aif["folders"]["."]["summary"]
     assert aif["folders"]["src"]["summary"]
+    # An aggregate of each folder's own member files' already-scored
+    # confidence (folder_summary.group_confidence_by_folder()), not an
+    # independently verified signal -- present regardless of value.
+    assert isinstance(aif["folders"]["."]["confidence"], float)
+    assert isinstance(aif["folders"]["src"]["confidence"], float)
 
     # survives finalize_aif() the same way tech_stack does -- not a
     # per-file field it prunes

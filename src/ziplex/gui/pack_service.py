@@ -290,8 +290,13 @@ def _build_review(aif: dict) -> dict:
     `needs_review` (low confidence, shown with its real signatures so a
     human can judge the mismatch without opening the file) and `auto_kept`
     (safe to leave alone, but still editable -- nothing here is read-only).
+    Folder summaries get the same split (`folders_needs_review`/
+    `folders_auto_kept`) via each folder's own `confidence` -- an aggregate
+    of its member files' already-scored confidence, not an independently
+    verified signal (see folder_summary.group_confidence_by_folder()).
     """
     needs_review, auto_kept = triage(aif["files"])
+    folder_needs_review, folder_auto_kept = triage(aif.get("folders", {}))
 
     def entry(name: str, with_signatures: bool) -> dict:
         data = aif["files"][name]
@@ -306,6 +311,14 @@ def _build_review(aif: dict) -> dict:
             out["signatures_more"] = max(0, len(sigs) - _SIGNATURES_SHOWN)
         return out
 
+    def folder_entry(folder: str) -> dict:
+        data = aif["folders"][folder]
+        return {
+            "folder": folder,
+            "summary": data.get("summary", ""),
+            "confidence": data.get("confidence", 1.0),
+        }
+
     return {
         "project": dict(aif["project"]),
         "rules": list(aif["rules"]),
@@ -317,14 +330,8 @@ def _build_review(aif: dict) -> dict:
         # add_dependency_in_job()/remove_dependency_in_job() below) so the
         # GUI can render/edit it before the aif is saved.
         "tree": build_tree(aif["files"]),
-        # No confidence.triage() equivalent for folders -- folder_summary.py
-        # has no per-folder confidence signal, so every folder is shown for
-        # review rather than only a flagged subset (a project's folder count
-        # is always far smaller than its file count, so that's cheap).
-        "folders": [
-            {"folder": folder, "summary": data.get("summary", "")}
-            for folder, data in aif.get("folders", {}).items()
-        ],
+        "folders_needs_review": [folder_entry(f) for f in folder_needs_review],
+        "folders_auto_kept": [folder_entry(f) for f in folder_auto_kept],
     }
 
 

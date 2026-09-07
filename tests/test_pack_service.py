@@ -567,7 +567,7 @@ def test_review_includes_a_tree(tmp_path, monkeypatch):
     assert review["tree"]["b.py"] == {"internal": [], "external": [], "internal_text_refs": []}
 
 
-def test_review_includes_every_folder_untriaged(tmp_path, monkeypatch):
+def test_review_triages_folders_by_confidence(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
@@ -578,8 +578,15 @@ def test_review_includes_every_folder_untriaged(tmp_path, monkeypatch):
     _wait(job_id)
 
     review = pack_service.get_review(job_id)
-    assert [f["folder"] for f in review["folders"]] == ["."]
-    assert review["folders"][0]["summary"]
+    # MockProvider's fixed "Mock summary for local testing." summary shares
+    # no vocabulary with main.py's real `add` signature, so main.py --
+    # and the "." folder whose only member it is -- both score low
+    # confidence and land in the needs_review bucket, same triage split
+    # per-file summaries get.
+    assert [f["folder"] for f in review["folders_needs_review"]] == ["."]
+    assert review["folders_needs_review"][0]["summary"]
+    assert review["folders_needs_review"][0]["confidence"] < 0.34
+    assert review["folders_auto_kept"] == []
 
 
 def test_submit_review_applies_folder_summary_edits(tmp_path, monkeypatch):
