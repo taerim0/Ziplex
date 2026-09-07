@@ -196,19 +196,28 @@ def correct_aif(aif: dict) -> dict:
         for file_name in auto_kept:
             print(f"     {file_name}")
 
-    # 5. Correct per-folder summaries -- lighter-weight than per-file
-    # summaries above: folder_summary.py has no confidence signal of its
-    # own, so every folder is shown (not just low-confidence ones), but a
-    # project's folder count is always far smaller than its file count.
+    # 5. Correct per-folder summaries -- triaged the same way per-file
+    # summaries are (folder_confidence is an aggregate of its own member
+    # files' already-scored confidence, not an independent signal -- see
+    # folder_summary.group_confidence_by_folder()), so only folders whose
+    # member files' summaries looked suspicious get prompted.
     folders = aif.get("folders", {})
     if folders:
+        folder_needs_review, folder_auto_kept = triage(folders)
         print(f"\n🗂️  폴더 Summary:")
-        for folder_path, data in folders.items():
+        for folder_path in folder_needs_review:
+            data = folders[folder_path]
             display = folder_path if folder_path != "." else "(최상위)"
-            print(f"\n  📁 {display}: {data.get('summary', '')}")
+            print(f"\n  ⚠️  {display} (신뢰도 {data.get('confidence', 1.0)}): {data.get('summary', '')}")
             new_summary = input("  수정 (엔터=유지): ").strip()
             if new_summary:
                 set_folder_summary(aif, folder_path, new_summary)
+
+        if folder_auto_kept:
+            print(f"\n  ✅ 신뢰도 높은 폴더 Summary {len(folder_auto_kept)}개는 자동 유지됩니다 (필요하면 aif.json에서 직접 수정 가능):")
+            for folder_path in folder_auto_kept:
+                display = folder_path if folder_path != "." else "(최상위)"
+                print(f"     {display}")
 
     aif = correct_relationships(aif)
     aif = finalize_aif(aif)

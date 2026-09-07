@@ -16,13 +16,17 @@ Deliberately much lighter-weight than summarizer.py's own machinery:
   progress on those on an interrupted run is a real cost worth a resumable
   checkpoint. A folder summary is a pure orientation aid layered on top of
   already-generated file summaries -- editable via the same corrector.py/
-  edits.py review flow as per-file summaries (edits.set_folder_summary()),
-  but with no confidence-based triage of its own (no per-folder confidence
-  signal exists, so every folder is shown for review rather than only a
-  flagged subset); falling back to a free structural sentence for just the
-  folders a single LLM call happened to miss is an acceptable degrade that
-  keeps this feature from growing its own checkpoint-schema footprint for a
+  edits.py review flow as per-file summaries (edits.set_folder_summary());
+  falling back to a free structural sentence for just the folders a single
+  LLM call happened to miss is an acceptable degrade that keeps this
+  feature from growing its own checkpoint-schema footprint for a
   comparatively low-stakes step.
+
+group_confidence_by_folder() below gives folder review the same
+triage() split per-file review already gets -- not an independent
+correctness signal (a folder summary's own wording is never checked
+against anything), just the average of what per-file confidence already
+knows about the folder's members, surfaced one level up.
 """
 
 import json
@@ -75,6 +79,36 @@ def group_files_by_folder(files_data: dict) -> dict[str, list[str]]:
         entry = f"{filename}: {summary}" if summary else filename
         grouped.setdefault(folder, []).append(entry)
     return grouped
+
+
+def group_confidence_by_folder(files_data: dict) -> dict[str, float]:
+    """{relative name: data} -> {folder path: aggregate confidence}, the
+    confidence-level counterpart to group_files_by_folder() above --
+    averages each directly-contained file's already-computed
+    confidence.estimate_confidence() score (files_data[name]["confidence"],
+    set by packager.py's per-file loop before folder summaries are ever
+    generated). This is NOT a new, independently-verified signal --
+    folder_summary.py still has no way to check a folder summary's own
+    wording against anything -- it's the existing per-file signal averaged
+    up one level, so corrector.py/pack_service.py's folder review step can
+    triage.triage() it exactly like per-file summaries instead of always
+    showing every single folder.
+
+    A file with no "confidence" key yet (called before packager.py's
+    per-file loop has run) is silently skipped rather than treated as 0 --
+    same "nothing to contradict yet" reasoning as estimate_confidence()'s
+    own no-signatures shortcut. A folder with no scored files at all (that
+    skip left it with nothing) defaults to 1.0, the same convention.
+    """
+    grouped: dict[str, list[float]] = {}
+    for name, data in files_data.items():
+        if "confidence" not in data:
+            continue
+        grouped.setdefault(parent_folder(name), []).append(data["confidence"])
+    return {
+        folder: round(sum(scores) / len(scores), 2)
+        for folder, scores in grouped.items()
+    }
 
 
 def _structural_folder_summary(entries: list[str], lang: str) -> str:

@@ -107,3 +107,25 @@ def test_generate_folder_summaries_returns_empty_dict_for_no_files(monkeypatch):
 
     monkeypatch.setattr(folder_summary, "analyze_folder_summaries", _unexpected_call)
     assert folder_summary.generate_folder_summaries({}) == {}
+
+
+def test_group_confidence_by_folder_averages_member_files():
+    files_data = {
+        "src/a.py": {"confidence": 1.0},
+        "src/b.py": {"confidence": 0.0},
+        "docs/guide.md": {"confidence": 0.67},
+    }
+    result = folder_summary.group_confidence_by_folder(files_data)
+
+    assert result == {"src": 0.5, "docs": 0.67}
+
+
+def test_group_confidence_by_folder_skips_files_with_no_confidence_yet():
+    # Called before packager.py's per-file confidence loop has run, or on a
+    # file that legitimately has none yet -- must not treat that as 0.
+    files_data = {"src/a.py": {}, "src/b.py": {"confidence": 1.0}}
+    assert folder_summary.group_confidence_by_folder(files_data) == {"src": 1.0}
+
+
+def test_group_confidence_by_folder_returns_empty_dict_for_no_scored_files():
+    assert folder_summary.group_confidence_by_folder({"src/a.py": {}}) == {}
