@@ -1,3 +1,5 @@
+<img src="docs/images/logo.png" alt="Ziplex 로고" width="96" height="96">
+
 # Ziplex
 
 [English](README.md) | **한국어**
