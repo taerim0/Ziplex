@@ -219,6 +219,25 @@ def _print_command_overview() -> None:
     print("\nRun `ziplex <command> --help` for a command's full options, or `ziplex-gui` for the GUI.")
 
 
+def _load_json_or_exit(path: str) -> dict:
+    """Shared read path for every CLI command that loads an already-produced
+    JSON file (aif.json/detail.json/cache.json) by path -- a friendly
+    "❌ ... 읽기 실패" + exit 1, matching every other invalid-usage message
+    in this CLI, instead of an uncaught FileNotFoundError/JSONDecodeError
+    traceback reaching the user raw. Originally only `_edit_saved_relationship`
+    had this guard; `detail`/`freshness` opened their own file with a bare
+    `open()` and crashed on a typo'd path -- a real, reproducible inconsistency
+    (link/unlink handled it, detail/freshness didn't) rather than a
+    hypothetical one.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"❌ {path} 읽기 실패: {e}")
+        sys.exit(1)
+
+
 def _edit_saved_relationship(aif_path: str, file_name: str, target: str, edit_fn, verb: str) -> None:
     """Shared body for `ziplex link`/`ziplex unlink` -- both are a one-shot
     wrapper over file/relationship.py's add_relationship()/
@@ -241,12 +260,7 @@ def _edit_saved_relationship(aif_path: str, file_name: str, target: str, edit_fn
     the fuller reasoning; the GUI's relationship editor is still the
     better tool for anything past a couple of quick edge fixes).
     """
-    try:
-        with open(aif_path, "r", encoding="utf-8") as f:
-            aif = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
-        print(f"❌ {aif_path} 읽기 실패: {e}")
-        sys.exit(1)
+    aif = _load_json_or_exit(aif_path)
 
     relationships = aif.get("relationships")
     if relationships is None:
@@ -613,8 +627,7 @@ def main():
                 print(f"    {line}")
 
     elif args.command == "detail":
-        with open(args.detail_path, "r", encoding="utf-8") as f:
-            detail = json.load(f)
+        detail = _load_json_or_exit(args.detail_path)
 
         entry = detail.get(args.file)
         if entry is None:
@@ -624,8 +637,7 @@ def main():
         print(read_detail_range(entry.get("compressed", ""), args.start, args.end))
 
     elif args.command == "freshness":
-        with open(args.cache_path, "r", encoding="utf-8") as f:
-            manifest = json.load(f)
+        manifest = _load_json_or_exit(args.cache_path)
 
         # <name>.cache.json's sibling <name>.json (same convention
         # query_service.py's _cache_path() derives in the other direction)
@@ -658,7 +670,16 @@ def main():
             sys.exit(1)
 
     elif args.command == "skill":
-        target = export_skill(args.aif_path, args.output)
+        # export_skill() does its own internal open()/json.load() on
+        # aif_path (and, best-effort, its sibling detail.json) -- wrapped
+        # here rather than via _load_json_or_exit() since that function
+        # itself needs the raw path, not a pre-parsed dict. Same "❌ ...
+        # 읽기 실패" shape as every other file-loading command in this CLI.
+        try:
+            target = export_skill(args.aif_path, args.output)
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"❌ {args.aif_path} 읽기 실패: {e}")
+            sys.exit(1)
         print(f"✅ Skill 내보내기 완료: {target}")
         print("   Claude Code가 자동으로 인식하려면 프로젝트 루트의 .claude/skills/ 아래에 있어야 합니다.")
 
