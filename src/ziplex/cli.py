@@ -3,6 +3,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 from .extract.code.extractor import extract_signatures, extract_dependencies, extract_api, debug_tree
 from .extract.code.compressor import compress_file
@@ -11,8 +12,8 @@ from .file.scanner import scan_files
 from .file.media import classify_media_file
 from .file.textutil import relative_key as _rel_key
 from .text_references import find_text_references_for_file
-from .go_packages import read_go_module_path, build_go_package_index, expand_go_dependencies
-from .tokenizer import analyze_tokens, analyze_tokens_with_compression
+from .go_packages import resolve_go_context, expand_dependencies_for_file
+from .tokenizer import analyze_tokens_with_compression
 from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider
 from .packager import pack, save_aif
 from .corrector import correct_aif
@@ -352,22 +353,24 @@ def _model_label(model: str, data: dict) -> str:
     return f"{model} (근사치)" if data.get("approx") else model
 
 
-def main():
-    # Windows consoles default to the system locale's codepage (e.g. cp949 on
-    # Korean Windows), not UTF-8 -- printing an emoji then raises
-    # UnicodeEncodeError before pack() gets anywhere. Force UTF-8 on real
-    # process stdout/stderr; guarded with hasattr since a piped/captured
-    # stream (tests, some CI runners) may not support reconfigure() at all.
-    # Lives in main() itself (not just the `if __name__ == "__main__":` guard
-    # below) so the `ziplex` console-script entry point -- which imports this
-    # module and calls main() directly, never executing as __main__ -- gets
-    # the same fix; a bare `python cli.py` run still hits it too since main()
-    # is the very next thing __main__ calls either way.
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+def _build_parser() -> argparse.ArgumentParser:
+    """Builds and returns the fully-configured argparse parser -- every
+    subcommand's own positional/optional arguments, nothing dispatch-
+    related. Split out of main() so parser construction (declarative,
+    ~130 lines) and command dispatch (what actually runs, one `_cmd_*`
+    function per subcommand below) can be read, tested, and changed
+    independently -- main() itself is now just "parse argv, look up a
+    handler, call it."
 
+    Two subparsers (`checkpoint clean`, `settings set`) need to raise a
+    usage error from their own command handler, after parsing, once a
+    runtime-only condition (not expressible via a plain `choices=`) fails.
+    `set_defaults()` stashes each one onto `args` under a private key,
+    present only when that specific subcommand was actually selected, so
+    the matching `_cmd_*` function below can call `.error()` on the exact
+    subparser argparse itself would have used, without threading a second
+    lookup structure through every handler's signature.
+    """
     parser = argparse.ArgumentParser(description="Ziplex")
     parser.add_argument("--version", action="version", version=f"ziplex {__version__}",
                          help="버전 정보 출력")
@@ -447,6 +450,7 @@ def main():
     st_set = st_sub.add_parser("set", help="설정값 하나를 변경")
     st_set.add_argument("key", choices=list(app_settings.EDITABLE_FIELDS), help="변경할 필드 이름")
     st_set.add_argument("value", help="설정할 값 -- 빈 문자열(\"\")을 주면 미설정 상태로 되돌림")
+    st_set.set_defaults(_settings_set_parser=st_set)
 
     ckp = sub.add_parser(
         "checkpoint",
@@ -457,6 +461,7 @@ def main():
     ckp_clean = ckp_sub.add_parser("clean", help="체크포인트 삭제")
     ckp_clean.add_argument("path", nargs="?", default=None, help="이 프로젝트의 체크포인트만 삭제 (프로젝트 폴더 경로 -- pack에 준 경로와 동일해야 함)")
     ckp_clean.add_argument("--all", action="store_true", help="모든 프로젝트의 체크포인트를 전부 삭제")
+    ckp_clean.set_defaults(_checkpoint_clean_parser=ckp_clean)
 
     dc = sub.add_parser(
         "doctor",
@@ -477,320 +482,391 @@ def main():
     ulk.add_argument("file", help="의존하는 쪽 파일")
     ulk.add_argument("target", help="의존받는 쪽 파일")
 
+    return parser
+
+
+def _cmd_compress(args) -> None:
+    _require_file_or_exit(args.file)
+    print(compress_file(args.file))
+
+
+def _cmd_signatures(args) -> None:
+    _require_file_or_exit(args.file)
+    sigs = extract_signatures(args.file)
+    for sig in sigs:
+        print(f"  {sig}")
+
+
+def _cmd_dependencies(args) -> None:
+    _require_file_or_exit(args.file)
+    deps = extract_dependencies(args.file)
+    for dep in deps:
+        print(f"  {dep}")
+
+
+def _cmd_api(args) -> None:
+    _require_file_or_exit(args.file)
+    apis = extract_api(args.file)
+    for api in apis:
+        print(f"  {api}")
+
+
+def _cmd_debug(args) -> None:
+    _require_file_or_exit(args.file)
+    debug_tree(args.file)
+
+
+def _cmd_collect(args) -> None:
+    _require_dir_or_exit(args.path)
+    files = collect_files(args.path, **_collection_kwargs(args.path))
+    scan_result = scan_files(files)
+
+    print(f"\n📁 수집된 파일: {len(files)}개")
+    print_file_tree(files, args.path)
+
+    if scan_result["dangerous"]:
+        print(f"\n⚠️  민감 파일 감지: {len(scan_result['dangerous'])}개")
+        for d in scan_result["dangerous"]:
+            print(f"  ❌ {d['file']} -- {d.get('reason') or '민감 정보로 추정됨'}")
+
+    print(f"\n✅ 안전한 파일: {len(scan_result['safe'])}개")
+
+
+def _cmd_tokens(args) -> None:
+    _require_dir_or_exit(args.path)
+    safe_files = _collect_and_scan(args.path)["safe"]
+
+    results, _ = analyze_tokens_with_compression(safe_files)
+    # analyze_tokens_with_compression() silently skips any file it can't
+    # read as text (matches its own before/after-*compression* scope --
+    # a media asset, see file/media.py, has no text body to compress in
+    # the first place). The printed count reflects only what was
+    # actually measured, not every safe file, so it doesn't imply more
+    # was covered than really was.
+    media_count = sum(1 for f in safe_files if classify_media_file(f))
+    measured_count = len(safe_files) - media_count
+    note = f" (미디어 자산 {media_count}개 제외)" if media_count else ""
+    print(f"\n📊 토큰 분석 ({measured_count}개 파일{note})\n")
+    for model, data in results.items():
+        print(_model_label(model, data))
+        print(f"  압축 전: {data['original']:,} / {data['max']:,} {data['original_bar']}")
+        print(f"  압축 후: {data['compressed']:,} / {data['max']:,} {data['compressed_bar']}")
+        print(f"  절감:    {data['saved']:,} 토큰 ({data['saved_pct']}% 감소)\n")
+
+
+def _cmd_pack(args) -> None:
+    _require_dir_or_exit(args.path)
+    # --auto-correct also means no terminal to prompt if an LLM call
+    # keeps failing inside pack() itself (see handle_llm_failure).
+    aif = pack(
+        args.path, auto=args.auto, interactive=not args.auto_correct, use_cache=not args.no_cache,
+        use_llm=not args.no_llm,
+        include=_split_patterns(args.include),
+        ignore=_split_patterns(args.ignore),
+        lang=args.lang,
+    )
+    if aif:
+        if args.auto_correct:
+            aif = finalize_aif(aif)  # skip interactive review, still build relationships
+        else:
+            aif = correct_aif(aif)  # interactive correct + build relationships
+        save_aif(aif, args.output)
+
+        print("\n" + "=" * 50)
+        print("📄 파일별 Summary")
+        print("=" * 50)
+        for name, data in aif["files"].items():
+            if data["summary"]:
+                print(f"  {name}: {data['summary']}")
+
+        print("\n" + "=" * 50)
+        print("📋 코딩 룰")
+        print("=" * 50)
+        for rule in aif["rules"]:
+            print(f"  - {rule}")
+
+        print("\n" + "=" * 50)
+        print("✍️  AI 가이드")
+        print("=" * 50)
+        print(f"  {aif['project']['prompt']}")
+
+        print("\n" + "=" * 50)
+        print("📊 토큰 분석")
+        print("=" * 50)
+        for model, data in aif["tokens"].items():
+            print(f"  {_model_label(model, data)}: {data['original']} → {data['compressed']} ({data['saved_pct']}% 절감)")
+
+        if args.max_tokens is not None:
+            passed, actual = _check_max_tokens(aif["tokens"], args.max_tokens, args.max_tokens_model)
+            if actual is None:
+                print(f"\n⚠️  --max-tokens-model '{args.max_tokens_model}'은 알 수 없는 모델입니다"
+                      f" (사용 가능: {', '.join(aif['tokens'].keys())})")
+                sys.exit(1)
+            # actual isn't None, so args.max_tokens_model is a real key --
+            # safe to look up its data for the same approx label the two
+            # breakdown tables above already show for this model.
+            model_label = _model_label(args.max_tokens_model, aif["tokens"][args.max_tokens_model])
+            if not passed:
+                print(f"\n❌ 토큰 예산 초과: {model_label} 기준 {actual:,} > {args.max_tokens:,} (--max-tokens)")
+                sys.exit(1)
+            else:
+                print(f"\n✅ 토큰 예산 통과: {model_label} 기준 {actual:,} ≤ {args.max_tokens:,}")
+    elif args.max_tokens is not None:
+        # pack() returned {} -- a checkpoint-and-exit on a repeated LLM
+        # failure, or a cancelled/empty run -- so there's no aif["tokens"]
+        # for the guard above to even check. Left unhandled, this whole
+        # block (nested inside `if aif:`) never ran at all and main()
+        # exited 0 by default: exactly the scenario --max-tokens exists
+        # to catch (a CI pipeline silently passing despite pack() never
+        # actually completing), so an incomplete pack must fail loudly
+        # here too when the guard was requested. No message/exit change
+        # at all when --max-tokens wasn't passed -- unchanged from before.
+        print("\n❌ pack이 완료되지 않아 --max-tokens 검사를 수행할 수 없습니다"
+              " (체크포인트 저장 후 중단되었을 수 있습니다)")
+        sys.exit(1)
+
+
+def _cmd_tree(args) -> None:
+    _require_dir_or_exit(args.path)
+    safe_files = _collect_and_scan(args.path)["safe"]
+
+    # Keyed by relative_key(), not the raw file_path collect_files()
+    # returns -- matching packager.py's own convention (and required
+    # for the text-reference matching below: find_text_references_for_
+    # file() returns entries straight from this same relative-key list,
+    # which only resolve correctly against a stem_map built from those
+    # same keys; see resolve_dependency()'s exact-key-match branch).
+    all_names = [_rel_key(fp, args.path) for fp in safe_files]
+
+    # Go's import paths name a *package* (a directory), not a file --
+    # see go_packages.py's own docstring. resolve_go_context()/
+    # expand_dependencies_for_file() are the same two calls packager.py's
+    # pack() makes -- both routing through the same wrappers is what
+    # keeps this command and pack() from silently disagreeing on the
+    # same feature's output (exactly what happened to the text-reference
+    # merge below before it was fixed).
+    go_module_path, go_package_index = resolve_go_context(args.path, all_names)
+
+    files_data = {}
+    for file_path in safe_files:
+        name = _rel_key(file_path, args.path)
+        deps = expand_dependencies_for_file(file_path, name, extract_dependencies(file_path), go_module_path, go_package_index)
+        text_refs = find_text_references_for_file(file_path, name, all_names)
+        # text_dependencies recorded separately, same as packager.py's
+        # own merge step -- this is what lets build_tree() tag a text
+        # reference apart from a real import as internal_text_refs
+        # instead of always coming back empty for this command.
+        files_data[name] = {
+            "dependencies": deps + text_refs,
+            "text_dependencies": text_refs,
+        }
+
+    tree = build_tree(files_data)
+    print_dependency_tree(tree)
+
+
+def _cmd_search(args) -> None:
+    _require_dir_or_exit(args.path)
+    safe_files = _collect_and_scan(args.path)["safe"]
+
+    try:
+        matches = search_files(
+            safe_files, args.path, args.pattern,
+            context_lines=args.context, ignore_case=args.ignore_case
+        )
+    except ValueError as e:
+        print(f"⚠️  {e}")
+        return
+
+    if not matches:
+        print("검색 결과 없음")
+    for m in matches:
+        print(f"\n{m.file}:{m.line_number}")
+        for line in m.context_before:
+            print(f"    {line}")
+        print(f"  → {m.line}")
+        for line in m.context_after:
+            print(f"    {line}")
+
+
+def _cmd_detail(args) -> None:
+    detail = _load_json_or_exit(args.detail_path)
+
+    entry = detail.get(args.file)
+    if entry is None:
+        print(f"⚠️  '{args.file}'는 {args.detail_path}에 없습니다")
+        return
+
+    print(read_detail_range(entry.get("compressed", ""), args.start, args.end))
+
+
+def _cmd_freshness(args) -> None:
+    _require_dir_or_exit(args.path)
+    manifest = _load_json_or_exit(args.cache_path)
+
+    # <name>.cache.json's sibling <name>.json (same convention
+    # query_service.py's _cache_path() derives in the other direction)
+    # -- read back for its own `project.scope`, so a project packed
+    # with a one-off `pack --include`/`--ignore` extra doesn't get
+    # diffed here against an unscoped file tree. Best-effort: any
+    # naming mismatch or read failure just means no extra scope, same
+    # as an aif.json packed before this field existed.
+    cache_path = Path(args.cache_path)
+    extra_include = extra_ignore = None
+    if cache_path.name.endswith(".cache.json"):
+        aif_path = cache_path.with_name(cache_path.name[: -len(".cache.json")] + ".json")
+        extra_include, extra_ignore = load_pack_scope(str(aif_path))
+
+    report = check_freshness_scoped(args.path, manifest, extra_include, extra_ignore)
+
+    if not report.is_stale:
+        print("✅ 최신 상태 — 변경된 파일 없음")
+    else:
+        print("⚠️  aif.json이 오래됐습니다")
+        if report.changed:
+            print(f"  변경됨 ({len(report.changed)}): {', '.join(report.changed)}")
+        if report.added:
+            print(f"  추가됨 ({len(report.added)}): {', '.join(report.added)}")
+        if report.removed:
+            print(f"  삭제됨 ({len(report.removed)}): {', '.join(report.removed)}")
+        # Non-zero exit lets `ziplex freshness` double as a CI/PR gate --
+        # fail the check when the committed aif.json has drifted from disk,
+        # forcing a human to re-pack and re-review rather than merging a stale one.
+        sys.exit(1)
+
+
+def _cmd_skill(args) -> None:
+    # export_skill() does its own internal open()/json.load() on
+    # aif_path (and, best-effort, its sibling detail.json) -- wrapped
+    # here rather than via _load_json_or_exit() since that function
+    # itself needs the raw path, not a pre-parsed dict. Same "❌ ...
+    # 읽기 실패" shape as every other file-loading command in this CLI.
+    try:
+        target = export_skill(args.aif_path, args.output)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"❌ {args.aif_path} 읽기 실패: {e}")
+        sys.exit(1)
+    print(f"✅ Skill 내보내기 완료: {target}")
+    print("   Claude Code가 자동으로 인식하려면 프로젝트 루트의 .claude/skills/ 아래에 있어야 합니다.")
+
+
+def _cmd_init(args) -> None:
+    _require_dir_or_exit(args.path)
+    existed = (Path(args.path) / CONFIG_FILENAME).exists()
+    target = init_config(args.path)
+    print(f"✅ .ziplex.json {'이미 있음' if existed else '생성됨'}: {target}")
+    print('   예시: {"include": ["src/**/*.py"], "ignore": ["**/*.generated.*"]}')
+
+
+def _cmd_settings(args) -> None:
+    if args.settings_action == "set":
+        # .strip() matches gui_server.py's POST /api/settings
+        # ((data.get(field) or "").strip()) -- without it, a value
+        # pasted with a trailing newline/space (common from a terminal
+        # or script) would reach llm.py's Authorization header verbatim
+        # and fail auth in a way that never reproduces through the GUI,
+        # which already strips the same field.
+        value = args.value.strip()
+        if args.key == "llm_provider" and value and value not in _REAL_PROVIDER_NAMES:
+            args._settings_set_parser.error(
+                f"알 수 없는 llm_provider: {value} (사용 가능: {', '.join(_REAL_PROVIDER_NAMES)})"
+            )
+        current = app_settings.load_settings()
+        current[args.key] = value
+        app_settings.save_settings(current)
+        shown = _mask_secret(value) if args.key in _SECRET_FIELDS and value else (value or "(미설정)")
+        print(f"✅ {args.key} = {shown} (저장됨: {app_settings.SETTINGS_PATH})")
+    else:  # "get" or omitted -- ziplex settings alone is the read path
+        _print_settings(app_settings.load_settings())
+
+
+def _cmd_checkpoint(args) -> None:
+    if args.checkpoint_action == "clean":
+        if args.all:
+            removed = app_checkpoint.clear_all_checkpoints()
+            print(f"🗑️  체크포인트 {removed}개 삭제됨")
+        elif args.path:
+            existed = app_checkpoint.load_checkpoint(args.path) is not None
+            app_checkpoint.delete_checkpoint(args.path)
+            print(f"🗑️  체크포인트 삭제됨: {args.path}" if existed else f"체크포인트 없음: {args.path}")
+        else:
+            # Neither `path` nor `--all` given -- an ambiguous "clean
+            # what?" rather than a silent no-op. .error() (not a plain
+            # print+sys.exit) matches every other invalid-usage message
+            # in this CLI, which argparse itself already renders this
+            # way for its own choices=/required checks.
+            args._checkpoint_clean_parser.error("삭제할 프로젝트 경로 또는 --all 중 하나가 필요합니다")
+    else:  # "list" or omitted -- ziplex checkpoint alone is the read path
+        _print_checkpoints(app_checkpoint.list_checkpoints())
+
+
+def _cmd_doctor(args) -> None:
+    _print_doctor(app_doctor.run_diagnostics(args.path))
+
+
+def _cmd_link(args) -> None:
+    _edit_saved_relationship(args.aif_path, args.file, args.target, add_relationship, "연결됨")
+
+
+def _cmd_unlink(args) -> None:
+    _edit_saved_relationship(args.aif_path, args.file, args.target, remove_relationship, "연결 해제됨")
+
+
+# One entry per registered subcommand -- main() just looks up args.command
+# here and calls the match. A bare invocation (args.command is None, no
+# subcommand typed at all) is the one case with no entry, handled by
+# main() itself via _print_command_overview() rather than a dict.get()
+# default, since that function takes no args (a real command handler
+# always does) and forcing a matching signature onto it just to fit this
+# dict would be a worse fit than the one explicit check in main().
+_COMMANDS: dict[str, Callable[[argparse.Namespace], None]] = {
+    "compress": _cmd_compress,
+    "signatures": _cmd_signatures,
+    "dependencies": _cmd_dependencies,
+    "api": _cmd_api,
+    "debug": _cmd_debug,
+    "collect": _cmd_collect,
+    "tokens": _cmd_tokens,
+    "pack": _cmd_pack,
+    "tree": _cmd_tree,
+    "search": _cmd_search,
+    "detail": _cmd_detail,
+    "freshness": _cmd_freshness,
+    "skill": _cmd_skill,
+    "init": _cmd_init,
+    "settings": _cmd_settings,
+    "checkpoint": _cmd_checkpoint,
+    "doctor": _cmd_doctor,
+    "link": _cmd_link,
+    "unlink": _cmd_unlink,
+}
+
+
+def main():
+    # Windows consoles default to the system locale's codepage (e.g. cp949 on
+    # Korean Windows), not UTF-8 -- printing an emoji then raises
+    # UnicodeEncodeError before pack() gets anywhere. Force UTF-8 on real
+    # process stdout/stderr; guarded with hasattr since a piped/captured
+    # stream (tests, some CI runners) may not support reconfigure() at all.
+    # Lives in main() itself (not just the `if __name__ == "__main__":` guard
+    # below) so the `ziplex` console-script entry point -- which imports this
+    # module and calls main() directly, never executing as __main__ -- gets
+    # the same fix; a bare `python cli.py` run still hits it too since main()
+    # is the very next thing __main__ calls either way.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+    parser = _build_parser()
     args = parser.parse_args()
 
-    if args.command == "compress":
-        _require_file_or_exit(args.file)
-        print(compress_file(args.file))
-
-    elif args.command == "signatures":
-        _require_file_or_exit(args.file)
-        sigs = extract_signatures(args.file)
-        for sig in sigs:
-            print(f"  {sig}")
-
-    elif args.command == "dependencies":
-        _require_file_or_exit(args.file)
-        deps = extract_dependencies(args.file)
-        for dep in deps:
-            print(f"  {dep}")
-
-    elif args.command == "api":
-        _require_file_or_exit(args.file)
-        apis = extract_api(args.file)
-        for api in apis:
-            print(f"  {api}")
-
-    elif args.command == "debug":
-        _require_file_or_exit(args.file)
-        debug_tree(args.file)
-
-    elif args.command == "collect":
-        _require_dir_or_exit(args.path)
-        files = collect_files(args.path, **_collection_kwargs(args.path))
-        scan_result = scan_files(files)
-
-        print(f"\n📁 수집된 파일: {len(files)}개")
-        print_file_tree(files, args.path)
-
-        if scan_result["dangerous"]:
-            print(f"\n⚠️  민감 파일 감지: {len(scan_result['dangerous'])}개")
-            for d in scan_result["dangerous"]:
-                print(f"  ❌ {d['file']} -- {d.get('reason') or '민감 정보로 추정됨'}")
-
-        print(f"\n✅ 안전한 파일: {len(scan_result['safe'])}개")
-
-    elif args.command == "tokens":
-        _require_dir_or_exit(args.path)
-        safe_files = _collect_and_scan(args.path)["safe"]
-
-        results, _ = analyze_tokens_with_compression(safe_files)
-        # analyze_tokens_with_compression() silently skips any file it can't
-        # read as text (matches its own before/after-*compression* scope --
-        # a media asset, see file/media.py, has no text body to compress in
-        # the first place). The printed count reflects only what was
-        # actually measured, not every safe file, so it doesn't imply more
-        # was covered than really was.
-        media_count = sum(1 for f in safe_files if classify_media_file(f))
-        measured_count = len(safe_files) - media_count
-        note = f" (미디어 자산 {media_count}개 제외)" if media_count else ""
-        print(f"\n📊 토큰 분석 ({measured_count}개 파일{note})\n")
-        for model, data in results.items():
-            print(_model_label(model, data))
-            print(f"  압축 전: {data['original']:,} / {data['max']:,} {data['original_bar']}")
-            print(f"  압축 후: {data['compressed']:,} / {data['max']:,} {data['compressed_bar']}")
-            print(f"  절감:    {data['saved']:,} 토큰 ({data['saved_pct']}% 감소)\n")
-
-    elif args.command == "pack":
-        _require_dir_or_exit(args.path)
-        # --auto-correct also means no terminal to prompt if an LLM call
-        # keeps failing inside pack() itself (see handle_llm_failure).
-        aif = pack(
-            args.path, auto=args.auto, interactive=not args.auto_correct, use_cache=not args.no_cache,
-            use_llm=not args.no_llm,
-            include=_split_patterns(args.include),
-            ignore=_split_patterns(args.ignore),
-            lang=args.lang,
-        )
-        if aif:
-            if args.auto_correct:
-                aif = finalize_aif(aif)  # skip interactive review, still build relationships
-            else:
-                aif = correct_aif(aif)  # interactive correct + build relationships
-            save_aif(aif, args.output)
-
-            print("\n" + "=" * 50)
-            print("📄 파일별 Summary")
-            print("=" * 50)
-            for name, data in aif["files"].items():
-                if data["summary"]:
-                    print(f"  {name}: {data['summary']}")
-
-            print("\n" + "=" * 50)
-            print("📋 코딩 룰")
-            print("=" * 50)
-            for rule in aif["rules"]:
-                print(f"  - {rule}")
-
-            print("\n" + "=" * 50)
-            print("✍️  AI 가이드")
-            print("=" * 50)
-            print(f"  {aif['project']['prompt']}")
-
-            print("\n" + "=" * 50)
-            print("📊 토큰 분석")
-            print("=" * 50)
-            for model, data in aif["tokens"].items():
-                print(f"  {_model_label(model, data)}: {data['original']} → {data['compressed']} ({data['saved_pct']}% 절감)")
-
-            if args.max_tokens is not None:
-                passed, actual = _check_max_tokens(aif["tokens"], args.max_tokens, args.max_tokens_model)
-                if actual is None:
-                    print(f"\n⚠️  --max-tokens-model '{args.max_tokens_model}'은 알 수 없는 모델입니다"
-                          f" (사용 가능: {', '.join(aif['tokens'].keys())})")
-                    sys.exit(1)
-                # actual isn't None, so args.max_tokens_model is a real key --
-                # safe to look up its data for the same approx label the two
-                # breakdown tables above already show for this model.
-                model_label = _model_label(args.max_tokens_model, aif["tokens"][args.max_tokens_model])
-                if not passed:
-                    print(f"\n❌ 토큰 예산 초과: {model_label} 기준 {actual:,} > {args.max_tokens:,} (--max-tokens)")
-                    sys.exit(1)
-                else:
-                    print(f"\n✅ 토큰 예산 통과: {model_label} 기준 {actual:,} ≤ {args.max_tokens:,}")
-        elif args.max_tokens is not None:
-            # pack() returned {} -- a checkpoint-and-exit on a repeated LLM
-            # failure, or a cancelled/empty run -- so there's no aif["tokens"]
-            # for the guard above to even check. Left unhandled, this whole
-            # block (nested inside `if aif:`) never ran at all and main()
-            # exited 0 by default: exactly the scenario --max-tokens exists
-            # to catch (a CI pipeline silently passing despite pack() never
-            # actually completing), so an incomplete pack must fail loudly
-            # here too when the guard was requested. No message/exit change
-            # at all when --max-tokens wasn't passed -- unchanged from before.
-            print("\n❌ pack이 완료되지 않아 --max-tokens 검사를 수행할 수 없습니다"
-                  " (체크포인트 저장 후 중단되었을 수 있습니다)")
-            sys.exit(1)
-
-    elif args.command == "tree":
-        _require_dir_or_exit(args.path)
-        safe_files = _collect_and_scan(args.path)["safe"]
-
-        # Keyed by relative_key(), not the raw file_path collect_files()
-        # returns -- matching packager.py's own convention (and required
-        # for the text-reference matching below: find_text_references_for_
-        # file() returns entries straight from this same relative-key list,
-        # which only resolve correctly against a stem_map built from those
-        # same keys; see resolve_dependency()'s exact-key-match branch).
-        all_names = [_rel_key(fp, args.path) for fp in safe_files]
-
-        # Go's import paths name a *package* (a directory), not a file --
-        # see go_packages.py's own docstring. Resolved once here, same as
-        # packager.py's pack() -- both must call expand_go_dependencies()
-        # on every .go file's raw imports, or the two commands silently
-        # disagree on the same feature's output (exactly what happened to
-        # the text-reference merge below before it was fixed).
-        go_module_path = read_go_module_path(args.path)
-        go_package_index = build_go_package_index(all_names) if go_module_path else {}
-
-        files_data = {}
-        for file_path in safe_files:
-            name = _rel_key(file_path, args.path)
-            deps = extract_dependencies(file_path)
-            if go_module_path and file_path.endswith(".go"):
-                deps = expand_go_dependencies(deps, name, go_module_path, go_package_index)
-            text_refs = find_text_references_for_file(file_path, name, all_names)
-            # text_dependencies recorded separately, same as packager.py's
-            # own merge step -- this is what lets build_tree() tag a text
-            # reference apart from a real import as internal_text_refs
-            # instead of always coming back empty for this command.
-            files_data[name] = {
-                "dependencies": deps + text_refs,
-                "text_dependencies": text_refs,
-            }
-
-        tree = build_tree(files_data)
-        print_dependency_tree(tree)
-
-    elif args.command == "search":
-        _require_dir_or_exit(args.path)
-        safe_files = _collect_and_scan(args.path)["safe"]
-
-        try:
-            matches = search_files(
-                safe_files, args.path, args.pattern,
-                context_lines=args.context, ignore_case=args.ignore_case
-            )
-        except ValueError as e:
-            print(f"⚠️  {e}")
-            return
-
-        if not matches:
-            print("검색 결과 없음")
-        for m in matches:
-            print(f"\n{m.file}:{m.line_number}")
-            for line in m.context_before:
-                print(f"    {line}")
-            print(f"  → {m.line}")
-            for line in m.context_after:
-                print(f"    {line}")
-
-    elif args.command == "detail":
-        detail = _load_json_or_exit(args.detail_path)
-
-        entry = detail.get(args.file)
-        if entry is None:
-            print(f"⚠️  '{args.file}'는 {args.detail_path}에 없습니다")
-            return
-
-        print(read_detail_range(entry.get("compressed", ""), args.start, args.end))
-
-    elif args.command == "freshness":
-        _require_dir_or_exit(args.path)
-        manifest = _load_json_or_exit(args.cache_path)
-
-        # <name>.cache.json's sibling <name>.json (same convention
-        # query_service.py's _cache_path() derives in the other direction)
-        # -- read back for its own `project.scope`, so a project packed
-        # with a one-off `pack --include`/`--ignore` extra doesn't get
-        # diffed here against an unscoped file tree. Best-effort: any
-        # naming mismatch or read failure just means no extra scope, same
-        # as an aif.json packed before this field existed.
-        cache_path = Path(args.cache_path)
-        extra_include = extra_ignore = None
-        if cache_path.name.endswith(".cache.json"):
-            aif_path = cache_path.with_name(cache_path.name[: -len(".cache.json")] + ".json")
-            extra_include, extra_ignore = load_pack_scope(str(aif_path))
-
-        report = check_freshness_scoped(args.path, manifest, extra_include, extra_ignore)
-
-        if not report.is_stale:
-            print("✅ 최신 상태 — 변경된 파일 없음")
-        else:
-            print("⚠️  aif.json이 오래됐습니다")
-            if report.changed:
-                print(f"  변경됨 ({len(report.changed)}): {', '.join(report.changed)}")
-            if report.added:
-                print(f"  추가됨 ({len(report.added)}): {', '.join(report.added)}")
-            if report.removed:
-                print(f"  삭제됨 ({len(report.removed)}): {', '.join(report.removed)}")
-            # Non-zero exit lets `ziplex freshness` double as a CI/PR gate --
-            # fail the check when the committed aif.json has drifted from disk,
-            # forcing a human to re-pack and re-review rather than merging a stale one.
-            sys.exit(1)
-
-    elif args.command == "skill":
-        # export_skill() does its own internal open()/json.load() on
-        # aif_path (and, best-effort, its sibling detail.json) -- wrapped
-        # here rather than via _load_json_or_exit() since that function
-        # itself needs the raw path, not a pre-parsed dict. Same "❌ ...
-        # 읽기 실패" shape as every other file-loading command in this CLI.
-        try:
-            target = export_skill(args.aif_path, args.output)
-        except (OSError, json.JSONDecodeError) as e:
-            print(f"❌ {args.aif_path} 읽기 실패: {e}")
-            sys.exit(1)
-        print(f"✅ Skill 내보내기 완료: {target}")
-        print("   Claude Code가 자동으로 인식하려면 프로젝트 루트의 .claude/skills/ 아래에 있어야 합니다.")
-
-    elif args.command == "init":
-        _require_dir_or_exit(args.path)
-        existed = (Path(args.path) / CONFIG_FILENAME).exists()
-        target = init_config(args.path)
-        print(f"✅ .ziplex.json {'이미 있음' if existed else '생성됨'}: {target}")
-        print('   예시: {"include": ["src/**/*.py"], "ignore": ["**/*.generated.*"]}')
-
-    elif args.command == "settings":
-        if args.settings_action == "set":
-            # .strip() matches gui_server.py's POST /api/settings
-            # ((data.get(field) or "").strip()) -- without it, a value
-            # pasted with a trailing newline/space (common from a terminal
-            # or script) would reach llm.py's Authorization header verbatim
-            # and fail auth in a way that never reproduces through the GUI,
-            # which already strips the same field.
-            value = args.value.strip()
-            if args.key == "llm_provider" and value and value not in _REAL_PROVIDER_NAMES:
-                st_set.error(
-                    f"알 수 없는 llm_provider: {value} (사용 가능: {', '.join(_REAL_PROVIDER_NAMES)})"
-                )
-            current = app_settings.load_settings()
-            current[args.key] = value
-            app_settings.save_settings(current)
-            shown = _mask_secret(value) if args.key in _SECRET_FIELDS and value else (value or "(미설정)")
-            print(f"✅ {args.key} = {shown} (저장됨: {app_settings.SETTINGS_PATH})")
-        else:  # "get" or omitted -- ziplex settings alone is the read path
-            _print_settings(app_settings.load_settings())
-
-    elif args.command == "checkpoint":
-        if args.checkpoint_action == "clean":
-            if args.all:
-                removed = app_checkpoint.clear_all_checkpoints()
-                print(f"🗑️  체크포인트 {removed}개 삭제됨")
-            elif args.path:
-                existed = app_checkpoint.load_checkpoint(args.path) is not None
-                app_checkpoint.delete_checkpoint(args.path)
-                print(f"🗑️  체크포인트 삭제됨: {args.path}" if existed else f"체크포인트 없음: {args.path}")
-            else:
-                # Neither `path` nor `--all` given -- an ambiguous "clean
-                # what?" rather than a silent no-op. ckp_clean.error() (not
-                # a plain print+sys.exit) matches every other invalid-usage
-                # message in this CLI, which argparse itself already
-                # renders this way for its own choices=/required checks.
-                ckp_clean.error("삭제할 프로젝트 경로 또는 --all 중 하나가 필요합니다")
-        else:  # "list" or omitted -- ziplex checkpoint alone is the read path
-            _print_checkpoints(app_checkpoint.list_checkpoints())
-
-    elif args.command == "doctor":
-        _print_doctor(app_doctor.run_diagnostics(args.path))
-
-    elif args.command == "link":
-        _edit_saved_relationship(args.aif_path, args.file, args.target, add_relationship, "연결됨")
-
-    elif args.command == "unlink":
-        _edit_saved_relationship(args.aif_path, args.file, args.target, remove_relationship, "연결 해제됨")
-
-    else:
+    handler = _COMMANDS.get(args.command)
+    if handler is None:
         _print_command_overview()
+        return
+    handler(args)
+
 
 if __name__ == "__main__":
     main()

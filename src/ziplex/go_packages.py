@@ -100,14 +100,13 @@ def expand_go_dependencies(
     can't produce a self-edge either way: self_name is always excluded from
     the expansion, and build_tree() drops a literal self-reference besides.
 
-    packager.py's per-file loop and cli.py's `tree`/`analyze` subcommands
-    are today's only three callers of extract_dependencies() on a .go file
-    -- all three must call this the same way, or they diverge on the same
-    feature's output the way text_references.py's equivalent merge step
-    already did once between two of these same call sites (see that
-    module's own docstring), and the way `analyze` itself was actually
-    missed on this feature's first pass, caught only by the very next code
-    review. Check every real caller again before assuming this is done.
+    Not meant to be called directly by pack()/`tree` any more -- see
+    resolve_go_context()/expand_dependencies_for_file() below, which wrap
+    this and the two once-per-run calls it needs so a real caller has one
+    pair of functions to call instead of reimplementing the setup+gate
+    around this one. Kept public (and still exercised directly in tests)
+    since it's the actual expansion algorithm; the wrappers are just the
+    call-site glue that used to be duplicated.
     """
     expanded = []
     for dep in deps:
@@ -118,3 +117,39 @@ def expand_go_dependencies(
         targets = [f for f in index.get(pkg_dir, []) if f != self_name]
         expanded.extend(targets if targets else [dep])
     return expanded
+
+
+def resolve_go_context(root_path: str, all_names: list[str]) -> tuple[str | None, dict[str, list[str]]]:
+    """Bundles read_go_module_path()/build_go_package_index() -- the two
+    once-per-run calls every expand_dependencies_for_file() caller needs
+    before it can call that function at all. packager.py's pack() and
+    cli.py's `tree` subcommand used to each inline this exact pair
+    separately (same two lines, copy-pasted); a future third caller (or a
+    change to how either step works) now only needs this one function
+    updated, not every call site re-audited by hand -- see
+    expand_go_dependencies()'s own docstring for why that kind of
+    per-call-site drift has already bitten this feature once before, for a
+    different piece of it (text_references.py's merge step).
+    """
+    go_module_path = read_go_module_path(root_path)
+    go_package_index = build_go_package_index(all_names) if go_module_path else {}
+    return go_module_path, go_package_index
+
+
+def expand_dependencies_for_file(
+    file_path: str, name: str, deps: list[str],
+    go_module_path: str | None, go_package_index: dict[str, list[str]],
+) -> list[str]:
+    """The per-file gate expand_go_dependencies() itself doesn't apply --
+    only a .go file, and only when go_module_path was actually resolved
+    (resolve_go_context() above), is ever worth expanding at all. Wraps the
+    exact `if go_module_path and file_path.endswith(".go")` check both real
+    callers used to repeat inline, so a future third caller can't
+    accidentally spell that condition slightly differently, or forget it
+    outright the way the now-removed `analyze` subcommand once did (caught
+    only by the next code review -- see expand_go_dependencies()'s own
+    docstring). deps passes through unchanged for every other file.
+    """
+    if go_module_path and file_path.endswith(".go"):
+        return expand_go_dependencies(deps, name, go_module_path, go_package_index)
+    return deps

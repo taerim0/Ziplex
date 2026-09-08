@@ -1,4 +1,7 @@
-from ziplex.go_packages import read_go_module_path, build_go_package_index, expand_go_dependencies
+from ziplex.go_packages import (
+    read_go_module_path, build_go_package_index, expand_go_dependencies,
+    resolve_go_context, expand_dependencies_for_file,
+)
 
 
 def _write(path, content):
@@ -82,3 +85,58 @@ def test_expand_go_dependencies_excludes_the_importing_file_itself():
         index,
     )
     assert expanded == ["github.com/example/myproject/internal/utils"]  # nothing left -> raw string kept
+
+
+# resolve_go_context()/expand_dependencies_for_file() -- the shared wrappers
+# packager.py's pack() and cli.py's `tree` subcommand both call instead of
+# each re-inlining the setup+gate around the three functions above.
+
+def test_resolve_go_context_bundles_module_path_and_package_index(tmp_path):
+    _write(tmp_path / "go.mod", "module github.com/example/myproject\n")
+    all_names = ["main.go", "internal/utils/format.go", "internal/utils/parse.go"]
+    module_path, index = resolve_go_context(str(tmp_path), all_names)
+
+    assert module_path == "github.com/example/myproject"
+    assert index == {
+        ".": ["main.go"],
+        "internal/utils": ["internal/utils/format.go", "internal/utils/parse.go"],
+    }
+
+
+def test_resolve_go_context_returns_an_empty_index_for_a_non_go_project(tmp_path):
+    # No go.mod at all -- read_go_module_path() -> None, so the package
+    # index must never even attempt build_go_package_index() over a name
+    # list that may not have a single .go file in it.
+    module_path, index = resolve_go_context(str(tmp_path), ["main.py", "README.md"])
+    assert module_path is None
+    assert index == {}
+
+
+def test_expand_dependencies_for_file_expands_a_go_file_under_a_resolved_module():
+    index = {"internal/utils": ["internal/utils/format.go", "internal/utils/parse.go"]}
+    deps = expand_dependencies_for_file(
+        "internal/utils/format.go", "internal/utils/format.go",
+        ["fmt", "github.com/example/myproject/internal/utils"],
+        "github.com/example/myproject", index,
+    )
+    assert set(deps) == {"fmt", "internal/utils/parse.go"}  # self excluded
+
+
+def test_expand_dependencies_for_file_leaves_a_non_go_file_untouched():
+    # A .py file's raw deps must pass straight through even when a resolved
+    # go_module_path exists (a mixed-language project) -- the extension
+    # gate is per-file, not per-project.
+    deps = expand_dependencies_for_file(
+        "scripts/build.py", "scripts/build.py", ["os", "sys"],
+        "github.com/example/myproject", {},
+    )
+    assert deps == ["os", "sys"]
+
+
+def test_expand_dependencies_for_file_leaves_deps_untouched_with_no_go_module():
+    # go_module_path is None (no go.mod) -- must not raise even for a .go
+    # file, just pass the raw deps through unexpanded.
+    deps = expand_dependencies_for_file(
+        "main.go", "main.go", ["fmt", "github.com/someone-else/lib"], None, {},
+    )
+    assert deps == ["fmt", "github.com/someone-else/lib"]

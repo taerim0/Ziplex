@@ -248,6 +248,25 @@ def test_settings_set_rejects_an_unknown_key(tmp_path, monkeypatch, capsys):
     assert exc_info.value.code == 2  # argparse's own choices= validation, not a custom check
 
 
+def test_settings_set_rejects_an_unknown_llm_provider_value(tmp_path, monkeypatch, capsys):
+    # Unlike test_settings_set_rejects_an_unknown_key (an argparse choices=
+    # validation, exit code 2), an unknown llm_provider *value* is a
+    # runtime-only check inside _cmd_settings() itself -- raised via the
+    # "settings set" subparser's own .error() (stashed on args by
+    # _build_parser()'s set_defaults(), not the top-level parser), so it
+    # must print that subcommand's usage, not the whole CLI's.
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "settings", "set", "llm_provider", "not-a-real-provider"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "not-a-real-provider" in err
+    assert app_settings.load_settings().get("llm_provider") == ""  # never persisted
+
+
 def test_settings_set_strips_surrounding_whitespace(tmp_path, monkeypatch, capsys):
     # Matches gui_server.py's POST /api/settings ((data.get(field) or
     # "").strip()) -- a pasted value with a trailing newline/space must not

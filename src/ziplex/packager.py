@@ -10,7 +10,7 @@ from .file.textutil import relative_key as _rel_key
 from .extract.code.extractor import extract_signatures, extract_dependencies, extract_api
 from .extract.code.compressor import compress_file
 from .text_references import find_text_references_for_file
-from .go_packages import read_go_module_path, build_go_package_index, expand_go_dependencies
+from .go_packages import resolve_go_context, expand_dependencies_for_file
 from .tokenizer import analyze_tokens_with_payload
 from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES
 from .freshness import build_manifest, load_previous_summaries
@@ -204,6 +204,477 @@ def _maybe_stop(
     if action == "save":
         ckpt.save_checkpoint(root_path, ckpt.build_snapshot(root, files_data, rules, prompt, lang))
     return True
+
+
+def _resolve_checkpoint(
+    root_path: str, use_cache: bool, discard_checkpoint: bool | None,
+    interactive: bool, preselected: list[str] | None, use_llm: bool, lang: str,
+) -> tuple[str, dict, bool, list[str] | None]:
+    """Loads, validates, and (if trusted) unpacks a leftover checkpoint for
+    this project -- the steps that used to open pack() itself. Returns
+    (restored_prompt, restored_files_data, lang_matches, carried_rules):
+    everything the rest of pack() needs to decide what to trust from a
+    resumed run, with no further checkpoint file I/O of its own past this
+    point.
+
+    use_cache=False means "ignore anything cached from before, pack this
+    fully fresh," which includes a leftover checkpoint from an interrupted
+    run, not just previous summaries (see pack()'s own use_cache docstring,
+    further down). Short-circuits before ever calling
+    resume_checkpoint_choice() in that case, so a non-cached run never gets
+    an interactive resume-or-discard prompt (or a silent auto-resume,
+    non-interactively) for something the caller already said to ignore.
+    discard_checkpoint (see pack()'s own docstring) lets a caller override
+    just this half of use_cache's effect -- the GUI's retry-after-failure
+    flow forces False here so retrying a job that started with "완전히
+    재패킹" checked doesn't discard the checkpoint that same job just saved
+    on its own failure.
+
+    Any run with a caller-given preselected file set (every GUI job, forced
+    resume or not) still has to actually be *this* run's own checkpoint
+    before it's trusted -- checkpoints are keyed by project path only
+    (checkpoint._checkpoint_path()), never by which job produced them, so
+    two overlapping pack attempts for the same project (a second browser
+    tab, or a fresh "패킹 시작" started on a different file selection while
+    an earlier failed job's checkpoint is still sitting there) could
+    otherwise let this run silently resume a *different* attempt's partial
+    progress instead of its own -- a real gap caught by code review, and
+    (a second review pass) one that used to only guard the GUI's explicit
+    retry-after-failure path (discard_checkpoint is False), leaving every
+    ordinary fresh job with use_cache=True's default (discard_checkpoint is
+    None) exposed to the identical scenario. A checkpoint whose own
+    restored file set isn't a subset of what this run is actually about to
+    select clearly belongs to a different run; discard it unconditionally
+    in that case -- "does this checkpoint belong to me" and "should I trust
+    my own summary cache" (use_cache) are independent questions, so falling
+    back to `not use_cache` here (a second code-review pass caught this:
+    with use_cache=True, `not use_cache` is False, silently un-doing the
+    very mismatch this check just detected and resuming the foreign
+    checkpoint's rules/prompt anyway) is wrong regardless of use_cache.
+
+    carried_rules preserves not just the restored rules but *whether they
+    were ever actually computed* -- a checkpoint saved before rules
+    extraction ran must not be treated by _extract_rules() (or a later
+    _maybe_stop()) as if `restored_rules` (always a list, `[]` by default)
+    were itself a genuine, computed answer. `None` means "never computed,"
+    distinguishable from a genuinely empty (but real) `[]` answer -- a
+    list is never `None`, so `carried_rules is not None` alone tells the
+    caller which case this is, without also needing restored_rules_computed
+    threaded through separately.
+    """
+    should_discard_checkpoint = (not use_cache) if discard_checkpoint is None else discard_checkpoint
+    checkpoint = ckpt.load_checkpoint(root_path)
+    if checkpoint and preselected is not None:
+        _, _, candidate_files_data, _, _ = ckpt.unpack_snapshot(checkpoint)
+        if not set(candidate_files_data.keys()) <= set(preselected):
+            should_discard_checkpoint = True
+    if checkpoint and (should_discard_checkpoint or not ckpt.resume_checkpoint_choice(interactive)):
+        checkpoint = None
+        ckpt.delete_checkpoint(root_path)
+
+    # restore from checkpoint
+    restored_rules, restored_prompt, restored_files_data, restored_lang, restored_rules_computed = ckpt.unpack_snapshot(checkpoint)
+    # True only when there's actually a checkpoint to compare against -- a
+    # fresh run (no checkpoint) has nothing stale to discard, so restored_*
+    # (already the ""/[]/{} defaults from unpack_snapshot(None)) are used
+    # as-is regardless of this flag. When a checkpoint *does* exist but was
+    # saved under a different `lang` (a forgotten --lang flag, a changed
+    # selection on resume), its rules/prompt/per-file summaries are written
+    # in a stale language -- reusing them verbatim would ship an aif.json
+    # whose `project.language` claims one language while some content is
+    # actually in another, the same self-contradiction class this codebase
+    # already fixed once for rules/prompt vs. `use_llm` (see below).
+    lang_matches = restored_lang == lang
+    if checkpoint and not lang_matches:
+        print(pick(
+            f"  ⚠️  Checkpoint was generated in a different language ({restored_lang}) -- regenerating rules/AI guide/summaries in {lang}",
+            f"  ⚠️  체크포인트가 다른 언어({restored_lang})로 생성됨 -- rules/AI 가이드/요약을 {lang}(으)로 다시 생성합니다",
+        ))
+
+    carried_rules = restored_rules if (restored_rules_computed and use_llm and lang_matches) else None
+    return restored_prompt, restored_files_data, lang_matches, carried_rules
+
+
+def _select_files(
+    root_path: str, root: Path, include: list[str] | None, ignore: list[str] | None,
+    auto: bool, interactive: bool, preselected: list[str] | None,
+) -> tuple[list[str], list[dict], list[str]]:
+    """Steps 1-3 of the pipeline: collect -> security scan -> select.
+    Returns (selected, dangerous, included_anyway) -- `selected` may come
+    back empty; pack() itself (not this function) decides what an empty
+    selection means for the rest of the run.
+    """
+    # 1. Collect files
+    print(pick("\n📁 Collecting files...", "\n📁 파일 수집 중..."))
+    files = collect_files(root_path, **collection_kwargs(root_path, extra_include=include, extra_ignore=ignore))
+
+    # 2. Security scan
+    print(pick("🔒 Security scanning...", "🔒 보안 스캔 중..."))
+    scan_result = scan_files(files)
+    safe_files = scan_result["safe"]
+    dangerous = scan_result["dangerous"]
+    included_anyway = []
+
+    if dangerous:
+        # Only ever asked when interactive (--auto-correct's *absence*) --
+        # the same gate as every other "can we ask the terminal something"
+        # decision already in this pipeline (checkpoint resume,
+        # handle_llm_failure, the regenerate-cached-summary confirm),
+        # independent of `auto` -- auto only changes *how* the already-safe
+        # set gets selected below, not whether a human can still be asked
+        # about a security decision. Non-interactive callers (--auto-correct)
+        # keep today's behavior: excluded, no prompt, no way back short of
+        # a second interactive run.
+        included_anyway = review_dangerous_files(dangerous, root_path) if interactive else []
+        if included_anyway:
+            safe_files = safe_files + included_anyway
+
+    # 3. Select files
+    if preselected is not None:
+        # Trusts a name from `dangerous` too, not just safe_files: naming
+        # one here already *is* the caller's explicit decision -- the GUI's
+        # file-selection screen shows the same reason/matched-line detail
+        # review_dangerous_files() prints above, just as a checkbox a human
+        # ticks before ever calling start_pack_job(), not a prompt pack()
+        # itself raises. A scripted/CI caller that builds `preselected`
+        # without a human in the loop simply never names a dangerous file's
+        # key in the first place.
+        #
+        # Excludes anything already folded into safe_files via
+        # included_anyway above -- interactive=True plus a preselected list
+        # both naming the same dangerous file isn't a real call site today
+        # (the GUI always passes interactive=False), but without this a
+        # file approved both ways would appear twice in `candidates` and
+        # get selected (and summarized) twice.
+        wanted = set(preselected)
+        candidates = safe_files + [d["file"] for d in dangerous if d["file"] not in included_anyway]
+        selected = [f for f in candidates if _rel_key(f, root) in wanted]
+        print(pick(f"  ✅ {len(selected)} file(s) selected (from the given list)", f"  ✅ {len(selected)}개 파일 선택됨 (지정된 목록 기준)"))
+    elif auto:
+        selected = safe_files
+        print(pick(f"  ✅ All {len(selected)} file(s) selected", f"  ✅ 전체 {len(selected)}개 파일 선택됨"))
+    else:
+        selected = select_files(safe_files, root_path)
+
+    # Logged against the *actual* final outcome (dangerous file not in
+    # `selected`), not `included_anyway` -- a real bug reported directly:
+    # `included_anyway` only ever gets populated by the interactive
+    # CLI-prompt path (review_dangerous_files(), just above), so for a
+    # preselected (GUI) caller it stays [] regardless of what was actually
+    # checked, and the old version of this log printed every dangerous
+    # file as "excluded" unconditionally right after the scan -- before
+    # `preselected` ever got a chance to include one of them. The pack
+    # itself was never wrong (a checked "include anyway" box really did
+    # end up in `selected`), just this log message, confusingly claiming
+    # the opposite of what was about to happen. `security_scan` (the aif
+    # assembly step, further down) already computes its own counts from
+    # `selected` for the identical reason -- this log now matches it.
+    if dangerous:
+        selected_set = set(selected)
+        excluded = [d["file"] for d in dangerous if d["file"] not in selected_set]
+        if excluded:
+            print(pick(f"  ⚠️  Sensitive files excluded: {len(excluded)}", f"  ⚠️  민감 파일 제외: {len(excluded)}개"))
+            for f in excluded:
+                print(f"  ❌ {Path(f).name}")
+
+    return selected, dangerous, included_anyway
+
+
+def _extract_rules(
+    files_data: dict, signatures_map: dict, root: Path, root_path: str, lang: str,
+    use_llm: bool, carried_rules: list[str] | None, interactive: bool,
+) -> list[str] | None:
+    """Infers coding rules from every file's own signatures (restored from
+    _resolve_checkpoint()'s carried_rules if trusted). Returns the rules
+    list, or `None` as the "must exit" sentinel -- pack() itself returns
+    `{}` in that case, mirroring handle_llm_failure()'s own "EXIT" string
+    (typed as None here since a real answer is always a list, never a
+    string, so the two can never be confused).
+
+    use_llm=False ignores restored rules outright, even if a checkpoint
+    left over from an earlier use_llm=True run has real inferred rules --
+    pack(use_llm=False)'s documented contract is that rules always ends
+    up [] (and prompt always ends up STRUCTURAL_ONLY_NOTE, see
+    _generate_prompt() below). Restoring a genuine prior LLM result here
+    would silently ship an aif.json with real coding rules alongside a
+    prompt asserting no LLM inference ever happened -- a direct
+    self-contradiction in the same document. lang_matches (already folded
+    into carried_rules by _resolve_checkpoint()) is the same guard for the
+    same reason: a checkpoint saved under a different `lang` has rules
+    written in that stale language, which would contradict the
+    `project.language` this run is about to claim.
+
+    have_restored_rules -- not just `rules` truthiness -- is what decides
+    whether extraction actually needs to run: `rules` is always a list
+    (never None, for backward-compat callers), so a checkpoint that
+    legitimately restored a real, empty rules=[] answer is otherwise
+    indistinguishable from "nothing was ever restored" (also rules=[]),
+    and used to silently re-run analyze_rules() -- a real LLM call --
+    every time a resumed run's own checkpoint happened to have already
+    answered "no rules for this project." `carried_rules is not None` is
+    the actual signal (a list is never None, so this is exactly the
+    restored_rules_computed/use_llm/lang_matches condition
+    _resolve_checkpoint() already computed once, not a second copy of it).
+    """
+    have_restored_rules = carried_rules is not None
+    rules = carried_rules if have_restored_rules else []
+    if not have_restored_rules and use_llm:
+        print(pick("  📋 Extracting coding rules...", "  📋 코딩 룰 추출 중..."))
+        while not rules:
+            rules_response = analyze_rules(signatures_map, lang=lang)
+            try:
+                rules_data = json.loads(rules_response)
+            except json.JSONDecodeError:
+                rules_data = None
+
+            if rules_data is not None and "rules" in rules_data:
+                # The "rules" key being present at all -- even paired with
+                # an empty list -- means this is a real answer (a trivial
+                # project can legitimately have no inferable coding rules),
+                # not generate()'s own failure sentinel ("{}", returned on
+                # a retry-exhausted or malformed-response error): that
+                # sentinel parses fine too but never carries this key.
+                # `while not rules:` alone can't tell these apart, since an
+                # empty list and a missing key are both equally falsy --
+                # treating a correct empty answer as a failure used to send
+                # an otherwise-successful --auto/--auto-correct run
+                # straight into handle_llm_failure's checkpoint-and-exit.
+                rules = rules_data["rules"]
+                break
+
+            result = ckpt.handle_llm_failure(
+                "rules", pick("coding rules", "코딩 룰"),
+                ckpt.build_snapshot(root, files_data, lang=lang),
+                root_path,
+                interactive=interactive,
+            )
+            if result == "EXIT":
+                return None
+            elif result is None:
+                continue
+            else:
+                # Filtered, not just stripped: "".split(",") is ['']
+                # (a one-element list holding an empty string, not an
+                # empty list) -- pressing Enter with no input at this
+                # prompt used to silently become a single bogus
+                # empty-string rule instead of re-prompting, since
+                # `while not rules:` only re-loops on a genuinely
+                # empty list.
+                rules = [r.strip() for r in result.split(",") if r.strip()]
+    elif have_restored_rules:
+        print(pick("  📋 Coding rules (restored from checkpoint)", "  📋 코딩 룰 (체크포인트에서 복원)"))
+    else:
+        print(pick("  📋 Skipping coding rule extraction (--no-llm)", "  📋 코딩 룰 추출 건너뜀 (--no-llm)"))
+    return rules
+
+
+def _generate_prompt(
+    files_data: dict, root: Path, root_path: str, lang: str, use_llm: bool,
+    project_name: str, rel_files_data: dict, tech_stack: list[dict], rules: list[str],
+    restored_prompt: str, lang_matches: bool, interactive: bool,
+) -> str | None:
+    """Generates the AI guide (restored from checkpoint if trusted). Returns
+    the prompt string, or `None` as the "must exit" sentinel -- same
+    convention as _extract_rules() above; a real answer here is always a
+    string (STRUCTURAL_ONLY_NOTE's own fallback included), so `None` can
+    never be confused with one.
+    """
+    # Same use_llm/lang_matches guard as _extract_rules(), and for the same reason.
+    prompt = restored_prompt if (use_llm and lang_matches) else ""
+    if not prompt and use_llm:
+        print(pick("  ✍️  Generating AI guide...", "  ✍️  AI 가이드 생성 중..."))
+        while not prompt:
+            prompt_response = analyze_prompt(
+                project_name=project_name,
+                architecture=_build_architecture_summary(rel_files_data, tech_stack),
+                rules=rules,
+                lang=lang,
+            )
+            try:
+                prompt_data = json.loads(prompt_response)
+            except json.JSONDecodeError:
+                prompt_data = None
+
+            if prompt_data is not None and "prompt" in prompt_data:
+                # Same "key present, even if its value is falsy, means a
+                # real answer" distinction rules extraction above needs --
+                # see that block's comment. Less likely in practice for a
+                # 2-3 sentence guide than for a rules list, but the same
+                # generate() failure sentinel ("{}") is indistinguishable
+                # from a genuine (if empty) `{"prompt": ""}` otherwise.
+                prompt = prompt_data["prompt"]
+                if prompt:
+                    break
+
+            result = ckpt.handle_llm_failure(
+                "prompt", pick("AI guide", "AI 가이드"),
+                ckpt.build_snapshot(root, files_data, rules, lang=lang),
+                root_path,
+                interactive=interactive,
+            )
+            if result == "EXIT":
+                return None
+            elif result is None:
+                continue
+            else:
+                prompt = result
+    elif prompt:
+        print(pick("  ✍️  AI guide (restored from checkpoint)", "  ✍️  AI 가이드 (체크포인트에서 복원)"))
+    else:
+        print(pick("  ✍️  Skipping AI guide generation (--no-llm)", "  ✍️  AI 가이드 생성 건너뜀 (--no-llm)"))
+        prompt = STRUCTURAL_ONLY_NOTE.get(lang, STRUCTURAL_ONLY_NOTE["en"])
+    return prompt
+
+
+def _generate_folders(rel_files_data: dict, lang: str, use_llm: bool) -> tuple[dict, dict]:
+    """Per-folder summaries + their aggregate confidence -- see
+    folder_summary.py's own module docstring for why this is a single
+    best-effort call (structural fallback per folder on any failure), not
+    wired into the checkpoint/resume system rules/prompt/per-file
+    summaries all get.
+    """
+    print(pick("  🗂️  Generating folder summaries...", "  🗂️  폴더 요약 생성 중...") if use_llm else pick(
+        "  🗂️  Generating folder summaries (structural info only)...",
+        "  🗂️  폴더 요약 생성 중 (구조 정보 기반)...",
+    ))
+    folders = (
+        folder_summary.generate_folder_summaries(rel_files_data, lang=lang)
+        if use_llm
+        else folder_summary.generate_structural_folder_summaries(rel_files_data, lang=lang)
+    )
+    # Aggregate, not independently verified -- see group_confidence_by_folder()'s
+    # own docstring. Computed from rel_files_data, which already carries every
+    # file's real confidence.estimate_confidence() score by this point.
+    folder_confidences = folder_summary.group_confidence_by_folder(rel_files_data)
+    return folders, folder_confidences
+
+
+def _compute_security_scan(dangerous: list[dict], selected: list[str], root: Path) -> dict:
+    """Security-scan transparency: how many files step 2's scan_files()
+    flagged (`dangerous`), and what actually happened to them by the time
+    file selection settled -- included after a human/GUI override, or left
+    excluded. Computed from the final `selected` list rather than
+    `_select_files()`'s own `included_anyway`, since that variable only
+    covers the interactive-CLI-prompt path; a preselected (GUI) caller can
+    also name a dangerous file directly without ever touching
+    included_anyway. Always returned, `{0, 0, 0}` when nothing was ever
+    flagged -- same "always present, zero/empty when N/A" convention
+    tech_stack already uses, so a reader can tell "scanned, found nothing"
+    apart from "was this even scanned at all," the same distinction
+    repomix's own toggle-based security-check notice exists to make, but
+    backed by real counts instead of an on/off flag, since Ziplex's scan
+    always runs.
+    """
+    dangerous_names = {_rel_key(d["file"], root) for d in dangerous}
+    selected_names = {_rel_key(fp, root) for fp in selected}
+    security_included = len(dangerous_names & selected_names)
+    return {
+        "flagged": len(dangerous_names),
+        "included_anyway": security_included,
+        "excluded": len(dangerous_names) - security_included,
+    }
+
+
+def _assemble_aif(
+    project_name: str, prompt: str, tech_stack: list[dict], security_scan: dict,
+    include: list[str] | None, ignore: list[str] | None, lang: str, rules: list[str],
+    folders: dict, folder_confidences: dict, token_results: dict,
+    files_data: dict, root: Path, selected: list[str], root_path: str,
+) -> dict:
+    """Step 7: assembles the final in-memory aif dict from every piece the
+    earlier stages already computed -- no new logic of its own past this
+    point, just relaying already-named values into the shipped shape (see
+    the root AGENTS.md's own note on this final shape).
+    """
+    return {
+        "project": {
+            "name": project_name,
+            "prompt": prompt,
+            # Free (no LLM call), manifest-based fact block -- see
+            # tech_stack.py's own docstring for why this exists alongside
+            # `rules` rather than folding into it. Computed once, earlier
+            # above (analyze_prompt() also uses it as architecture context),
+            # not recomputed here.
+            "tech_stack": tech_stack,
+            "security_scan": security_scan,
+            # The one-off --include/--ignore CLI extras this specific pack
+            # ran with, on top of whatever .ziplex.json already says (that
+            # file persists on disk, so a later freshness check can already
+            # re-derive it -- these extras otherwise can't, since nothing
+            # else remembers them). Always attached ({[], []} when none were
+            # given), same "cheap fact, zero/empty when N/A" convention
+            # tech_stack/security_scan already use -- check_freshness_scoped()
+            # accepts them back as extra_include/extra_ignore so a later
+            # freshness check (CLI, MCP, GUI) can reconstruct the exact scope
+            # this pack used instead of diffing against an unscoped full
+            # file tree and reporting every out-of-scope file as spuriously
+            # "added"/"removed".
+            "scope": {"include": include or [], "ignore": ignore or []},
+            "format_notes": FORMAT_NOTES.get(lang, FORMAT_NOTES["en"]),
+            # What language every LLM-written value (summaries/rules/prompt)
+            # -- and, for use_llm=False, STRUCTURAL_ONLY_NOTE/the structural
+            # summaries themselves -- was actually written in. See pack()'s
+            # own `lang` param docstring for why this is always attached.
+            "language": lang,
+        },
+        "rules": rules,
+        # {folder path: {"summary": "...", "confidence": float}}, one entry
+        # per folder that directly contains at least one collected file --
+        # see folder_summary.py for how each summary is generated and how
+        # `confidence` is aggregated (the average of its own member files'
+        # already-scored confidence, not an independent signal). Editable
+        # via edits.set_folder_summary() the same way per-file summaries/
+        # rules/prompt are (corrector.py's terminal flow, pack_service.py's
+        # GUI review flow) -- and, like per-file summaries, triaged by
+        # confidence.triage() rather than always shown in full.
+        "folders": {
+            folder: {"summary": summary, "confidence": folder_confidences.get(folder, 1.0)}
+            for folder, summary in folders.items()
+        },
+        "tokens": {
+            model: {
+                "original": data["original"],
+                "compressed": data["compressed"],
+                "saved_pct": data["saved_pct"],
+                # Claude/Gemini have no public tiktoken encoding -- their
+                # count is a character-based estimate (tokenizer.py's
+                # is_approx_model()/APPROX_CHARS_PER_TOKEN), not an exact
+                # one. Carried into the saved aif.json (not just the
+                # in-memory `tokens` CLI command's own result) so every
+                # reader -- cli.py's pack-summary/--max-tokens print sites,
+                # the GUI's Overview token table -- can label it as such
+                # instead of presenting a guess with the same confidence as
+                # a real tiktoken count.
+                "approx": data["approx"],
+            }
+            for model, data in token_results.items()
+        },
+        "files": {
+            _rel_key(fp, root): {
+                "summary": data["summary"],
+                "confidence": data["confidence"],
+                "signatures": data["signatures"],
+                "dependencies": data["dependencies"],
+                # Present only for a file text_references.py actually found
+                # a match for (packager.py's earlier merge step never adds
+                # the key otherwise) -- working state, same as
+                # signatures/dependencies/api, pruned by finalize_aif() once
+                # build_tree() has folded it into `relationships` as
+                # internal_text_refs.
+                **({"text_dependencies": data["text_dependencies"]} if "text_dependencies" in data else {}),
+                "api": data["api"],
+                "compressed": data["compressed"]
+            }
+            for fp, data in files_data.items()
+        },
+        # Working state, not part of the shipped aif.json: a {file: content
+        # hash} snapshot of exactly what was packed, so a later
+        # freshness.check_freshness() call can tell whether this output has
+        # drifted from the files on disk without re-running any of the above.
+        # save_aif() pulls this out into a sibling <name>.cache.json, the
+        # same way it pulls `compressed` out into <name>.detail.json.
+        "_manifest": build_manifest(selected, root_path),
+    }
 
 
 def pack(
@@ -403,148 +874,17 @@ def pack(
     project_name = Path(root_path).resolve().name
     effective_result_dir = Path(result_dir) if result_dir else RESULT_DIR
 
-    # auto-detect a checkpoint -- use_cache=False means "ignore anything
-    # cached from before, pack this fully fresh," which includes a leftover
-    # checkpoint from an interrupted run, not just previous summaries (see
-    # this function's own use_cache docstring, further up). Short-circuits
-    # before ever calling resume_checkpoint_choice() in that case, so a
-    # non-cached run never gets an interactive resume-or-discard prompt (or
-    # a silent auto-resume, non-interactively) for something the caller
-    # already said to ignore. discard_checkpoint (see this function's own
-    # docstring) lets a caller override just this half of use_cache's
-    # effect -- the GUI's retry-after-failure flow forces False here so
-    # retrying a job that started with "완전히 재패킹" checked doesn't
-    # discard the checkpoint that same job just saved on its own failure.
-    should_discard_checkpoint = (not use_cache) if discard_checkpoint is None else discard_checkpoint
-    checkpoint = ckpt.load_checkpoint(root_path)
-    # Any run with a caller-given preselected file set (every GUI job, forced
-    # resume or not) still has to actually be *this* run's own checkpoint
-    # before it's trusted -- checkpoints are keyed by project path only
-    # (checkpoint._checkpoint_path()), never by which job produced them, so
-    # two overlapping pack attempts for the same project (a second browser
-    # tab, or a fresh "패킹 시작" started on a different file selection while
-    # an earlier failed job's checkpoint is still sitting there) could
-    # otherwise let this run silently resume a *different* attempt's partial
-    # progress instead of its own -- a real gap caught by code review, and
-    # (a second review pass) one that used to only guard the GUI's explicit
-    # retry-after-failure path (discard_checkpoint is False), leaving every
-    # ordinary fresh job with use_cache=True's default (discard_checkpoint is
-    # None) exposed to the identical scenario. A checkpoint whose own
-    # restored file set isn't a subset of what this run is actually about to
-    # select clearly belongs to a different run; discard it unconditionally
-    # in that case -- "does this checkpoint belong to me" and "should I trust
-    # my own summary cache" (use_cache) are independent questions, so falling
-    # back to `not use_cache` here (a second code-review pass caught this:
-    # with use_cache=True, `not use_cache` is False, silently un-doing the
-    # very mismatch this check just detected and resuming the foreign
-    # checkpoint's rules/prompt anyway) is wrong regardless of use_cache.
-    if checkpoint and preselected is not None:
-        _, _, candidate_files_data, _, _ = ckpt.unpack_snapshot(checkpoint)
-        if not set(candidate_files_data.keys()) <= set(preselected):
-            should_discard_checkpoint = True
-    if checkpoint and (should_discard_checkpoint or not ckpt.resume_checkpoint_choice(interactive)):
-        checkpoint = None
-        ckpt.delete_checkpoint(root_path)
+    # auto-detect and (if trusted) unpack a leftover checkpoint -- see
+    # _resolve_checkpoint()'s own docstring for the full "does this
+    # checkpoint belong to me" story.
+    restored_prompt, restored_files_data, lang_matches, carried_rules = _resolve_checkpoint(
+        root_path, use_cache, discard_checkpoint, interactive, preselected, use_llm, lang,
+    )
 
-    # restore from checkpoint
-    restored_rules, restored_prompt, restored_files_data, restored_lang, restored_rules_computed = ckpt.unpack_snapshot(checkpoint)
-    # True only when there's actually a checkpoint to compare against -- a
-    # fresh run (no checkpoint) has nothing stale to discard, so restored_*
-    # (already the ""/[]/{} defaults from unpack_snapshot(None)) are used
-    # as-is regardless of this flag. When a checkpoint *does* exist but was
-    # saved under a different `lang` (a forgotten --lang flag, a changed
-    # selection on resume), its rules/prompt/per-file summaries are written
-    # in a stale language -- reusing them verbatim would ship an aif.json
-    # whose `project.language` claims one language while some content is
-    # actually in another, the same self-contradiction class this codebase
-    # already fixed once for rules/prompt vs. `use_llm` (see below).
-    lang_matches = restored_lang == lang
-    if checkpoint and not lang_matches:
-        print(pick(
-            f"  ⚠️  Checkpoint was generated in a different language ({restored_lang}) -- regenerating rules/AI guide/summaries in {lang}",
-            f"  ⚠️  체크포인트가 다른 언어({restored_lang})로 생성됨 -- rules/AI 가이드/요약을 {lang}(으)로 다시 생성합니다",
-        ))
-
-    # Threaded into every _maybe_stop() call between here and the real rules
-    # extraction below, instead of restored_rules directly: preserves not
-    # just the restored value but *whether it was ever actually computed* --
-    # a checkpoint saved before rules extraction ran (restored_rules_computed
-    # False) must not be re-saved as if `restored_rules` (always a list, `[]`
-    # by default) were itself a genuine, computed answer.
-    carried_rules = restored_rules if (restored_rules_computed and use_llm and lang_matches) else None
-
-    # 1. Collect files
-    print(pick("\n📁 Collecting files...", "\n📁 파일 수집 중..."))
-    files = collect_files(root_path, **collection_kwargs(root_path, extra_include=include, extra_ignore=ignore))
-
-    # 2. Security scan
-    print(pick("🔒 Security scanning...", "🔒 보안 스캔 중..."))
-    scan_result = scan_files(files)
-    safe_files = scan_result["safe"]
-    dangerous = scan_result["dangerous"]
-    included_anyway = []
-
-    if dangerous:
-        # Only ever asked when interactive (--auto-correct's *absence*) --
-        # the same gate as every other "can we ask the terminal something"
-        # decision already in this pipeline (checkpoint resume,
-        # handle_llm_failure, the regenerate-cached-summary confirm),
-        # independent of `auto` -- auto only changes *how* the already-safe
-        # set gets selected below, not whether a human can still be asked
-        # about a security decision. Non-interactive callers (--auto-correct)
-        # keep today's behavior: excluded, no prompt, no way back short of
-        # a second interactive run.
-        included_anyway = review_dangerous_files(dangerous, root_path) if interactive else []
-        if included_anyway:
-            safe_files = safe_files + included_anyway
-
-    # 3. Select files
-    if preselected is not None:
-        # Trusts a name from `dangerous` too, not just safe_files: naming
-        # one here already *is* the caller's explicit decision -- the GUI's
-        # file-selection screen shows the same reason/matched-line detail
-        # review_dangerous_files() prints above, just as a checkbox a human
-        # ticks before ever calling start_pack_job(), not a prompt pack()
-        # itself raises. A scripted/CI caller that builds `preselected`
-        # without a human in the loop simply never names a dangerous file's
-        # key in the first place.
-        #
-        # Excludes anything already folded into safe_files via
-        # included_anyway above -- interactive=True plus a preselected list
-        # both naming the same dangerous file isn't a real call site today
-        # (the GUI always passes interactive=False), but without this a
-        # file approved both ways would appear twice in `candidates` and
-        # get selected (and summarized) twice.
-        wanted = set(preselected)
-        candidates = safe_files + [d["file"] for d in dangerous if d["file"] not in included_anyway]
-        selected = [f for f in candidates if _rel_key(f, root) in wanted]
-        print(pick(f"  ✅ {len(selected)} file(s) selected (from the given list)", f"  ✅ {len(selected)}개 파일 선택됨 (지정된 목록 기준)"))
-    elif auto:
-        selected = safe_files
-        print(pick(f"  ✅ All {len(selected)} file(s) selected", f"  ✅ 전체 {len(selected)}개 파일 선택됨"))
-    else:
-        selected = select_files(safe_files, root_path)
-
-    # Logged against the *actual* final outcome (dangerous file not in
-    # `selected`), not `included_anyway` -- a real bug reported directly:
-    # `included_anyway` only ever gets populated by the interactive
-    # CLI-prompt path (review_dangerous_files(), just above), so for a
-    # preselected (GUI) caller it stays [] regardless of what was actually
-    # checked, and the old version of this log printed every dangerous
-    # file as "excluded" unconditionally right after the scan -- before
-    # `preselected` ever got a chance to include one of them. The pack
-    # itself was never wrong (a checked "include anyway" box really did
-    # end up in `selected`), just this log message, confusingly claiming
-    # the opposite of what was about to happen. `security_scan` (the aif
-    # assembly step, further down) already computes its own counts from
-    # `selected` for the identical reason -- this log now matches it.
-    if dangerous:
-        selected_set = set(selected)
-        excluded = [d["file"] for d in dangerous if d["file"] not in selected_set]
-        if excluded:
-            print(pick(f"  ⚠️  Sensitive files excluded: {len(excluded)}", f"  ⚠️  민감 파일 제외: {len(excluded)}개"))
-            for f in excluded:
-                print(f"  ❌ {Path(f).name}")
+    # Steps 1-3: collect -> security scan -> select.
+    selected, dangerous, included_anyway = _select_files(
+        root_path, root, include, ignore, auto, interactive, preselected,
+    )
 
     if not selected:
         print(pick("No files selected.", "선택된 파일 없음."))
@@ -582,8 +922,7 @@ def pack(
     # file: None (no go.mod, or no `module` line) means there's nothing to
     # resolve, so every .go file's raw import strings pass through
     # untouched below at zero extra cost for a non-Go project.
-    go_module_path = read_go_module_path(root_path)
-    go_package_index = build_go_package_index(all_names) if go_module_path else {}
+    go_module_path, go_package_index = resolve_go_context(root_path, all_names)
 
     # Text-reference matches (see text_references.py), kept separate from
     # files_data[fp]["dependencies"] until *after* step 5's LLM summary
@@ -669,9 +1008,7 @@ def pack(
             continue
 
         sigs = extract_signatures(file_path)
-        deps = extract_dependencies(file_path)
-        if go_module_path and file_path.endswith(".go"):
-            deps = expand_go_dependencies(deps, name, go_module_path, go_package_index)
+        deps = expand_dependencies_for_file(file_path, name, extract_dependencies(file_path), go_module_path, go_package_index)
         apis = extract_api(file_path)
         compressed = compress_file(file_path)
         reused_summary = previous_summaries.get(name, "")
@@ -772,139 +1109,21 @@ def pack(
     rel_files_data = {_rel_key(fp, root): data for fp, data in files_data.items()}
 
     # extract rules (restored from checkpoint if available)
-    # use_llm=False ignores restored_rules outright, even if a checkpoint
-    # left over from an earlier use_llm=True run has real inferred rules --
-    # pack(use_llm=False)'s documented contract is that rules always ends
-    # up [] (and prompt always ends up STRUCTURAL_ONLY_NOTE, see below).
-    # Restoring a genuine prior LLM result here would silently ship an
-    # aif.json with real coding rules alongside a prompt asserting no LLM
-    # inference ever happened -- a direct self-contradiction in the same
-    # document. lang_matches is the same guard for the same reason: a
-    # checkpoint saved under a different `lang` has rules written in that
-    # stale language, which would contradict the `project.language` this
-    # run is about to claim.
-    # have_restored_rules -- not just `rules` truthiness -- is what decides
-    # whether extraction actually needs to run: `rules` is always a list
-    # (never None, for backward-compat callers), so a checkpoint that
-    # legitimately restored a real, empty rules=[] answer is otherwise
-    # indistinguishable from "nothing was ever restored" (also rules=[]),
-    # and used to silently re-run analyze_rules() -- a real LLM call --
-    # every time a resumed run's own checkpoint happened to have already
-    # answered "no rules for this project." restored_rules_computed (see
-    # checkpoint.unpack_snapshot()'s own docstring) is the actual signal.
-    have_restored_rules = restored_rules_computed and use_llm and lang_matches
-    rules = restored_rules if have_restored_rules else []
-    if not have_restored_rules and use_llm:
-        print(pick("  📋 Extracting coding rules...", "  📋 코딩 룰 추출 중..."))
-        while not rules:
-            rules_response = analyze_rules(signatures_map, lang=lang)
-            try:
-                rules_data = json.loads(rules_response)
-            except json.JSONDecodeError:
-                rules_data = None
-
-            if rules_data is not None and "rules" in rules_data:
-                # The "rules" key being present at all -- even paired with
-                # an empty list -- means this is a real answer (a trivial
-                # project can legitimately have no inferable coding rules),
-                # not generate()'s own failure sentinel ("{}", returned on
-                # a retry-exhausted or malformed-response error): that
-                # sentinel parses fine too but never carries this key.
-                # `while not rules:` alone can't tell these apart, since an
-                # empty list and a missing key are both equally falsy --
-                # treating a correct empty answer as a failure used to send
-                # an otherwise-successful --auto/--auto-correct run
-                # straight into handle_llm_failure's checkpoint-and-exit.
-                rules = rules_data["rules"]
-                break
-
-            result = ckpt.handle_llm_failure(
-                "rules", pick("coding rules", "코딩 룰"),
-                ckpt.build_snapshot(root, files_data, lang=lang),
-                root_path,
-                interactive=interactive,
-            )
-            if result == "EXIT":
-                return {}
-            elif result is None:
-                continue
-            else:
-                # Filtered, not just stripped: "".split(",") is ['']
-                # (a one-element list holding an empty string, not an
-                # empty list) -- pressing Enter with no input at this
-                # prompt used to silently become a single bogus
-                # empty-string rule instead of re-prompting, since
-                # `while not rules:` only re-loops on a genuinely
-                # empty list.
-                rules = [r.strip() for r in result.split(",") if r.strip()]
-    elif have_restored_rules:
-        print(pick("  📋 Coding rules (restored from checkpoint)", "  📋 코딩 룰 (체크포인트에서 복원)"))
-    else:
-        print(pick("  📋 Skipping coding rule extraction (--no-llm)", "  📋 코딩 룰 추출 건너뜀 (--no-llm)"))
+    rules = _extract_rules(files_data, signatures_map, root, root_path, lang, use_llm, carried_rules, interactive)
+    if rules is None:
+        return {}
 
     # generate prompt (restored from checkpoint if available)
-    # Same use_llm/lang_matches guard as rules above, and for the same reason.
-    prompt = restored_prompt if (use_llm and lang_matches) else ""
-    if not prompt and use_llm:
-        print(pick("  ✍️  Generating AI guide...", "  ✍️  AI 가이드 생성 중..."))
-        while not prompt:
-            prompt_response = analyze_prompt(
-                project_name=project_name,
-                architecture=_build_architecture_summary(rel_files_data, tech_stack),
-                rules=rules,
-                lang=lang,
-            )
-            try:
-                prompt_data = json.loads(prompt_response)
-            except json.JSONDecodeError:
-                prompt_data = None
-
-            if prompt_data is not None and "prompt" in prompt_data:
-                # Same "key present, even if its value is falsy, means a
-                # real answer" distinction rules extraction above needs --
-                # see that block's comment. Less likely in practice for a
-                # 2-3 sentence guide than for a rules list, but the same
-                # generate() failure sentinel ("{}") is indistinguishable
-                # from a genuine (if empty) `{"prompt": ""}` otherwise.
-                prompt = prompt_data["prompt"]
-                if prompt:
-                    break
-
-            result = ckpt.handle_llm_failure(
-                "prompt", pick("AI guide", "AI 가이드"),
-                ckpt.build_snapshot(root, files_data, rules, lang=lang),
-                root_path,
-                interactive=interactive,
-            )
-            if result == "EXIT":
-                return {}
-            elif result is None:
-                continue
-            else:
-                prompt = result
-    elif prompt:
-        print(pick("  ✍️  AI guide (restored from checkpoint)", "  ✍️  AI 가이드 (체크포인트에서 복원)"))
-    else:
-        print(pick("  ✍️  Skipping AI guide generation (--no-llm)", "  ✍️  AI 가이드 생성 건너뜀 (--no-llm)"))
-        prompt = STRUCTURAL_ONLY_NOTE.get(lang, STRUCTURAL_ONLY_NOTE["en"])
-
-    # Per-folder summaries -- see folder_summary.py's own module docstring
-    # for why this is a single best-effort call (structural fallback per
-    # folder on any failure), not wired into the checkpoint/resume system
-    # rules/prompt/per-file summaries all get.
-    print(pick("  🗂️  Generating folder summaries...", "  🗂️  폴더 요약 생성 중...") if use_llm else pick(
-        "  🗂️  Generating folder summaries (structural info only)...",
-        "  🗂️  폴더 요약 생성 중 (구조 정보 기반)...",
-    ))
-    folders = (
-        folder_summary.generate_folder_summaries(rel_files_data, lang=lang)
-        if use_llm
-        else folder_summary.generate_structural_folder_summaries(rel_files_data, lang=lang)
+    prompt = _generate_prompt(
+        files_data, root, root_path, lang, use_llm,
+        project_name, rel_files_data, tech_stack, rules,
+        restored_prompt, lang_matches, interactive,
     )
-    # Aggregate, not independently verified -- see group_confidence_by_folder()'s
-    # own docstring. Computed from rel_files_data, which already carries every
-    # file's real confidence.estimate_confidence() score by this point.
-    folder_confidences = folder_summary.group_confidence_by_folder(rel_files_data)
+    if prompt is None:
+        return {}
+
+    # Per-folder summaries
+    folders, folder_confidences = _generate_folders(rel_files_data, lang, use_llm)
 
     # 6. Token counting
     # Compares raw project text against the actual per-file aif.json payload
@@ -916,118 +1135,13 @@ def pack(
     print(pick("\n📊 Analyzing tokens...", "\n📊 토큰 분석 중..."))
     token_results, _ = analyze_tokens_with_payload(selected, files_data)
 
-    # Security-scan transparency: how many files step 2's scan_files() flagged
-    # (`dangerous`), and what actually happened to them by the time file
-    # selection (step 3) settled -- included after a human/GUI override, or
-    # left excluded. Computed from the final `selected` list rather than the
-    # `included_anyway` variable above, since that variable only covers the
-    # interactive-CLI-prompt path; a preselected (GUI) caller can also name a
-    # dangerous file directly without ever touching included_anyway. Always
-    # attached, {0, 0, 0} when nothing was ever flagged -- same "always
-    # present, zero/empty when N/A" convention tech_stack already uses, so a
-    # reader can tell "scanned, found nothing" apart from "was this even
-    # scanned at all," the same distinction repomix's own toggle-based
-    # security-check notice exists to make, but backed by real counts instead
-    # of an on/off flag, since Ziplex's scan always runs.
-    dangerous_names = {_rel_key(d["file"], root) for d in dangerous}
-    selected_names = {_rel_key(fp, root) for fp in selected}
-    security_included = len(dangerous_names & selected_names)
-    security_scan = {
-        "flagged": len(dangerous_names),
-        "included_anyway": security_included,
-        "excluded": len(dangerous_names) - security_included,
-    }
-
     # 7. Assemble AIF.json
-    aif = {
-        "project": {
-            "name": project_name,
-            "prompt": prompt,
-            # Free (no LLM call), manifest-based fact block -- see
-            # tech_stack.py's own docstring for why this exists alongside
-            # `rules` rather than folding into it. Computed once, earlier
-            # above (analyze_prompt() also uses it as architecture context),
-            # not recomputed here.
-            "tech_stack": tech_stack,
-            "security_scan": security_scan,
-            # The one-off --include/--ignore CLI extras this specific pack
-            # ran with, on top of whatever .ziplex.json already says (that
-            # file persists on disk, so a later freshness check can already
-            # re-derive it -- these extras otherwise can't, since nothing
-            # else remembers them). Always attached ({[], []} when none were
-            # given), same "cheap fact, zero/empty when N/A" convention
-            # tech_stack/security_scan already use -- check_freshness_scoped()
-            # accepts them back as extra_include/extra_ignore so a later
-            # freshness check (CLI, MCP, GUI) can reconstruct the exact scope
-            # this pack used instead of diffing against an unscoped full
-            # file tree and reporting every out-of-scope file as spuriously
-            # "added"/"removed".
-            "scope": {"include": include or [], "ignore": ignore or []},
-            "format_notes": FORMAT_NOTES.get(lang, FORMAT_NOTES["en"]),
-            # What language every LLM-written value (summaries/rules/prompt)
-            # -- and, for use_llm=False, STRUCTURAL_ONLY_NOTE/the structural
-            # summaries themselves -- was actually written in. See pack()'s
-            # own `lang` param docstring for why this is always attached.
-            "language": lang,
-        },
-        "rules": rules,
-        # {folder path: {"summary": "...", "confidence": float}}, one entry
-        # per folder that directly contains at least one collected file --
-        # see folder_summary.py for how each summary is generated and how
-        # `confidence` is aggregated (the average of its own member files'
-        # already-scored confidence, not an independent signal). Editable
-        # via edits.set_folder_summary() the same way per-file summaries/
-        # rules/prompt are (corrector.py's terminal flow, pack_service.py's
-        # GUI review flow) -- and, like per-file summaries, triaged by
-        # confidence.triage() rather than always shown in full.
-        "folders": {
-            folder: {"summary": summary, "confidence": folder_confidences.get(folder, 1.0)}
-            for folder, summary in folders.items()
-        },
-        "tokens": {
-            model: {
-                "original": data["original"],
-                "compressed": data["compressed"],
-                "saved_pct": data["saved_pct"],
-                # Claude/Gemini have no public tiktoken encoding -- their
-                # count is a character-based estimate (tokenizer.py's
-                # is_approx_model()/APPROX_CHARS_PER_TOKEN), not an exact
-                # one. Carried into the saved aif.json (not just the
-                # in-memory `tokens` CLI command's own result) so every
-                # reader -- cli.py's pack-summary/--max-tokens print sites,
-                # the GUI's Overview token table -- can label it as such
-                # instead of presenting a guess with the same confidence as
-                # a real tiktoken count.
-                "approx": data["approx"],
-            }
-            for model, data in token_results.items()
-        },
-        "files": {
-            _rel_key(fp, root): {
-                "summary": data["summary"],
-                "confidence": data["confidence"],
-                "signatures": data["signatures"],
-                "dependencies": data["dependencies"],
-                # Present only for a file text_references.py actually found
-                # a match for (packager.py's earlier merge step never adds
-                # the key otherwise) -- working state, same as
-                # signatures/dependencies/api, pruned by finalize_aif() once
-                # build_tree() has folded it into `relationships` as
-                # internal_text_refs.
-                **({"text_dependencies": data["text_dependencies"]} if "text_dependencies" in data else {}),
-                "api": data["api"],
-                "compressed": data["compressed"]
-            }
-            for fp, data in files_data.items()
-        },
-        # Working state, not part of the shipped aif.json: a {file: content
-        # hash} snapshot of exactly what was packed, so a later
-        # freshness.check_freshness() call can tell whether this output has
-        # drifted from the files on disk without re-running any of the above.
-        # save_aif() pulls this out into a sibling <name>.cache.json, the
-        # same way it pulls `compressed` out into <name>.detail.json.
-        "_manifest": build_manifest(selected, root_path),
-    }
+    security_scan = _compute_security_scan(dangerous, selected, root)
+    aif = _assemble_aif(
+        project_name, prompt, tech_stack, security_scan,
+        include, ignore, lang, rules, folders, folder_confidences,
+        token_results, files_data, root, selected, root_path,
+    )
 
     # delete the checkpoint on success
     ckpt.delete_checkpoint(root_path)
