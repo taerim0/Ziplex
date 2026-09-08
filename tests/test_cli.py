@@ -7,7 +7,7 @@ from ziplex import checkpoint as app_checkpoint
 from ziplex import cli
 from ziplex import llm
 from ziplex import settings as app_settings
-from ziplex.cli import _split_patterns, _check_max_tokens, _mask_secret
+from ziplex.cli import _split_patterns, _check_max_tokens, _mask_secret, _require_dir_or_exit, _require_file_or_exit
 from ziplex.freshness import build_manifest
 
 
@@ -57,6 +57,93 @@ def test_check_max_tokens_returns_none_for_unknown_model():
     passed, actual = _check_max_tokens(_tokens(100), max_tokens=200, model="Not-A-Real-Model")
     assert passed is False
     assert actual is None
+
+
+def test_require_dir_or_exit_passes_silently_for_a_real_directory(tmp_path):
+    _require_dir_or_exit(str(tmp_path))  # must not raise/exit
+
+
+def test_require_dir_or_exit_exits_nonzero_for_a_missing_path(tmp_path, capsys):
+    missing = tmp_path / "does-not-exist"
+
+    with pytest.raises(SystemExit) as exc_info:
+        _require_dir_or_exit(str(missing))
+
+    assert exc_info.value.code == 1
+    assert str(missing) in capsys.readouterr().out
+
+
+def test_require_file_or_exit_passes_silently_for_a_real_file(tmp_path):
+    f = tmp_path / "a.py"
+    f.write_text("x = 1", encoding="utf-8")
+    _require_file_or_exit(str(f))  # must not raise/exit
+
+
+def test_require_file_or_exit_exits_nonzero_for_a_missing_path(tmp_path, capsys):
+    missing = tmp_path / "does-not-exist.py"
+
+    with pytest.raises(SystemExit) as exc_info:
+        _require_file_or_exit(str(missing))
+
+    assert exc_info.value.code == 1
+    assert str(missing) in capsys.readouterr().out
+
+
+def test_require_file_or_exit_rejects_a_directory(tmp_path, capsys):
+    # A directory path handed to a single-file command (`ziplex signatures
+    # <dir>`) used to reach read_text()'s own OSError-swallowing None
+    # branch just like a missing file -- same silent "0 signatures, exit 0"
+    # symptom, so it must be rejected here too, not just a bare missing path.
+    with pytest.raises(SystemExit) as exc_info:
+        _require_file_or_exit(str(tmp_path))
+
+    assert exc_info.value.code == 1
+
+
+def test_signatures_command_reports_missing_file_instead_of_silent_empty_output(monkeypatch, capsys):
+    # extract_signatures() returns [] for any unreadable path (by design,
+    # for the main pack pipeline) -- without the _require_file_or_exit()
+    # guard, `ziplex signatures <typo>` used to print nothing at all and
+    # exit 0, indistinguishable from a real, genuinely empty file.
+    monkeypatch.setattr(sys, "argv", ["cli.py", "signatures", "no-such-file.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert "no-such-file.py" in out
+    assert "❌" in out
+
+
+def test_collect_command_reports_missing_directory_instead_of_silent_zero_files(monkeypatch, tmp_path, capsys):
+    # collect_files() on a nonexistent path just walks zero files -- without
+    # the _require_dir_or_exit() guard, a typo'd project path used to print
+    # a fully-formed "0개 파일" report with exit 0, giving no signal that
+    # the path itself (not the project) was the problem.
+    missing = tmp_path / "does-not-exist"
+    monkeypatch.setattr(sys, "argv", ["cli.py", "collect", str(missing)])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    out = capsys.readouterr().out
+    assert str(missing) in out
+    assert "수집된 파일" not in out
+
+
+def test_init_command_reports_missing_directory_instead_of_crashing(monkeypatch, tmp_path, capsys):
+    # init_config() used to let write_text() raise an uncaught
+    # FileNotFoundError when project_path's own directory didn't exist.
+    missing = tmp_path / "does-not-exist"
+    monkeypatch.setattr(sys, "argv", ["cli.py", "init", str(missing)])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    assert str(missing) in capsys.readouterr().out
 
 
 def test_version_flag_prints_version_and_exits_zero(monkeypatch, capsys):
@@ -418,6 +505,31 @@ def test_pack_main_exits_cleanly_when_pack_incomplete_and_no_max_tokens_requeste
     monkeypatch.setattr(sys, "argv", ["cli.py", "pack", str(tmp_path), "--auto", "--auto-correct"])
 
     cli.main()  # must not raise SystemExit
+
+
+def test_freshness_main_reports_missing_cache_file_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    # cache_path used to be opened with a bare open() -- a typo'd path
+    # raised an uncaught FileNotFoundError instead of this CLI's usual
+    # "❌ ... 읽기 실패" message.
+    missing_cache = tmp_path / "does-not-exist.cache.json"
+    monkeypatch.setattr(sys, "argv", ["cli.py", "freshness", str(tmp_path), str(missing_cache)])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    assert str(missing_cache) in capsys.readouterr().out
+
+
+def test_detail_main_reports_missing_detail_file_instead_of_crashing(tmp_path, monkeypatch, capsys):
+    missing_detail = tmp_path / "does-not-exist.detail.json"
+    monkeypatch.setattr(sys, "argv", ["cli.py", "detail", str(missing_detail), "some/file.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    assert str(missing_detail) in capsys.readouterr().out
 
 
 def test_freshness_main_exits_nonzero_when_stale(tmp_path, monkeypatch, capsys):

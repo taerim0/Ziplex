@@ -219,6 +219,45 @@ def _print_command_overview() -> None:
     print("\nRun `ziplex <command> --help` for a command's full options, or `ziplex-gui` for the GUI.")
 
 
+def _require_dir_or_exit(path: str) -> None:
+    """Guard for every command taking a project-folder positional (`path`)
+    that goes straight into collect_files()/collect_and_scan(). Without
+    this, a typo'd path doesn't error at all -- collect_files() just walks
+    zero files and every downstream step (scan/tokenize/pack/...) silently
+    reports "0 files"/"파일 없음" with exit 0, giving no signal that the
+    path itself was wrong rather than the project genuinely being empty
+    (confirmed directly: `ziplex tokens <typo'd path>` prints a full,
+    innocent-looking 0-token breakdown for every model). `init` is the one
+    exception that used to crash instead -- write_text() into a directory
+    that was never created raises an uncaught FileNotFoundError; this same
+    guard fixes that case too by catching it earlier, with a real message.
+    `doctor <path>` deliberately isn't routed through this -- it already
+    reports a missing directory as one line in its own diagnostic report
+    rather than refusing to run.
+    """
+    if not Path(path).is_dir():
+        print(f"❌ 디렉터리를 찾을 수 없습니다: {path}")
+        sys.exit(1)
+
+
+def _require_file_or_exit(path: str) -> None:
+    """Guard for the single-file extraction commands (compress/signatures/
+    dependencies/api/debug). extract/code/*'s read_text() deliberately
+    returns None (not an exception) for any unreadable path -- by design,
+    for the main collect->scan->extract pipeline where every path already
+    came from a real directory listing, so this never fires there. But
+    these CLI commands hand it a user-typed path directly, and a missing
+    file used to reach that same None branch: every one of them prints
+    nothing at all for signatures/dependencies/api/compress (an empty
+    list/string, exit 0 -- confirmed directly, indistinguishable from a
+    real file that's just empty) and a misleading "텍스트로 읽을 수 없는
+    파일입니다" (implies binary, not missing) for debug.
+    """
+    if not Path(path).is_file():
+        print(f"❌ 파일을 찾을 수 없습니다: {path}")
+        sys.exit(1)
+
+
 def _load_json_or_exit(path: str) -> dict:
     """Shared read path for every CLI command that loads an already-produced
     JSON file (aif.json/detail.json/cache.json) by path -- a friendly
@@ -441,27 +480,33 @@ def main():
     args = parser.parse_args()
 
     if args.command == "compress":
+        _require_file_or_exit(args.file)
         print(compress_file(args.file))
 
     elif args.command == "signatures":
+        _require_file_or_exit(args.file)
         sigs = extract_signatures(args.file)
         for sig in sigs:
             print(f"  {sig}")
 
     elif args.command == "dependencies":
+        _require_file_or_exit(args.file)
         deps = extract_dependencies(args.file)
         for dep in deps:
             print(f"  {dep}")
 
     elif args.command == "api":
+        _require_file_or_exit(args.file)
         apis = extract_api(args.file)
         for api in apis:
             print(f"  {api}")
 
     elif args.command == "debug":
+        _require_file_or_exit(args.file)
         debug_tree(args.file)
 
     elif args.command == "collect":
+        _require_dir_or_exit(args.path)
         files = collect_files(args.path, **_collection_kwargs(args.path))
         scan_result = scan_files(files)
 
@@ -476,6 +521,7 @@ def main():
         print(f"\n✅ 안전한 파일: {len(scan_result['safe'])}개")
 
     elif args.command == "tokens":
+        _require_dir_or_exit(args.path)
         safe_files = _collect_and_scan(args.path)["safe"]
 
         results, _ = analyze_tokens_with_compression(safe_files)
@@ -496,6 +542,7 @@ def main():
             print(f"  절감:    {data['saved']:,} 토큰 ({data['saved_pct']}% 감소)\n")
 
     elif args.command == "pack":
+        _require_dir_or_exit(args.path)
         # --auto-correct also means no terminal to prompt if an LLM call
         # keeps failing inside pack() itself (see handle_llm_failure).
         aif = pack(
@@ -566,6 +613,7 @@ def main():
             sys.exit(1)
 
     elif args.command == "tree":
+        _require_dir_or_exit(args.path)
         safe_files = _collect_and_scan(args.path)["safe"]
 
         # Keyed by relative_key(), not the raw file_path collect_files()
@@ -605,6 +653,7 @@ def main():
         print_dependency_tree(tree)
 
     elif args.command == "search":
+        _require_dir_or_exit(args.path)
         safe_files = _collect_and_scan(args.path)["safe"]
 
         try:
@@ -637,6 +686,7 @@ def main():
         print(read_detail_range(entry.get("compressed", ""), args.start, args.end))
 
     elif args.command == "freshness":
+        _require_dir_or_exit(args.path)
         manifest = _load_json_or_exit(args.cache_path)
 
         # <name>.cache.json's sibling <name>.json (same convention
@@ -684,6 +734,7 @@ def main():
         print("   Claude Code가 자동으로 인식하려면 프로젝트 루트의 .claude/skills/ 아래에 있어야 합니다.")
 
     elif args.command == "init":
+        _require_dir_or_exit(args.path)
         existed = (Path(args.path) / CONFIG_FILENAME).exists()
         target = init_config(args.path)
         print(f"✅ .ziplex.json {'이미 있음' if existed else '생성됨'}: {target}")
