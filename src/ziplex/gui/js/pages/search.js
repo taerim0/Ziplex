@@ -1,7 +1,7 @@
 // The sidebar's Search section -- see app.js's header comment for the
 // overall module split.
 
-import { app, nav, el, api, getProject } from "../app.js";
+import { app, nav, el, api, getProject, getAif } from "../app.js";
 import { t } from "../i18n.js";
 
 export function renderSearch() {
@@ -20,6 +20,11 @@ export function renderSearch() {
     try {
       const matches = await api("/api/search", {
         project_path: getProject(),
+        // Optional -- lets /api/search also respect a one-off pack
+        // --include/--ignore CLI extra that project's own pack ran with
+        // (see query_service.search_project()'s aif_path param), not just
+        // .ziplex.json's scope.
+        aif_path: getAif(),
         pattern,
         context_lines: ctxInput.value || 0,
         ignore_case: ignoreCaseInput.checked,

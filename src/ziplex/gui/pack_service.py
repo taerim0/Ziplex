@@ -275,10 +275,11 @@ def list_selectable_files(project_path: str) -> dict:
         "dangerous": dangerous,
         # What start_pack_job() below will actually use if the output-path
         # field is left blank -- "" when nothing's configured at either
-        # settings.py layer, in which case packager.py's own RESULT_DIR
-        # default applies (same as before settings.py existed). Surfaced
-        # here so the pack form can show it instead of a human having to
-        # guess where an unconfigured project's result will land.
+        # settings.py layer, in which case packager.py's own project-
+        # relative DEFAULT_OUTPUT_SUBDIR default applies (same as before
+        # settings.py existed). Surfaced here so the pack form can show it
+        # instead of a human having to guess where an unconfigured
+        # project's result will land.
         "default_output_path": app_settings.resolve_output_path(project_path, Path(project_path).name),
     }
 
@@ -471,8 +472,8 @@ def start_pack_job(
     (set_project_output_dir()) -- an explicit choice, remembered. Left blank,
     it resolves through settings.py instead (this project's own pin, else
     the global default) into a concrete path if either is configured, or
-    stays None (packager.py's own RESULT_DIR-based default applies,
-    unchanged from before settings.py existed) if neither is. Either way,
+    stays None (packager.py's own DEFAULT_OUTPUT_SUBDIR-based default
+    applies, unchanged from before settings.py existed) if neither is. Either way,
     the same folder that's resolved here is what packager.pack()'s
     `result_dir` is given too, so its incremental-reuse cache lookup during
     this run and the actual save destination afterward (submit_review(),
@@ -753,6 +754,63 @@ def unlink_saved_relationship(aif_path: str, file_name: str, target: str) -> dic
     return _edit_saved_relationships(aif_path, lambda rel: _remove_relationship(rel, file_name, target))
 
 
+def _edit_saved_aif(aif_path: str, edit) -> dict:
+    """Shared load/mutate/save for edit_saved_summary()/
+    edit_saved_folder_summary() below -- `edit(aif) -> aif` mutates the
+    *whole* already-parsed aif dict, unlike _edit_saved_relationships()'s
+    `edit(relationships) -> relationships` above: edits.py's setters
+    (set_file_summary()/set_folder_summary()) all take and return the whole
+    aif, the same way submit_review() already calls them, so this is that
+    same calling convention rather than a second one just for this.
+
+    Same "not through packager.save_aif()" reasoning as
+    _edit_saved_relationships() (see its own docstring) -- this rewrites
+    aif.json alone, leaving detail.json/cache.json untouched. Same
+    _lock_for_path() guard against a concurrent edit to the same file.
+    """
+    with _lock_for_path(aif_path):
+        with open(aif_path, "r", encoding="utf-8") as f:
+            aif = json.load(f)
+
+        aif = edit(aif)
+
+        with open(aif_path, "w", encoding="utf-8") as f:
+            json.dump(aif, f, ensure_ascii=False, indent=2)
+
+        return aif
+
+
+def edit_saved_summary(aif_path: str, file_name: str, summary: str) -> dict:
+    """set_file_summary()'s counterpart for a project that's already been
+    packed and saved -- lets a human fix a summary they notice is wrong
+    *after* packing without re-running the whole pipeline, the same way
+    link_saved_relationship() already does for relationships (a real gap
+    found by code review: relationships got this post-save escape hatch,
+    summaries didn't, even though a one-line text fix is a smaller edit
+    than a graph edge). Raises KeyError if file_name isn't in aif["files"]
+    (set_file_summary()'s own contract); OSError/json.JSONDecodeError if
+    aif_path can't be read.
+
+    Deliberately leaves `confidence` untouched -- set_file_summary() itself
+    never has, even during the pre-save review (see submit_review()), so a
+    human-edited summary keeps whatever confidence.estimate_confidence()
+    originally scored it rather than this function inventing a new "human
+    confirmed -> 1.0" rule the rest of the tool doesn't follow.
+    """
+    aif = _edit_saved_aif(aif_path, lambda a: set_file_summary(a, file_name, summary))
+    return {"file": file_name, "summary": aif["files"][file_name]["summary"]}
+
+
+def edit_saved_folder_summary(aif_path: str, folder: str, summary: str) -> dict:
+    """The aif["folders"] counterpart to edit_saved_summary() above -- see
+    its docstring for the full reasoning, identical apart from wrapping
+    set_folder_summary() instead. Raises KeyError if folder isn't in
+    aif["folders"] (set_folder_summary()'s own contract).
+    """
+    aif = _edit_saved_aif(aif_path, lambda a: set_folder_summary(a, folder, summary))
+    return {"folder": folder, "summary": aif["folders"][folder]["summary"]}
+
+
 def cancel_job(job_id: str) -> bool:
     """Discards a job waiting in "reviewing" without saving anything.
     Returns False (no-op) if job_id is unknown or it isn't in that state --
@@ -830,12 +888,12 @@ def submit_review(
     # contend for the same lock, not a different one derived from a stale
     # name.
     output_path = job["output_path"]
-    result_path = packager.resolve_output_path(aif, output_path)
+    result_path = packager.resolve_output_path(aif, output_path, job["project_path"])
 
     try:
         with _lock_for_path(str(result_path)), _capture_for_job(job):
             aif = finalize_aif(aif)
-            packager.save_aif(aif, output_path, progress_lang=job["progress_lang"])
+            packager.save_aif(aif, output_path, progress_lang=job["progress_lang"], project_path=job["project_path"])
     except Exception as e:
         with job["lock"]:
             job["state"] = "error"

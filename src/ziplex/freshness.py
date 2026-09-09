@@ -169,6 +169,18 @@ def freshness_candidate_files(scan_result: dict, root: str, manifest: dict[str, 
     return safe + included_before
 
 
+def scope_from_aif(aif: dict) -> tuple[list[str] | None, list[str] | None]:
+    """The (extra_include, extra_ignore) pair load_pack_scope() reads off
+    aif.json's own `project.scope` -- split out as the pure half of that
+    function so a caller that already has the parsed dict in hand (cli.py's
+    `_cmd_skill()`, which otherwise would re-read/re-parse the same
+    aif_path a second time in one invocation just for this) can reuse it
+    instead of going through another file read.
+    """
+    scope = (aif.get("project") or {}).get("scope") or {}
+    return scope.get("include") or None, scope.get("ignore") or None
+
+
 def load_pack_scope(aif_path: str) -> tuple[list[str] | None, list[str] | None]:
     """Reads back aif.json's own `project.scope` (packager.pack()'s record
     of the one-off --include/--ignore CLI extras that pack ran with, see
@@ -189,10 +201,10 @@ def load_pack_scope(aif_path: str) -> tuple[list[str] | None, list[str] | None]:
     """
     try:
         with open(aif_path, "r", encoding="utf-8") as f:
-            scope = json.load(f).get("project", {}).get("scope") or {}
+            aif = json.load(f)
     except (OSError, json.JSONDecodeError):
         return None, None
-    return scope.get("include") or None, scope.get("ignore") or None
+    return scope_from_aif(aif)
 
 
 def check_freshness_scoped(

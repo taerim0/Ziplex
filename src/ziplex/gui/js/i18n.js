@@ -137,7 +137,7 @@ const I18N = {
     "home.tagline": "로컬 프로젝트를 압축된 컨텍스트로 요약해, 원본 대신 AI에게 보여주는 도구입니다.",
 
     "pack.form.projectPathPlaceholder": "예: C:\\path\\to\\my-project",
-    "pack.form.outputPathPlaceholder": "선택. 비우면 result/<프로젝트명>.json",
+    "pack.form.outputPathPlaceholder": "선택. 비우면 프로젝트 폴더의 .ziplex/<프로젝트명>.json",
     "pack.form.loadFiles": "파일 목록 불러오기",
     "pack.form.start": "패킹 시작",
     "pack.form.noSafeFiles": "선택 가능한 안전한 파일이 없습니다.",
@@ -158,7 +158,7 @@ const I18N = {
     "pack.form.langEnglish": "English (권장)",
     "pack.form.langKorean": "한국어",
 
-    "check.form.aifPlaceholder": "예: result/my-project.json",
+    "check.form.aifPlaceholder": "예: .ziplex/my-project.json",
     "check.form.projectPlaceholder": "예: C:\\path\\to\\my-project (선택, 최신 여부 확인용)",
     "check.form.description": "이미 pack된 프로젝트를 둘러보고, 필요한 부분을 복사해 다른 AI 챗에 붙여넣으세요.",
     "check.form.aifLabel": "aif.json 경로",
@@ -169,7 +169,7 @@ const I18N = {
     "check.recentTitle": "최근 프로젝트",
 
     "options.languageTitle": "표시 언어",
-    "options.outputDirPlaceholder": "비우면 result/<프로젝트명>.json (Ziplex 설치 폴더 내부)",
+    "options.outputDirPlaceholder": "비우면 각 프로젝트 폴더의 .ziplex/<프로젝트명>.json",
     "options.save": "저장",
     "options.saved": "저장됨",
     "options.apiKeyTitle": "Gemini API 키",
@@ -216,6 +216,10 @@ const I18N = {
     "fileDetail.noContent": "(내용 없음)",
     "fileDetail.copyAll": "📋 전체 복사",
     "fileDetail.includeTextRefs": "텍스트 언급(파일명만 일치)도 포함",
+    "fileDetail.editSummary": "✏️ 수정",
+    "fileDetail.saveSummary": "저장",
+    "fileDetail.cancelEdit": "취소",
+    "fileDetail.summarySaved": "저장됨",
 
     "search.patternPlaceholder": "정규식 패턴 (예: TODO|FIXME)",
     "search.searching": "검색 중...",
@@ -310,7 +314,7 @@ const I18N = {
     "home.tagline": "Summarizes a local project into compressed context, for an AI to read instead of the original.",
 
     "pack.form.projectPathPlaceholder": "e.g. C:\\path\\to\\my-project",
-    "pack.form.outputPathPlaceholder": "Optional. Defaults to result/<project-name>.json",
+    "pack.form.outputPathPlaceholder": "Optional. Defaults to .ziplex/<project-name>.json inside the project folder",
     "pack.form.loadFiles": "Load File List",
     "pack.form.start": "Start Packing",
     "pack.form.noSafeFiles": "No selectable safe files.",
@@ -331,7 +335,7 @@ const I18N = {
     "pack.form.langEnglish": "English (recommended)",
     "pack.form.langKorean": "Korean (한국어)",
 
-    "check.form.aifPlaceholder": "e.g. result/my-project.json",
+    "check.form.aifPlaceholder": "e.g. .ziplex/my-project.json",
     "check.form.projectPlaceholder": "e.g. C:\\path\\to\\my-project (optional, for the freshness check)",
     "check.form.description": "Browse an already-packed project and copy what you need into a separate AI chat.",
     "check.form.aifLabel": "aif.json path",
@@ -342,7 +346,7 @@ const I18N = {
     "check.recentTitle": "Recent Projects",
 
     "options.languageTitle": "Display Language",
-    "options.outputDirPlaceholder": "Defaults to result/<project-name>.json (inside Ziplex's own install folder)",
+    "options.outputDirPlaceholder": "Defaults to .ziplex/<project-name>.json inside each project's own folder",
     "options.save": "Save",
     "options.saved": "Saved",
     "options.apiKeyTitle": "Gemini API Key",
@@ -389,6 +393,10 @@ const I18N = {
     "fileDetail.noContent": "(no content)",
     "fileDetail.copyAll": "📋 Copy All",
     "fileDetail.includeTextRefs": "Include text-only mentions (filename match, not a real import)",
+    "fileDetail.editSummary": "✏️ Edit",
+    "fileDetail.saveSummary": "Save",
+    "fileDetail.cancelEdit": "Cancel",
+    "fileDetail.summarySaved": "Saved",
 
     "search.patternPlaceholder": "Regex pattern (e.g. TODO|FIXME)",
     "search.searching": "Searching...",

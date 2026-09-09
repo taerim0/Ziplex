@@ -6,6 +6,8 @@ include/ignore-scoped pack() actually produced.
 """
 import json
 
+import pytest
+
 from ziplex import checkpoint
 from ziplex import llm
 from ziplex import packager
@@ -261,6 +263,112 @@ def test_get_relationships_default_is_the_whole_graph(tmp_path):
     result = query_service.get_relationships(aif_path)
 
     assert set(result) == {"src/a.py", "src/b.py", "docs/readme.md", "top.py"}
+
+
+# Real bug found via a live MCP stdio call: get_dependents()/get_blast_radius()
+# used to return an empty list for both a Windows-style backslash path and a
+# genuine typo, indistinguishable from "this file really has zero
+# dependents" -- the single worst wrong answer these tools could give an
+# agent deciding whether a change is safe. get_detail() already raised the
+# equivalent ValueError for an unrecognized file; these two didn't, purely by
+# oversight. See query_service._require_known_file()'s own docstring.
+def test_get_dependents_raises_on_a_file_not_in_the_graph(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    with pytest.raises(ValueError, match="src/nope.py"):
+        query_service.get_dependents(aif_path, "src/nope.py")
+
+
+def test_get_blast_radius_raises_on_a_file_not_in_the_graph(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    with pytest.raises(ValueError, match="src/nope.py"):
+        query_service.get_blast_radius(aif_path, "src/nope.py")
+
+
+def test_get_dependents_normalizes_a_backslash_path_before_matching(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    result = query_service.get_dependents(aif_path, "src\\a.py")
+
+    assert result == ["src/b.py"]
+
+
+def test_get_blast_radius_normalizes_a_backslash_path_before_matching(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    result = query_service.get_blast_radius(aif_path, "src\\a.py")
+
+    assert result == ["src/b.py"]
+
+
+def test_get_dependents_still_returns_an_empty_list_for_a_real_leaf_file(tmp_path):
+    # The other half of the fix: a *recognized* file with genuinely zero
+    # dependents must still return [] cleanly, not raise -- only an
+    # unrecognized name is an error.
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    assert query_service.get_dependents(aif_path, "top.py") == []
+
+
+def test_list_files_folder_filter_normalizes_a_backslash_path(tmp_path):
+    aif_path = _write_mixed_confidence_aif(tmp_path)
+
+    result = query_service.list_files(aif_path, folder="src\\")
+
+    assert set(result) == {"src/a.py", "src/b.py"}
+
+
+# Real gap found by code review: .ziplex.json's own scope was already
+# respected (see the ignored-files test above), but a pack-specific
+# --include/--ignore CLI extra -- not reproducible from disk the way
+# .ziplex.json is, recorded only in that pack's own aif.json project.scope
+# -- was silently ignored here, unlike check_freshness() which already read
+# it back via load_pack_scope().
+def test_search_project_ignores_a_packs_cli_only_ignore_extra_without_aif_path(tmp_path):
+    # Without aif_path (the pre-existing behavior), the excluded file still
+    # turns up.
+    project = tmp_path / "project"
+    _write(project / "src" / "main.py", "TARGET_TOKEN = 1\n")
+    _write(project / "vendor" / "lib.py", "TARGET_TOKEN = 2\n")
+
+    result = query_service.search_project(str(project), "TARGET_TOKEN")
+
+    files_matched = {r["file"] for r in result["matches"]}
+    assert any("lib.py" in f for f in files_matched)
+
+
+def test_search_project_respects_a_packs_cli_only_ignore_extra_via_aif_path(tmp_path):
+    project = tmp_path / "project"
+    _write(project / "src" / "main.py", "TARGET_TOKEN = 1\n")
+    _write(project / "vendor" / "lib.py", "TARGET_TOKEN = 2\n")
+    aif_path = tmp_path / "out.json"
+    _write(aif_path, json.dumps({"project": {"scope": {"include": [], "ignore": ["vendor/**"]}}}))
+
+    result = query_service.search_project(str(project), "TARGET_TOKEN", aif_path=str(aif_path))
+
+    files_matched = {r["file"] for r in result["matches"]}
+    assert any("main.py" in f for f in files_matched)
+    assert not any("lib.py" in f for f in files_matched)
+
+
+# Real gap found via a live MCP stdio call: a bad aif_path used to leak
+# Python's raw FileNotFoundError text ("[Errno 2] No such file or
+# directory: '...'") straight through as the tool's error content -- no
+# more actionable to a calling agent than a raw traceback would be to a
+# human. cli.py got the equivalent fix (_load_json_or_exit()) well before
+# this shared layer did.
+def test_get_overview_missing_aif_path_raises_an_actionable_message(tmp_path):
+    with pytest.raises(FileNotFoundError, match="ziplex pack"):
+        query_service.get_overview(str(tmp_path / "does_not_exist.json"))
+
+
+def test_get_overview_corrupt_json_raises_an_actionable_message(tmp_path):
+    bad = tmp_path / "corrupt.json"
+    bad.write_text("{not valid json", encoding="utf-8")
+
+    with pytest.raises(json.JSONDecodeError, match="corrupted"):
+        query_service.get_overview(str(bad))
 
 
 def test_search_project_default_cap_is_not_unlimited(tmp_path):

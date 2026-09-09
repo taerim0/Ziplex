@@ -1,7 +1,15 @@
 import json
 from pathlib import Path
 
-from ziplex.skill_export import _slugify, _yaml_double_quoted, generate_skill_files, export_skill
+from ziplex.skill_export import (
+    _slugify,
+    _yaml_double_quoted,
+    generate_skill_files,
+    export_skill,
+    resolve_skill_target,
+    resolve_skill_display_name,
+    read_existing_skill_project_name,
+)
 
 
 def _sample_aif():
@@ -224,3 +232,91 @@ def test_export_skill_tolerates_a_missing_detail_json(tmp_path):
 
     detail = json.loads((Path(target) / "references" / "detail.json").read_text(encoding="utf-8"))
     assert detail == {}
+
+
+# Real gap found by code review: no collision guard at all on export_skill()'s
+# slug-derived output directory -- two differently-named projects that
+# happen to slugify to the same name (a monorepo packing multiple
+# subprojects with generic names like "backend"/"api" is a real, plausible
+# way to hit this) silently overwrite each other's skill directory. These
+# two helpers are what cli.py's own warn-before-overwrite check is built on.
+def test_resolve_skill_target_uses_the_slugified_project_name_by_default():
+    aif = {"project": {"name": "My Cool App!"}}
+    assert resolve_skill_target(aif) == Path(".claude/skills") / "my-cool-app"
+
+
+def test_resolve_skill_target_honors_an_explicit_output_dir():
+    aif = {"project": {"name": "My Cool App!"}}
+    assert resolve_skill_target(aif, "somewhere/else") == Path("somewhere/else")
+
+
+def test_read_existing_skill_project_name_returns_none_when_nothing_is_there(tmp_path):
+    assert read_existing_skill_project_name(tmp_path / "does-not-exist") is None
+
+
+def test_resolve_skill_display_name_uses_project_name_when_set():
+    assert resolve_skill_display_name({"project": {"name": "My Cool App!"}}) == "My Cool App!"
+
+
+# Real gap found by code review: cli.py's collision check used to compute
+# this fallback independently as `project.get("name") or ""` -- missing
+# _skill_md()'s own `name or slug` fallback -- so a project with an
+# empty/missing name always mismatched the "project" heading _skill_md()
+# actually wrote, triggering a false-positive collision warning on every
+# re-export of that same project.
+def test_resolve_skill_display_name_falls_back_to_the_slug_when_name_is_empty():
+    assert resolve_skill_display_name({"project": {"name": ""}}) == "project"
+    assert resolve_skill_display_name({"project": {}}) == "project"
+    assert resolve_skill_display_name({}) == "project"
+
+
+def test_export_skill_accepts_a_pre_parsed_aif_and_skips_reading_it_again(tmp_path):
+    # aif_path still points at a real file (it locates the sibling
+    # detail.json), but its own content is never read: a bogus one here
+    # proves the `aif` kwarg -- not the file -- was what actually got used.
+    aif_path = tmp_path / "out.json"
+    aif_path.write_text("not valid json", encoding="utf-8")
+
+    target = export_skill(str(aif_path), str(tmp_path / "skill"), aif=_sample_aif())
+
+    assert "My Cool App!" in (Path(target) / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_read_existing_skill_project_name_returns_none_for_an_unrecognized_skill_md(tmp_path):
+    # A human-authored (or pre-this-format) SKILL.md that doesn't match the
+    # exact "# {name} -- Ziplex reference" heading shape this module writes.
+    target = tmp_path / "skill"
+    target.mkdir()
+    (target / "SKILL.md").write_text("---\nname: hi\n---\n\n# Just a heading\n", encoding="utf-8")
+
+    assert read_existing_skill_project_name(target) is None
+
+
+def test_read_existing_skill_project_name_extracts_the_display_name(tmp_path):
+    target = tmp_path / "skill"
+    aif = _sample_aif()
+    export_skill(_write_sample_aif_json(tmp_path, aif), str(target))
+
+    assert read_existing_skill_project_name(target) == "My Cool App!"
+
+
+def _write_sample_aif_json(tmp_path, aif) -> str:
+    aif_path = tmp_path / "src_aif.json"
+    aif_path.write_text(json.dumps(aif), encoding="utf-8")
+    return str(aif_path)
+
+
+def test_read_existing_skill_project_name_detects_a_slug_collision_from_a_different_project(tmp_path):
+    # The exact scenario this whole guard exists for: two differently-named
+    # projects that slugify to the identical directory.
+    target = tmp_path / "skill"
+    first = _sample_aif()
+    first["project"]["name"] = "My_Cool App"  # slugifies the same as "My Cool App!"
+    export_skill(_write_sample_aif_json(tmp_path, first), str(target))
+
+    existing_name = read_existing_skill_project_name(target)
+    second = _sample_aif()  # "My Cool App!"
+    new_name = second["project"]["name"]
+
+    assert _slugify(existing_name) == _slugify(new_name)  # same slug...
+    assert existing_name != new_name  # ...but a genuinely different project

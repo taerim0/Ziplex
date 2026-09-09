@@ -29,8 +29,44 @@ from .config import collect_and_scan
 
 
 def _load_json(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    """Shared read path for every function below that loads an already-
+    produced JSON file (aif.json/detail.json/cache.json) by path.
+
+    Re-raises FileNotFoundError/JSONDecodeError with a clearer, actionable
+    message instead of letting the bare open()/json.load() one through
+    as-is -- cli.py got the equivalent fix for its own file-loading commands
+    (`_load_json_or_exit()`) well before this did; that fix stayed CLI-only
+    since it also prints a friendly Korean message and calls sys.exit(1),
+    neither of which fits this shared, transport-agnostic layer. What *does*
+    fit here: gui_server.py already has generic `@app.errorhandler(OSError)`/
+    `@app.errorhandler(json.JSONDecodeError)` handlers that surface
+    `str(exception)` (falling back to it once `.filename`/`.strerror` come up
+    empty, which they do for the single-string-arg re-raise below), and the
+    MCP SDK does the same for an uncaught exception from a tool call -- so
+    both transports automatically pick up the better message from this one
+    change, with no per-route/per-tool code of their own. Confirmed live via
+    a real stdio MCP call before this fix: a missing aif_path came back as
+    the raw `[Errno 2] No such file or directory: '...'` text, no more
+    actionable to the calling agent than it would be to a human reading a
+    raw traceback.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError as e:
+        raise FileNotFoundError(
+            f"{path} not found -- check the path, or run `ziplex pack` on the "
+            "project first to create it (aif.json/detail.json/cache.json are "
+            "only ever produced together, as siblings of each other)"
+        ) from e
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(
+            f"{path} is not valid JSON ({e.msg}) -- it may be corrupted, "
+            "still being written by an in-progress pack, or not a Ziplex "
+            "output file at all",
+            e.doc,
+            e.pos,
+        ) from e
 
 
 def _detail_path(aif_path: str) -> Path:
@@ -141,9 +177,14 @@ def list_files(
     Two optional filters, composable with each other: `folder` scopes the
     result to files directly inside one folder (get_folders()'s own path
     convention -- "." for root-level files, trailing slashes and "" both
-    normalized to match it) instead of every file in the project, for
-    drilling into one folder after get_folders() names it worth a closer
-    look. `confidence_below` returns only files with a stored confidence
+    normalized to match it, and a '\\'-separated path normalized to '/' the
+    same way get_dependents()/get_blast_radius() do) instead of every file
+    in the project, for drilling into one folder after get_folders() names
+    it worth a closer look -- an unrecognized folder just returns {} rather
+    than raising, unlike a bad `file` in get_dependents()/get_blast_radius():
+    a caller filtering here is narrowing a set of folders it can already see
+    the keys of (typically via get_folders()), not looking one up blind.
+    `confidence_below` returns only files with a stored confidence
     strictly under the given cutoff -- pass confidence.REVIEW_THRESHOLD
     (0.34) for the same triage corrector.py already applies in its own
     human-review loop, or any other cutoff a caller wants, now reachable
@@ -161,7 +202,7 @@ def list_files(
     project size the way an arbitrary regex match count has one.
     """
     if folder is not None:
-        folder = folder.rstrip("/") or "."
+        folder = _normalize_path_arg(folder).rstrip("/") or "."
     aif = _load_json(aif_path)
     result = {}
     for name, data in aif.get("files", {}).items():
@@ -175,6 +216,52 @@ def list_files(
     if warning:
         result["_stale"] = warning
     return result
+
+
+def _normalize_path_arg(value: str) -> str:
+    """Every key this module compares a caller-supplied path against
+    (`files`/`relationships`) is always POSIX-style (`/`), the convention
+    the whole pipeline normalizes to before anything reaches aif.json -- but
+    nothing on the *reading* side enforced that on a caller-supplied `file`/
+    `folder` argument. A backslash path (natural to type on Windows, and a
+    real risk here specifically since this project is developed on Windows)
+    silently failed to match any real key instead of erroring -- see
+    get_dependents()/get_blast_radius()'s own comment for why that's worse
+    than raising outright.
+    """
+    return value.replace("\\", "/")
+
+
+def _require_known_file(relationships: dict, file: str, aif_path: str) -> str:
+    """Normalizes `file` and confirms it's a real key in `relationships`
+    before either get_dependents()/get_blast_radius() below ever calls into
+    file/relationship.py's own graph traversal -- build_tree() (packager.py)
+    gives *every* packed file an entry there (even one with empty internal/
+    external lists), so "not a key at all" reliably means an unrecognized
+    name (a typo, a backslash path on Windows, a file that was never
+    packed), never a legitimate "this file really has zero dependents"
+    answer -- that case is instead an empty list from a real key, which
+    both callers already return correctly.
+
+    Real bug this closes: get_dependents(relationships, "some\\bad\\path")
+    and a genuine typo like "backend/modle.py" both silently returned []
+    before this check existed -- indistinguishable from "no dependents,
+    safe to change," the single worst wrong answer these two tools could
+    give an agent deciding whether a change is safe. get_detail() already
+    raises the equivalent ValueError for an unrecognized file; these two
+    tools didn't, purely by oversight, not by design -- confirmed live via
+    a real stdio MCP call before this fix (a Windows-style backslash path
+    and a misspelled filename each returned isError: false with an empty
+    result, identical to a real leaf file's correct answer).
+    """
+    file = _normalize_path_arg(file)
+    if file not in relationships:
+        raise ValueError(
+            f"{file!r} not found in {aif_path}'s relationships -- "
+            "check list_files() or get_folders() for the real path (paths are "
+            "relative to the project root and always use '/', never '\\')"
+        )
+    return file
 
 
 def get_folders(aif_path: str) -> dict:
@@ -223,7 +310,12 @@ def get_relationships(aif_path: str, files: list[str] | None = None) -> dict:
 
 def get_dependents(aif_path: str, file: str, include_text_refs: bool = True) -> list[str]:
     """Files that directly depend on `file` -- who would need a second look
-    if `file` changes. `file` is a key from list_files()'s result.
+    if `file` changes. `file` is a key from list_files()'s result. Paths use
+    '/' regardless of OS; a raw Windows-style '\\' path is normalized before
+    matching. Raises ValueError if `file` isn't a real file in this project
+    -- an empty result means "recognized, genuinely zero dependents," never
+    "not found" (see _require_known_file()'s docstring for why that
+    distinction matters).
 
     include_text_refs=False excludes a dependent whose only link to `file`
     is a filename mentioned in prose (a README, a config value) rather than
@@ -232,19 +324,25 @@ def get_dependents(aif_path: str, file: str, include_text_refs: bool = True) -> 
     text_references.py for what counts as which.
     """
     aif = _load_json(aif_path)
-    return _get_dependents(aif.get("relationships", {}), file, include_text_refs=include_text_refs)
+    relationships = aif.get("relationships", {})
+    file = _require_known_file(relationships, file, aif_path)
+    return _get_dependents(relationships, file, include_text_refs=include_text_refs)
 
 
 def get_blast_radius(aif_path: str, file: str, include_text_refs: bool = True) -> list[str]:
     """Every file affected by a change to `file`, directly or transitively --
     the full impact set, not just its immediate dependents. Built on the
     same human-corrected dependency graph as get_dependents(), which is why
-    this is worth calling instead of guessing from imports yourself.
+    this is worth calling instead of guessing from imports yourself. Same
+    path-normalization and not-found behavior as get_dependents() -- see its
+    docstring.
 
     include_text_refs is get_dependents()'s own param -- see its docstring.
     """
     aif = _load_json(aif_path)
-    return _get_blast_radius(aif.get("relationships", {}), file, include_text_refs=include_text_refs)
+    relationships = aif.get("relationships", {})
+    file = _require_known_file(relationships, file, aif_path)
+    return _get_blast_radius(relationships, file, include_text_refs=include_text_refs)
 
 
 def get_detail(aif_path: str, file: str, start_line: int | None = None, end_line: int | None = None) -> str:
@@ -328,17 +426,32 @@ def search_project(
     context_lines: int = 0,
     ignore_case: bool = False,
     max_results: int | None = DEFAULT_SEARCH_MAX_RESULTS,
+    aif_path: str | None = None,
 ) -> dict:
     """Regex search across the project's original files -- use this when you
     don't already know which file has what you're after (get_detail needs a
     filename; this doesn't). Unlike the other queries here, this doesn't read
-    aif.json/detail.json at all: it re-collects and re-security-scans the
-    project fresh on every call, straight from project_path, so results are
-    always current even if aif.json is stale and secrets are still filtered
-    even if the project changed since the last pack. Also respects
-    project_path's own .ziplex.json include/ignore (config.py), the same
-    scope pack() itself would use -- a file deliberately excluded from
-    packing shouldn't turn up in search results either.
+    aif.json/detail.json for the search itself: it re-collects and
+    re-security-scans the project fresh on every call, straight from
+    project_path, so results are always current even if aif.json is stale
+    and secrets are still filtered even if the project changed since the
+    last pack. Also respects project_path's own .ziplex.json include/ignore
+    (config.py), the same scope pack() itself would use -- a file
+    deliberately excluded from packing shouldn't turn up in search results
+    either.
+
+    Pass aif_path too (optional -- this still works with no pack at all) to
+    additionally respect a one-off `pack --include`/`--ignore` CLI extra
+    that specific pack ran with, on top of .ziplex.json -- unlike
+    .ziplex.json, those extras aren't reproducible from disk on their own,
+    only recorded in that pack's own aif.json `project.scope` field (see
+    freshness.load_pack_scope()'s docstring). A real gap this closes:
+    without aif_path, a file excluded via `pack --ignore "**/*.generated.*"`
+    still turned up in search results here even though check_freshness()
+    already correctly excluded it from its own comparison -- the same class
+    of bug, just missed on this tool specifically since it never took
+    aif_path to look the scope up from. Omitting aif_path searches under
+    .ziplex.json's own scope alone, same as before.
 
     Capped at max_results matches by default (DEFAULT_SEARCH_MAX_RESULTS,
     currently 50) -- a broad or common pattern against a real project can
@@ -352,7 +465,8 @@ def search_project(
     narrow `pattern` (or raise max_results) and call again rather than
     assuming "matches" is the complete picture.
     """
-    safe_files = collect_and_scan(project_path)["safe"]
+    extra_include, extra_ignore = load_pack_scope(aif_path) if aif_path else (None, None)
+    safe_files = collect_and_scan(project_path, extra_include, extra_ignore)["safe"]
     if max_results is None:
         raw_matches = search_files(safe_files, project_path, pattern, context_lines, ignore_case)
         truncated = False

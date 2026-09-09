@@ -23,6 +23,31 @@ from . import checkpoint as ckpt
 from . import summarizer
 from . import folder_summary
 
+DEFAULT_OUTPUT_SUBDIR = ".ziplex"
+
+# Legacy fallback only, now -- resolve_output_path()/pack()'s own use_cache
+# lookup (effective_result_dir, below) both default to DEFAULT_OUTPUT_SUBDIR
+# *inside the project actually being packed* instead, and every real caller
+# (cli.py, gui/pack_service.py) always has that project path on hand and
+# passes it through. This constant only still matters for a caller that
+# somehow doesn't -- and, for a real (non-editable) pip/pipx install, it's
+# not even a *sensible* fallback any more: REPO_ROOT (paths.py) resolves to
+# "three levels above wherever this package's own files happen to sit,"
+# which for an editable dev checkout is the repo root (so this "just
+# worked" for every dev/CI run so far, RESULT_DIR always landing inside
+# Ziplex's own checkout) but for a real installed wheel is some directory
+# three levels above site-packages -- verified directly against a real,
+# non-editable install: REPO_ROOT resolved to the venv's own Lib/ folder,
+# meaning a plain `pip install ziplex` user running `ziplex pack <project>`
+# with no `-o` would previously have had aif.json/detail.json/cache.json
+# silently written inside their Python environment, nowhere near the
+# project they packed -- a real, confirmed bug for exactly the "just pip
+# install and go" flow the README's own Quick start advertises, not a
+# hypothetical one. DEFAULT_OUTPUT_SUBDIR fixes this at the root: a
+# project-relative default can never land somewhere this nonsensical, and
+# (a second, independently reported concern) a generic "result" folder
+# name is far more likely to collide with some *other* tool's own output
+# in the same project than a Ziplex-namespaced dotfolder is.
 RESULT_DIR = REPO_ROOT / "result"
 
 # The AI-guide text a structural-only pack (use_llm=False) ships in place of
@@ -724,10 +749,10 @@ def pack(
     auto/select_files()).
 
     use_cache controls incremental reuse (staleness stage 2): when a
-    previous successful pack is found at the conventional RESULT_DIR path
-    for this project (or result_dir, if given -- see this function's own
-    note on that param, further down), any file whose content hash still
-    matches gets its
+    previous successful pack is found at the conventional <root_path>/
+    .ziplex path for this project (or result_dir, if given -- see this
+    function's own note on that param, further down), any file whose
+    content hash still matches gets its
     summary reused instead of spending another LLM call on it. Only summary
     is reused -- signatures/dependencies/api/compressed are always
     freshly extracted, so a human's prior manual reparenting
@@ -811,18 +836,23 @@ def pack(
     a network-bound LLM call already in flight when a stop is requested
     still completes before the next checkpoint is reached.
 
-    result_dir overrides RESULT_DIR as where use_cache's incremental-reuse
-    lookup (load_previous_summaries(), just below) looks for a previous
-    successful pack -- not where *this* run's own aif.json ends up (that's
-    always whatever save_aif() is called with separately, after pack()
-    returns). Only meaningful together with a caller that also saves to a
-    non-default folder: gui/pack_service.py's start_pack_job() resolves a
-    project's effective output folder (settings.py's per-project pin, else
-    its global default, else nothing configured) once, up front, and passes
-    the exact same folder both here and to save_aif() later, so cache
-    lookup and the actual save destination never drift apart. None (the
-    CLI's only call shape) keeps today's behavior exactly: RESULT_DIR,
-    unconditionally.
+    result_dir overrides where use_cache's incremental-reuse lookup
+    (load_previous_summaries(), just below) looks for a previous successful
+    pack -- not where *this* run's own aif.json ends up (that's always
+    whatever save_aif() is called with separately, after pack() returns).
+    Only meaningful together with a caller that also saves to a non-default
+    folder: gui/pack_service.py's start_pack_job() resolves a project's
+    effective output folder (settings.py's per-project pin, else its global
+    default, else nothing configured) once, up front, and passes the exact
+    same folder both here and to save_aif() later, so cache lookup and the
+    actual save destination never drift apart. None (the CLI's only call
+    shape, and the GUI's own when neither a pin nor a global default is
+    configured) falls back to `<root_path>/DEFAULT_OUTPUT_SUBDIR`
+    unconditionally -- matching resolve_output_path()'s own default, since
+    that's what save_aif() actually wrote to on the previous run this is
+    trying to find (see DEFAULT_OUTPUT_SUBDIR's own comment for why this
+    used to be a fixed, Ziplex-install-relative RESULT_DIR instead, and why
+    that was a real bug for anyone using a real, non-editable install).
 
     lang picks which language every LLM-written value (each file's summary,
     `rules`, `prompt`) is actually written in -- llm.py's LANGUAGE_NAMES
@@ -872,7 +902,7 @@ def pack(
     # used to silently save an empty project name -- result/.json, an aif.json
     # with project.name == "", etc.
     project_name = Path(root_path).resolve().name
-    effective_result_dir = Path(result_dir) if result_dir else RESULT_DIR
+    effective_result_dir = Path(result_dir) if result_dir else root / DEFAULT_OUTPUT_SUBDIR
 
     # auto-detect and (if trusted) unpack a leftover checkpoint -- see
     # _resolve_checkpoint()'s own docstring for the full "does this
@@ -1149,28 +1179,43 @@ def pack(
     return aif
 
 
-def resolve_output_path(aif: dict, output_path: str | None) -> Path:
-    """The path save_aif() will write aif.json to -- result/<project name>
-    .json if output_path isn't given, otherwise output_path itself --
-    factored out (no directory-creation or write side effects here, unlike
-    save_aif() itself) so a caller that needs to know the destination
+def resolve_output_path(aif: dict, output_path: str | None, project_path: str | None = None) -> Path:
+    """The path save_aif() will write aif.json to, in priority order:
+    output_path if given; else <project_path>/DEFAULT_OUTPUT_SUBDIR/
+    <project name>.json if project_path is given; else the legacy
+    RESULT_DIR/<project name>.json (see that constant's own comment for why
+    this last resort is best avoided -- every real caller below always has
+    a project_path on hand and passes it).
+
+    No directory-creation or write side effects here, unlike save_aif()
+    itself -- factored out so a caller that needs to know the destination
     *before* calling save_aif() can compute it identically instead of
     keeping its own copy of this fallback that could silently drift from
     save_aif()'s. gui/pack_service.py's submit_review() is exactly that
     caller: it locks this same path (see _lock_for_path()'s own comment)
     against a concurrent edit before finalizing and saving to it.
     """
-    if output_path is None:
-        return RESULT_DIR / f"{aif['project']['name']}.json"
-    return Path(output_path)
+    if output_path is not None:
+        return Path(output_path)
+    if project_path is not None:
+        return Path(project_path) / DEFAULT_OUTPUT_SUBDIR / f"{aif['project']['name']}.json"
+    return RESULT_DIR / f"{aif['project']['name']}.json"
 
 
-def save_aif(aif: dict, output_path: str | None = None, progress_lang: str = "ko") -> None:
-    """Writes the AIF result to output_path, or to result/<project name>.json if
-    output_path isn't given (see resolve_output_path()) — mirroring
-    checkpoint.CHECKPOINT_DIR, anchored to the repo root rather than the
-    caller's cwd, so `pack` writes to the same place regardless of where
-    it's invoked from.
+def save_aif(aif: dict, output_path: str | None = None, progress_lang: str = "ko", project_path: str | None = None) -> None:
+    """Writes the AIF result to output_path, or to
+    <project_path>/DEFAULT_OUTPUT_SUBDIR/<project name>.json if output_path
+    isn't given but project_path is (see resolve_output_path()) -- a
+    project-relative default, deliberately *not* anchored to Ziplex's own
+    install location the way checkpoint.CHECKPOINT_DIR still is (see
+    RESULT_DIR's own comment for why that used to be this function's
+    fallback too, and why it was a real bug for a real, non-editable
+    install). project_path is optional only for a caller that genuinely
+    doesn't have one on hand -- both real callers (cli.py's `pack`
+    subcommand, gui/pack_service.py's submit_review()) always pass it, so
+    every actual `ziplex pack <project>` run (no `-o`) lands its output
+    inside that same project, not somewhere tied to wherever Ziplex itself
+    happens to be installed.
 
     Splits two things out of `aif` into sibling files, keyed the same way as
     `files`:
@@ -1196,7 +1241,7 @@ def save_aif(aif: dict, output_path: str | None = None, progress_lang: str = "ko
     was started with rather than silently falling back to "ko".
     """
     _set_progress_lang(progress_lang)
-    output_path = resolve_output_path(aif, output_path)
+    output_path = resolve_output_path(aif, output_path, project_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     manifest = aif.get("_manifest")

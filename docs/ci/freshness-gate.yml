@@ -31,5 +31,6 @@ jobs:
       - run: pip install ziplex
 
       # <project_path> <name>.cache.json -- match whatever this project
-      # actually committed (e.g. `.` and `result/MyProject.cache.json`).
-      - run: ziplex freshness . MyProject.cache.json
+      # actually committed (e.g. `.` and `.ziplex/MyProject.cache.json`,
+      # Ziplex's own default output location as of this writing).
+      - run: ziplex freshness . .ziplex/MyProject.cache.json

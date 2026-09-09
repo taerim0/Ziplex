@@ -203,8 +203,8 @@ Query an already-packed project directly from Claude Code, Cursor, or any other 
 
 ```bash
 ziplex-mcp                                                     # run directly (stdio transport)
-ziplex-mcp --aif result/Ziplex.json --project .                # bake in defaults so calls can omit them
-claude mcp add ziplex -- ziplex-mcp --aif result/Ziplex.json --project .   # register with Claude Code
+ziplex-mcp --aif .ziplex/Ziplex.json --project .                # bake in defaults so calls can omit them
+claude mcp add ziplex -- ziplex-mcp --aif .ziplex/Ziplex.json --project .   # register with Claude Code
 ```
 
 `--aif`/`--project` set this server's *default* `aif_path`/`project_path` — every tool below still accepts either explicitly (which always wins), but a session that only ever talks to one packed project doesn't have to repeat the same path on every single call. Omitting both flags is fine too; every tool then just requires the path per call, as before.
@@ -272,8 +272,8 @@ Binds to `127.0.0.1` only — no `--host` flag, no way to expose it to a network
 A third way to reach a packed project, alongside the MCP server and the GUI — for when Claude Code is available but registering an MCP server isn't (or is more setup than the moment calls for):
 
 ```bash
-ziplex skill result/my-project.json               # writes .claude/skills/my-project/
-ziplex skill result/my-project.json -o some/dir    # custom output directory
+ziplex skill .ziplex/my-project.json               # writes .claude/skills/my-project/
+ziplex skill .ziplex/my-project.json -o some/dir    # custom output directory
 ```
 
 Generates a [Claude Agent Skill](https://code.claude.com/docs/en/skills) — `SKILL.md` plus `references/overview.md`/`files.md`/`relationships.md`/`detail.json` — that Claude Code discovers and progressively loads on its own once it sits under `.claude/skills/`, no server process required. Unlike [repomix](https://repomix.com/guide/agent-skills-generation)'s equivalent `--skill-generate` feature, `references/files.md` never embeds full raw source — it stays to summaries and confidence scores, exactly what `aif.json` itself already restricts to; the *compressed* body only ships as `references/detail.json`. Committing the generated directory works the same way committing `aif.json`/`detail.json` does (see Team use below) — it's just files.

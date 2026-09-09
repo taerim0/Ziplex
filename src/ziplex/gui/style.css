@@ -423,6 +423,20 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
 .tree-name-fixed { flex-shrink: 0; white-space: nowrap; overflow-wrap: normal; }
 .tree-desc { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; }
 
+/* Folder summary editor (files.js's folderNode()) -- lives inline inside
+   the folder row's own <summary>, so it has to stay a flex sibling of
+   .tree-name/.tree-desc rather than a block of its own. .tree-edit-btn
+   stays small/shrink-to-fit so it never crowds out the description text
+   it sits after; .tree-folder-edit takes over .tree-desc's own "grow to
+   fill the row" role while editing is open, since .tree-desc itself is
+   hidden by folderNode() during that state. The error line is forced onto
+   its own row (flex-basis: 100%) rather than squeezing into the same line
+   as the name/textarea. */
+.tree-edit-btn { flex-shrink: 0; padding: 2px 6px; font-size: 0.85em; }
+.tree-folder-edit { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
+.tree-folder-edit textarea { flex: 1 1 auto; min-width: 80px; font-size: 0.85em; padding: 3px 6px; }
+.tree-node > summary .error { flex-basis: 100%; margin: 4px 0 0; padding: 4px 8px; font-size: 0.85em; }
+
 .rel-master-detail {
   display: flex;
   gap: 14px;
