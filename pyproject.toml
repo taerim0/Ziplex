@@ -90,4 +90,4 @@ where = ["src"]
 # are AI coding agents' own working notes for this repo, not runtime assets --
 # deliberately excluded from the built package.
 [tool.setuptools.package-data]
-"ziplex.gui" = ["index.html", "style.css", "js/*.js", "js/pages/*.js", "assets/*.ico"]
+"ziplex.gui" = ["index.html", "style.css", "js/*.js", "js/pages/*.js", "assets/*.ico", "assets/*.png"]

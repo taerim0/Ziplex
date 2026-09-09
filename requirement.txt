@@ -20,3 +20,8 @@ flask
 pywebview
 watchdog
 ruamel.yaml
+# tomllib is stdlib-only on 3.11+; tech_stack.py falls back to this
+# pure-Python backport (same API) on 3.10, where TOML manifest parsing
+# (pyproject.toml/Cargo.toml) would otherwise silently degrade to an
+# empty dependency list. Same marker pyproject.toml's own dependency uses.
+tomli; python_version < "3.11"

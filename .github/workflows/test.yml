@@ -1,0 +1,35 @@
+# Runs the test suite on every push/PR touching main -- until this existed,
+# the 799+ tests here only ever ran on whichever machine a human (or an AI
+# coding agent) happened to invoke pytest on locally, with nothing verifying
+# a PR before it merges. Network-free and needs no secrets: nothing in the
+# suite calls Gemini or any other real LLM provider (see the root AGENTS.md's
+# own Tests section) -- LLM_PROVIDER=mock only exists in a couple of specific
+# tests that set it themselves, not something this workflow has to configure.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Matches pyproject.toml's own `requires-python`/classifiers -- both
+        # versions this package claims to support.
+        python-version: ["3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - run: pip install -e ".[dev]"
+
+      - run: pytest -q

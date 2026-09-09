@@ -6,7 +6,20 @@
    color. --warn/--success/--danger stay real, distinguishable colors
    (confidence/status still needs to be scannable at a glance) but
    deliberately desaturated/dusty rather than vivid, so they read as this
-   same muted family instead of clashing accent colors dropped on top of it. */
+   same muted family instead of clashing accent colors dropped on top of it.
+
+   This is the dark theme (this app's original, and still the default --
+   see theme.js) -- :root[data-theme="light"] below overrides every one of
+   these for the light theme, the mark's own *actual* native colors (a
+   black glyph on white, the reverse of this near-white-on-near-black
+   scheme). --accent-text/--hover-overlay/--recessed-bg/--code-bg exist
+   specifically because a handful of rules further down used to hardcode a
+   dark-background-only literal (white-tinted hover overlays, a near-black
+   code block, dark text baked into the `button` rule for its light --accent
+   background) that would render backwards or invisible once --accent/--bg
+   actually flip in the light theme -- routing them through their own
+   variables here is what makes those rules theme-agnostic instead of
+   needing a light-theme override of their own too. */
 :root {
   --bg: #121214;
   --panel: #1a1a1d;
@@ -15,14 +28,38 @@
   --muted: #8b8b91;
   --accent: #d8d8dc;
   --accent-rgb: 216, 216, 220;
+  --accent-text: #141416;
   --danger: #b5695c;
   --danger-rgb: 181, 105, 92;
   --warn: #b9a56a;
   --warn-rgb: 185, 165, 106;
   --success: #7f9c85;
   --success-rgb: 127, 156, 133;
+  --hover-overlay: rgba(255, 255, 255, 0.05);
+  --recessed-bg: rgba(0, 0, 0, 0.18);
+  --code-bg: #0f0f11;
   --mono: "Consolas", "SFMono-Regular", Menlo, monospace;
   --topbar-height: 42px;
+}
+
+:root[data-theme="light"] {
+  --bg: #f4f4f6;
+  --panel: #ffffff;
+  --border: #dcdce1;
+  --text: #1c1c1f;
+  --muted: #6b6b71;
+  --accent: #1c1c1f;
+  --accent-rgb: 28, 28, 31;
+  --accent-text: #f5f5f5;
+  --danger: #a1493c;
+  --danger-rgb: 161, 73, 60;
+  --warn: #8a6f28;
+  --warn-rgb: 138, 111, 40;
+  --success: #3f7350;
+  --success-rgb: 63, 115, 80;
+  --hover-overlay: rgba(0, 0, 0, 0.045);
+  --recessed-bg: rgba(0, 0, 0, 0.035);
+  --code-bg: #eef0f2;
 }
 
 * { box-sizing: border-box; }
@@ -74,7 +111,23 @@ body {
    padding), just with its own font-size/weight on top so it still reads
    as the app's wordmark rather than a fourth nav item that happens to say
    "Ziplex". */
-.topbar-brand { font-weight: 600; font-size: 1em; margin-right: 4px; }
+.topbar-brand { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 1em; margin-right: 4px; }
+/* The Ziplex mark itself (docs/images/logo.png) is a black "Z" glyph on
+   its own opaque white circle -- only the area *outside* that circle is
+   transparent -- so in the dark theme it already carries its own contrast
+   against --panel/--bg with no filter needed. The light theme's --panel is
+   white too, though, so that same white circle would blend straight into
+   it there, leaving only a faint --border-colored ring and a seemingly
+   uncontained Z -- the exact mirror of the dark theme's own problem, so it
+   needs the exact mirror fix: invert *only* under [data-theme="light"],
+   turning it into a black circle (now the one that pops against a white
+   panel) with a white Z, never touched in the dark theme where the
+   original colors already do that job. Same file both places
+   (topbar-brand here, the bigger .brand-mark-large on the bare-logo home
+   screen) -- only the size differs, so one rule below covers both. */
+.brand-mark { height: 20px; width: 20px; }
+.brand-mark-large { height: 72px; width: 72px; }
+:root[data-theme="light"] .brand-mark { filter: invert(1); }
 /* Set once from GET /api/config's "version" field (router.js's bootstrap) --
    never a nav link, so it deliberately sits outside every .topbar a rule
    above (no hover/active pill, no padding fighting the brand's own
@@ -89,7 +142,7 @@ body {
   opacity: 0.8;
   font-size: 0.92em;
 }
-.topbar a:hover { opacity: 1; background: rgba(255, 255, 255, 0.05); }
+.topbar a:hover { opacity: 1; background: var(--hover-overlay); }
 .topbar a.active { opacity: 1; color: var(--accent); background: rgba(var(--accent-rgb), 0.12); }
 
 /* Sidebar, not a top hyperlink bar -- a local desktop program's own window
@@ -128,7 +181,7 @@ body {
   opacity: 0.8;
   border-left: 3px solid transparent;
 }
-.sidebar a:hover { opacity: 1; background: rgba(255, 255, 255, 0.04); }
+.sidebar a:hover { opacity: 1; background: var(--hover-overlay); }
 .sidebar a.active {
   opacity: 1;
   color: var(--accent);
@@ -173,7 +226,7 @@ body {
 .stale-detail {
   margin: 0 20px 10px;
   padding: 8px 10px;
-  background: rgba(0, 0, 0, 0.18);
+  background: var(--recessed-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.82em;
@@ -222,7 +275,13 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
 .landing p { color: var(--muted); }
 .landing .card { text-align: left; }
 .landing .card.landing-intro { text-align: center; }
-.landing .card.landing-intro h1 { text-align: center; }
+.landing .card.landing-intro h1 {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
 .landing-pack h2 { margin-top: 0; }
 .landing-pack label:first-of-type { margin-top: 4px; }
 
@@ -289,7 +348,7 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
    히트박스크기가 너무 작다") -- a bigger checkbox plus a hover highlight on
    the row it sits in makes the actual (already-larger) click target visible
    rather than just technically present. */
-.file-checklist-row:hover { background: rgba(255, 255, 255, 0.04); }
+.file-checklist-row:hover { background: var(--hover-overlay); }
 .file-checklist-row input[type="checkbox"] {
   width: 17px;
   height: 17px;
@@ -394,7 +453,7 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
 .tree-node[open] > summary::before { transform: rotate(90deg); }
 .tree-children { padding-left: 18px; margin-left: 6px; border-left: 1px dashed var(--border); }
 .tree-row { display: flex; align-items: baseline; gap: 2px; padding: 3px 6px; border-radius: 4px; cursor: pointer; }
-.tree-row:hover { background: rgba(255, 255, 255, 0.04); }
+.tree-row:hover { background: var(--hover-overlay); }
 .tree-name { overflow-wrap: anywhere; }
 .tree-row.tree-flagged .tree-name { color: var(--danger); }
 .tree-row.muted { cursor: default; }
@@ -422,6 +481,12 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
    somewhere" behavior is untouched. */
 .tree-name-fixed { flex-shrink: 0; white-space: nowrap; overflow-wrap: normal; }
 .tree-desc { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; }
+
+/* files.js's global summary-visibility toggle -- a file row's and a folder
+   label's own summary text both already carry .tree-desc, so hiding every
+   one of them (independent of each folder's own separate expand/collapse
+   state) is this one rule, not a walk over every row. */
+.tree-overview.hide-summaries .tree-desc { display: none; }
 
 /* Folder summary editor (files.js's folderNode()) -- lives inline inside
    the folder row's own <summary>, so it has to stay a flex sibling of
@@ -468,7 +533,7 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
   border-bottom: 1px solid var(--border);
 }
 .rel-list-row:last-child { border-bottom: none; }
-.rel-list-row:hover { background: rgba(255, 255, 255, 0.04); }
+.rel-list-row:hover { background: var(--hover-overlay); }
 .rel-list-row.active { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); }
 .rel-list-name { overflow-wrap: anywhere; }
 .rel-dot {
@@ -522,7 +587,7 @@ select {
 }
 
 label { display: block; margin: 14px 0 4px; font-size: 0.9em; color: var(--muted); }
-input[type=text], textarea {
+input[type=text], input[type=password], textarea {
   width: 100%;
   padding: 8px 10px;
   background: var(--panel);
@@ -534,11 +599,11 @@ input[type=text], textarea {
 textarea { resize: vertical; }
 
 .input-row { display: flex; gap: 8px; }
-.input-row input[type=text] { flex: 1; width: auto; }
+.input-row input[type=text], .input-row input[type=password] { flex: 1; width: auto; }
 
 button {
   background: var(--accent);
-  color: #141416;
+  color: var(--accent-text);
   border: none;
   border-radius: 6px;
   padding: 8px 14px;
@@ -582,7 +647,7 @@ th { color: var(--muted); font-weight: 500; font-size: 0.85em; }
 .confidence.high { color: var(--success); }
 
 pre {
-  background: #0f0f11;
+  background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 12px 14px;

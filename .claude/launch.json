@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ziplex-gui",
+      "runtimeExecutable": "venv/Scripts/ziplex-gui.exe",
+      "runtimeArgs": ["--no-window"],
+      "port": 5321
+    }
+  ]
+}

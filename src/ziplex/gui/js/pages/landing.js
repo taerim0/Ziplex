@@ -26,7 +26,10 @@ export function renderHome() {
   app.innerHTML = "";
   app.appendChild(el("div", { class: "landing" }, [
     el("div", { class: "card landing-intro" }, [
-      el("h1", { text: "📦 Ziplex" }),
+      el("h1", {}, [
+        el("img", { src: "assets/logo.png", alt: "", class: "brand-mark brand-mark-large" }),
+        el("span", { text: "Ziplex" }),
+      ]),
       el("p", { text: t("home.tagline") }),
     ]),
   ]));

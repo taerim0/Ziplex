@@ -44,6 +44,23 @@ export async function renderFiles() {
     const filterInput = el("input", { type: "text", placeholder: t("files.searchPlaceholder") });
     const treeBox = el("div", { class: "tree-overview" });
 
+    // Independent of each folder's own <details>/<summary> expand-collapse
+    // (that toggles whether a folder's *children* show at all) -- this one
+    // toggles whether the summary *text* next to an already-visible file/
+    // folder row shows, everywhere in the tree at once. Both a file row's
+    // and a folder label's summary span already share the one `.tree-desc`
+    // class, so a single CSS rule on `treeBox` covers every row without
+    // walking the tree -- no per-row toggle state to track, and it survives
+    // re-draw() (a filter keystroke) since the class lives on the
+    // container, not on rows draw() throws away and rebuilds every time.
+    let summariesHidden = false;
+    const summaryToggleBtn = el("button", { class: "secondary", text: t("files.hideSummaries") });
+    summaryToggleBtn.addEventListener("click", () => {
+      summariesHidden = !summariesHidden;
+      treeBox.classList.toggle("hide-summaries", summariesHidden);
+      summaryToggleBtn.textContent = t(summariesHidden ? "files.showSummaries" : "files.hideSummaries");
+    });
+
     function fileRow(name) {
       const info = files[name] || {};
       const conf = info.confidence ?? 1.0;
@@ -177,7 +194,7 @@ export async function renderFiles() {
     draw();
 
     app.innerHTML = "";
-    app.appendChild(el("div", { class: "toolbar" }, filterInput));
+    app.appendChild(el("div", { class: "toolbar" }, [filterInput, summaryToggleBtn]));
     app.appendChild(treeBox);
   } catch (e) { showError(e); }
 }
