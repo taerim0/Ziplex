@@ -42,6 +42,19 @@ DEFAULT_IGNORE = [
     ".terraform/",
     ".DS_Store",
     "Thumbs.db",
+
+    # Ziplex's own default output location (packager.DEFAULT_OUTPUT_SUBDIR)
+    # -- a real, confirmed bug found live once the default moved from an
+    # install-relative RESULT_DIR to project-relative: without this, a
+    # second `pack` on the same project would collect its own previous
+    # aif.json/detail.json/cache.json as *input* files (they sit inside the
+    # very tree being walked), getting summarized, hashed into the next
+    # manifest, and even flipping one file's summary to a cached failure
+    # placeholder purely from packing itself. `.ziplex.json` (config.py's
+    # per-project config, a single file, always meant to be read/committed)
+    # is a completely different path from this `.ziplex/` directory and
+    # untouched by this pattern.
+    ".ziplex/",
 ]
 
 def collect_files(root_path: str, include: list[str] | None = None, ignore: list[str] | None = None) -> list[str]:

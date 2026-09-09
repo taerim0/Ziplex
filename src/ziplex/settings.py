@@ -16,9 +16,10 @@ side effect of merely using the global default -- so a project with no
 pin of its own keeps tracking whatever the global default currently is,
 even if that default changes later. Neither layer being set at all means
 "nothing configured anywhere" -- callers (packager.py's `result_dir`
-param) fall back to their own built-in default (RESULT_DIR) in that case,
-so a fresh install with no settings.json behaves identically to before
-this module existed.
+param) fall back to their own built-in default (a `.ziplex/` subfolder
+inside the project actually being packed, `packager.DEFAULT_OUTPUT_SUBDIR`)
+in that case, so a fresh install with no settings.json behaves identically
+to before this module existed.
 
 `llm_provider` + each provider's own credential/model fields (`gemini_api_key`,
 `openai_api_key`/`openai_base_url`/`openai_model`, `claude_api_key`/
@@ -62,7 +63,7 @@ EDITABLE_FIELDS = (
 )
 
 DEFAULT_SETTINGS = {
-    "output_dir": "",           # "" = no global override, packager.RESULT_DIR applies
+    "output_dir": "",           # "" = no global override, packager.DEFAULT_OUTPUT_SUBDIR applies
     "project_output_dirs": {},  # {absolute project path: output dir}, explicit per-project pins
     "gemini_api_key": "",       # "" = no override, GEMINI_API_KEY env var / .env applies (see llm.py)
     # "" = no override, GEMINI_MODEL env var / DEFAULT_MODEL applies -- added
@@ -164,8 +165,8 @@ def resolve_output_path(project_path: str, project_name: str, settings: dict | N
     """The full aif.json path a new pack of `project_path` should default
     to when the user hasn't typed an explicit one -- resolve_output_dir()'s
     folder plus this project's own name, or "" if nothing is configured at
-    either layer (packager.py's own RESULT_DIR-based default then applies,
-    completely unchanged from before this module existed).
+    either layer (packager.py's own DEFAULT_OUTPUT_SUBDIR-based default
+    then applies, completely unchanged from before this module existed).
     """
     output_dir = resolve_output_dir(project_path, settings)
     if not output_dir:

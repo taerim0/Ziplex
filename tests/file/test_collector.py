@@ -25,6 +25,22 @@ def test_skips_default_ignore_directories(tmp_path):
     assert collected == {"src/app.py"}
 
 
+# Real, confirmed bug found live once packager.py's default output moved
+# from an install-relative RESULT_DIR to a project-relative .ziplex/ folder
+# (see that constant's own comment): without this exclusion, re-packing the
+# same project would collect its own previous output as *input* -- caught
+# directly by test_pack_integration.py's cache-reuse tests suddenly seeing
+# extra "files" (.ziplex/project.json etc.) show up on a second pack().
+def test_skips_own_default_output_folder(tmp_path):
+    _write(tmp_path / "main.py", "x = 1\n")
+    _write(tmp_path / ".ziplex" / "project.json", "{}")
+    _write(tmp_path / ".ziplex" / "project.detail.json", "{}")
+    _write(tmp_path / ".ziplex" / "project.cache.json", "{}")
+
+    collected = {Path(f).relative_to(tmp_path).as_posix() for f in collect_files(str(tmp_path))}
+    assert collected == {"main.py"}
+
+
 def test_respects_project_gitignore(tmp_path):
     _write(tmp_path / ".gitignore", "secrets/\n*.local\n")
     _write(tmp_path / "app.py", "x = 1\n")

@@ -11,10 +11,17 @@ dist/
 aif.json
 
 testfiles/
+.ziplex/
+# result/ was the default output location before 2026-09-09 -- kept ignored
+# too, for any leftover local packs from before that change.
 result/
 checkpoint/
 
 venv/
+
+# Personal scratch folder for showing things to the AI assistant during a
+# session (screenshots, drafts, etc.) -- never meant to be committed.
+ai-temp/
 
 # Claude Code's own tool-internal state -- worktrees created via the Agent
 # tool's isolation:"worktree" option, and skill exports (this repo's own

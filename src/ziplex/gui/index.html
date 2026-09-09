@@ -5,10 +5,23 @@
 <title>Ziplex</title>
 <link rel="icon" href="assets/icon.ico">
 <link rel="stylesheet" href="style.css">
+<script>
+  // Sets data-theme before first paint, so a light-theme choice doesn't
+  // flash dark-then-light on load -- theme.js's own applyTheme() equivalent
+  // runs too late for that (a type="module" script is deferred past first
+  // paint by spec), so this is a plain, synchronous, non-module duplicate
+  // of theme.js's getTheme() logic in miniature. Keep this key in sync with
+  // theme.js's own THEME_KEY if it ever changes -- it deliberately isn't
+  // imported from there so this can stay a zero-dependency inline script.
+  (function () {
+    var saved = localStorage.getItem("ziplex.theme");
+    document.documentElement.setAttribute("data-theme", saved === "light" ? "light" : "dark");
+  })();
+</script>
 </head>
 <body>
 <header id="topbar" class="topbar">
-  <a href="#/" class="topbar-brand" data-topbar="home">📦 Ziplex</a>
+  <a href="#/" class="topbar-brand" data-topbar="home"><img src="assets/logo.png" alt="" class="brand-mark">Ziplex</a>
   <span id="app-version" class="topbar-version"></span>
   <a href="#/pack" data-topbar="pack" data-i18n="nav.pack">📦 프로젝트 패킹</a>
   <a href="#/check" data-topbar="check" data-i18n="nav.check">📂 프로젝트 확인</a>

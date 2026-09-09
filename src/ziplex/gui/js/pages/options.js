@@ -23,6 +23,7 @@
 
 import { app, nav, el, api, apiPost, browseButton } from "../app.js";
 import { t, getLang, setLang, applyStaticI18n } from "../i18n.js";
+import { getTheme, setTheme } from "../theme.js";
 import { route } from "../router.js";
 
 export function renderOptions() {
@@ -58,9 +59,21 @@ export function renderOptions() {
   // own docstring on why that binding choice is load-bearing here).
   const apiKeyInput = el("input", { type: "password", placeholder: t("options.apiKeyPlaceholder") });
   const geminiModelInput = el("input", { type: "text", placeholder: t("options.geminiModelPlaceholder") });
+  // A label above each field (not just placeholder text, which vanishes the
+  // moment something's typed) plus a persistent hint paragraph under the
+  // model field specifically -- reported directly: the model field's own
+  // explanation used to live only in its placeholder, cramped and gone
+  // as soon as you started typing, with no way to re-read *why* you might
+  // want to change it (the gemini-flash-latest floating-alias/503 story)
+  // once you had. geminiModelLabel/openaiModelLabel/openaiBaseUrlLabel/
+  // claudeModelLabel already existed in i18n.js's own dictionary but were
+  // never actually rendered anywhere until now.
   const geminiFields = el("div", {}, [
+    el("label", { text: t("options.apiKeyLabel") }),
     el("div", { class: "input-row" }, [apiKeyInput]),
+    el("label", { text: t("options.geminiModelLabel"), style: "margin-top:14px" }),
     el("div", { class: "input-row" }, [geminiModelInput]),
+    el("p", { class: "muted", text: t("options.geminiModelHint") }),
   ]);
 
   const openaiApiKeyInput = el("input", { type: "password", placeholder: t("options.openaiApiKeyPlaceholder") });
@@ -89,17 +102,24 @@ export function renderOptions() {
     openaiModelInput.focus();
   });
   const openaiFields = el("div", { class: "hidden" }, [
+    el("label", { text: t("options.apiKeyLabel") }),
     el("div", { class: "input-row" }, [openaiApiKeyInput]),
+    el("label", { text: t("options.openaiBaseUrlLabel"), style: "margin-top:14px" }),
     el("div", { class: "input-row" }, [openaiBaseUrlInput]),
     el("div", { class: "input-row" }, [ollamaPresetButton, lmstudioPresetButton]),
+    el("label", { text: t("options.openaiModelLabel"), style: "margin-top:14px" }),
     el("div", { class: "input-row" }, [openaiModelInput]),
+    el("p", { class: "muted", text: t("options.openaiModelHint") }),
   ]);
 
   const claudeApiKeyInput = el("input", { type: "password", placeholder: t("options.claudeApiKeyPlaceholder") });
   const claudeModelInput = el("input", { type: "text", placeholder: t("options.claudeModelPlaceholder") });
   const claudeFields = el("div", { class: "hidden" }, [
+    el("label", { text: t("options.apiKeyLabel") }),
     el("div", { class: "input-row" }, [claudeApiKeyInput]),
+    el("label", { text: t("options.claudeModelLabel"), style: "margin-top:14px" }),
     el("div", { class: "input-row" }, [claudeModelInput]),
+    el("p", { class: "muted", text: t("options.claudeModelHint") }),
   ]);
 
   const providerDescription = el("p", { class: "muted", text: t("options.openaiDescription") });
@@ -141,6 +161,17 @@ export function renderOptions() {
     applyStaticI18n();
     route();
   });
+
+  // Light/dark theme (theme.js) -- applying it is instant (a CSS custom
+  // property flip via the `data-theme` attribute, no re-render), unlike
+  // the language switcher above which has to re-render every string --
+  // so this doesn't need its own route() call, just setTheme() itself.
+  const themeSelect = el("select", {}, [
+    el("option", { value: "dark", text: t("options.themeDark") }),
+    el("option", { value: "light", text: t("options.themeLight") }),
+  ]);
+  themeSelect.value = getTheme();
+  themeSelect.addEventListener("change", () => setTheme(themeSelect.value));
 
   saveButton.addEventListener("click", async () => {
     savedNote.classList.add("hidden");
@@ -193,8 +224,11 @@ export function renderOptions() {
       el("h1", { text: t("nav.options") }),
     ]),
     el("div", { class: "card" }, [
-      el("h2", { text: t("options.languageTitle") }),
+      el("h2", { text: t("options.displayTitle") }),
+      el("label", { text: t("options.languageLabel") }),
       el("div", { class: "input-row" }, [langSelect]),
+      el("label", { text: t("options.themeLabel"), style: "margin-top:14px" }),
+      el("div", { class: "input-row" }, [themeSelect]),
     ]),
     el("div", { class: "card" }, [
       el("h2", { text: t("options.providerTitle") }),

@@ -26,11 +26,11 @@ second copy that could drift out of sync with it. Every other parameter
 
 Run directly (after `pip install -e .`):
     ziplex-mcp
-    ziplex-mcp --aif result/Ziplex.json --project .
+    ziplex-mcp --aif .ziplex/Ziplex.json --project .
     python -m ziplex.mcp_server
 Add to Claude Code -- typically one registration per project, so the paths
 are baked into the registration itself rather than re-typed on every call:
-    claude mcp add ziplex -- ziplex-mcp --aif result/Ziplex.json --project .
+    claude mcp add ziplex -- ziplex-mcp --aif .ziplex/Ziplex.json --project .
 """
 
 import argparse
@@ -80,6 +80,14 @@ def _resolve_project_optional(project_path: str | None) -> str | None:
     # tool here, where a missing project_path is an unset default, not a
     # meaningful value in its own right.
     return project_path if project_path is not None else _defaults["project"]
+
+
+def _resolve_aif_optional(aif_path: str | None) -> str | None:
+    # search_project()'s own aif_path is the same shape as project_path
+    # above -- optional, since search_project works with no pack at all;
+    # a missing value just means "no pack-specific --include/--ignore scope
+    # to layer on top of .ziplex.json," not an unset required default.
+    return aif_path if aif_path is not None else _defaults["aif"]
 
 
 def get_overview(*, aif_path: str | None = None, project_path: str | None = None) -> dict:
@@ -163,13 +171,19 @@ mcp.tool()(check_freshness)
 def search_project(
     *,
     project_path: str | None = None,
+    aif_path: str | None = None,
     pattern: str,
     context_lines: int = 0,
     ignore_case: bool = False,
     max_results: int | None = query_service.DEFAULT_SEARCH_MAX_RESULTS,
 ) -> dict:
     return query_service.search_project(
-        _resolve_project_required(project_path), pattern, context_lines, ignore_case, max_results
+        _resolve_project_required(project_path),
+        pattern,
+        context_lines,
+        ignore_case,
+        max_results,
+        aif_path=_resolve_aif_optional(aif_path),
     )
 
 

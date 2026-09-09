@@ -212,11 +212,10 @@ def test_pack_use_llm_false_still_reuses_a_cached_real_summary(tmp_path, monkeyp
     # LLM-enabled pack should keep that real summary, not get downgraded.
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    monkeypatch.setattr(packager, "RESULT_DIR", tmp_path / "result")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    packager.save_aif(packager.pack(str(project), auto=True, interactive=False))
+    packager.save_aif(packager.pack(str(project), auto=True, interactive=False), project_path=str(project))
 
     class _RaisingProvider(llm.MockProvider):
         def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
@@ -264,7 +263,6 @@ class _EmptySummaryProvider(llm.MockProvider):
 
 def test_pack_prompts_to_regenerate_a_cached_failed_summary_and_honors_yes(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    monkeypatch.setattr(packager, "RESULT_DIR", tmp_path / "result")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -274,7 +272,7 @@ def test_pack_prompts_to_regenerate_a_cached_failed_summary_and_honors_yes(tmp_p
     monkeypatch.setattr(llm, "_provider", _EmptySummaryProvider())
     aif1 = packager.pack(str(project), auto=True, interactive=False)
     assert aif1["files"]["main.py"]["summary"] == summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"]
-    packager.save_aif(aif1)
+    packager.save_aif(aif1, project_path=str(project))
 
     # second pack: file content unchanged (would normally reuse the cached
     # summary as-is), but interactive + answering "1" should regenerate it
@@ -287,14 +285,13 @@ def test_pack_prompts_to_regenerate_a_cached_failed_summary_and_honors_yes(tmp_p
 
 def test_pack_leaves_cached_failed_summary_when_declined(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    monkeypatch.setattr(packager, "RESULT_DIR", tmp_path / "result")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
 
     monkeypatch.setattr(llm, "_provider", _EmptySummaryProvider())
     aif1 = packager.pack(str(project), auto=True, interactive=False)
-    packager.save_aif(aif1)
+    packager.save_aif(aif1, project_path=str(project))
 
     # non-interactive: no prompt at all, placeholder stays cached as-is
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
@@ -922,16 +919,49 @@ def test_pack_include_ignore_params_extend_ziplex_json_not_replace_it(tmp_path, 
     assert set(aif["files"].keys()) == {"src/main.py"}
 
 
-def test_resolve_output_path_matches_save_aifs_own_default(tmp_path, monkeypatch):
+def test_resolve_output_path_defaults_inside_the_packed_project(tmp_path):
+    # Real, confirmed bug fixed by this default (see packager.RESULT_DIR's
+    # own comment): a plain `pip install ziplex` (non-editable) resolves
+    # RESULT_DIR to somewhere three levels above site-packages -- nowhere
+    # near the project actually being packed. A project-relative default
+    # can never land somewhere this nonsensical.
+    aif = {"project": {"name": "my-project"}}
+    project_path = str(tmp_path / "some-project")
+
+    assert packager.resolve_output_path(aif, None, project_path) == (
+        Path(project_path) / ".ziplex" / "my-project.json"
+    )
+    assert packager.resolve_output_path(aif, "custom/out.json", project_path) == Path("custom/out.json")
+
+
+def test_resolve_output_path_falls_back_to_result_dir_with_no_project_path(tmp_path, monkeypatch):
     # gui/pack_service.py's submit_review() calls this to lock the same
     # path save_aif() is about to write to -- found by code review that a
     # separate copy of this fallback could silently drift from save_aif()'s
-    # own; this locks the two together by construction instead.
+    # own; this locks the two together by construction instead. Both real
+    # callers always pass project_path now (see the test above) -- this is
+    # the legacy last-resort for a caller that somehow doesn't.
     monkeypatch.setattr(packager, "RESULT_DIR", tmp_path / "result")
     aif = {"project": {"name": "my-project"}}
 
     assert packager.resolve_output_path(aif, None) == tmp_path / "result" / "my-project.json"
     assert packager.resolve_output_path(aif, "custom/out.json") == Path("custom/out.json")
+
+
+def test_save_aif_with_no_output_path_defaults_inside_project_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+    packager.save_aif(aif, project_path=str(project))
+
+    saved_path = project / ".ziplex" / "project.json"
+    assert saved_path.exists()
+    assert (project / ".ziplex" / "project.detail.json").exists()
+    assert (project / ".ziplex" / "project.cache.json").exists()
 
 
 def test_save_aif_writes_a_sibling_cache_json_from_the_manifest(tmp_path, monkeypatch):
@@ -975,7 +1005,6 @@ def test_pack_reuses_summaries_for_unchanged_files_on_a_second_run(tmp_path, mon
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    monkeypatch.setattr(packager, "RESULT_DIR", tmp_path / "result")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -985,14 +1014,16 @@ def test_pack_reuses_summaries_for_unchanged_files_on_a_second_run(tmp_path, mon
     # batch (well under BATCH_SIZE) so that's 1 call, plus rules, the AI
     # guide, and the folder-summary call (1 call each) -- everything is new
     aif1 = packager.pack(str(project), auto=True, interactive=False)
-    packager.save_aif(aif1)  # default path -> tmp_path/result/project.json, via the monkeypatched RESULT_DIR
+    packager.save_aif(aif1, project_path=str(project))  # default path -> project/.ziplex/project.json
     first_run_calls = provider.calls
     assert first_run_calls == 4
 
     # second pack, nothing on disk changed: both summaries should be reused
-    # from result/project.json -- only rules + prompt + folder summaries
-    # regenerate (3 calls), since none of those are cached (see pack()'s
-    # use_cache docstring and folder_summary.py's own module docstring)
+    # from project/.ziplex/project.json (pack()'s own default use_cache
+    # lookup, no result_dir given -- see DEFAULT_OUTPUT_SUBDIR) -- only
+    # rules + prompt + folder summaries regenerate (3 calls), since none of
+    # those are cached (see pack()'s use_cache docstring and
+    # folder_summary.py's own module docstring)
     provider.calls = 0
     aif2 = packager.pack(str(project), auto=True, interactive=False)
 
@@ -1124,13 +1155,12 @@ def test_pack_only_resummarizes_a_changed_file(tmp_path, monkeypatch):
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    monkeypatch.setattr(packager, "RESULT_DIR", tmp_path / "result")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
     _write(project / "README.md", "# Sample\n")
 
-    packager.save_aif(packager.pack(str(project), auto=True, interactive=False))
+    packager.save_aif(packager.pack(str(project), auto=True, interactive=False), project_path=str(project))
 
     _write(project / "main.py", "def add(a, b):\n    return a + b + 1\n")  # only this one changes
     provider.calls = 0
@@ -1163,12 +1193,11 @@ def test_pack_use_cache_false_resummarizes_everything(tmp_path, monkeypatch):
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
     monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    monkeypatch.setattr(packager, "RESULT_DIR", tmp_path / "result")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
 
-    packager.save_aif(packager.pack(str(project), auto=True, interactive=False))
+    packager.save_aif(packager.pack(str(project), auto=True, interactive=False), project_path=str(project))
 
     provider.calls = 0
     packager.pack(str(project), auto=True, interactive=False, use_cache=False)

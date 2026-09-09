@@ -202,8 +202,8 @@ Claude Code, Cursor 등 MCP 클라이언트에서 이미 패킹된 프로젝트�
 
 ```bash
 ziplex-mcp                                                     # 직접 실행 (stdio 트랜스포트)
-ziplex-mcp --aif result/Ziplex.json --project .                # 기본값을 지정해서 호출마다 안 넘겨도 되게
-claude mcp add ziplex -- ziplex-mcp --aif result/Ziplex.json --project .   # Claude Code에 등록
+ziplex-mcp --aif .ziplex/Ziplex.json --project .                # 기본값을 지정해서 호출마다 안 넘겨도 되게
+claude mcp add ziplex -- ziplex-mcp --aif .ziplex/Ziplex.json --project .   # Claude Code에 등록
 ```
 
 `--aif`/`--project`는 이 서버의 *기본* `aif_path`/`project_path`를 지정합니다 — 아래 모든 툴은 여전히 명시적으로 넘기는 값을 우선하지만, 세션 내내 하나의 패킹된 프로젝트만 다룬다면 매 호출마다 같은 경로를 반복 안 넘겨도 됩니다. 두 플래그 다 생략해도 무방합니다 — 그러면 예전처럼 매 호출마다 경로가 필요할 뿐입니다.
@@ -271,8 +271,8 @@ MCP 서버가 노출하는 overview/files/relationships/detail/search 뷰를 MCP
 패킹된 프로젝트에 접근하는 세 번째 방법입니다 — MCP 서버나 GUI 대신, Claude Code는 쓸 수 있지만 MCP 서버 등록까지는 부담스러운 순간을 위한 것입니다:
 
 ```bash
-ziplex skill result/my-project.json               # .claude/skills/my-project/ 생성
-ziplex skill result/my-project.json -o some/dir    # 출력 디렉터리 직접 지정
+ziplex skill .ziplex/my-project.json               # .claude/skills/my-project/ 생성
+ziplex skill .ziplex/my-project.json -o some/dir    # 출력 디렉터리 직접 지정
 ```
 
 [Claude Agent Skill](https://code.claude.com/docs/en/skills)을 만듭니다 — `SKILL.md`와 `references/overview.md`/`files.md`/`relationships.md`/`detail.json`으로 구성되며, `.claude/skills/` 아래에 두기만 하면 서버 프로세스 없이도 Claude Code가 알아서 인식하고 점진적으로 불러옵니다. [repomix](https://repomix.com/guide/agent-skills-generation)의 동일한 `--skill-generate` 기능과 다른 점: `references/files.md`엔 원본 코드를 통째로 넣지 않습니다 — `aif.json` 자체가 이미 그렇듯 요약과 신뢰도 점수까지만 담고, 압축된 본문은 `references/detail.json`으로만 나갑니다. 생성된 디렉터리를 커밋하는 것도 `aif.json`/`detail.json`을 커밋하는 것과 같은 방식입니다(아래 팀에서 사용하기 참고) — 그냥 파일일 뿐이니까요.

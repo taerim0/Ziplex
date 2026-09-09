@@ -8,7 +8,7 @@
 # "Load diff" when actually needed).
 #
 # Adjust the filenames below to whatever this project actually committed
-# (e.g. result/MyProject.json / result/MyProject.detail.json / result/MyProject.cache.json).
+# (e.g. .ziplex/MyProject.json / .ziplex/MyProject.detail.json / .ziplex/MyProject.cache.json).
 aif.json linguist-generated=true
 *.detail.json linguist-generated=true
 *.cache.json linguist-generated=true

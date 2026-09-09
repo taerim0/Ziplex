@@ -694,6 +694,60 @@ def test_api_relationships_unlink(client, tmp_path):
     assert res.get_json()["relationships"]["b.py"]["internal"] == []
 
 
+# Real gap found by code review: relationships already had a post-save edit
+# escape hatch (/api/relationships/link|unlink) for a human noticing a wrong
+# edge while browsing an already-packed project -- summaries didn't, even
+# though a one-line text fix is a smaller edit than a graph edge.
+def test_api_files_summary_edit(client, tmp_path):
+    aif_path = _write_sample_aif(tmp_path)
+    res = client.post("/api/files/summary", json={"aif_path": aif_path, "file": "a.py", "summary": "fixed summary"})
+    assert res.status_code == 200
+    assert res.get_json() == {"file": "a.py", "summary": "fixed summary"}
+
+    # persisted -- a second, independent read sees the same edit
+    reread = client.get("/api/files", query_string={"aif_path": aif_path})
+    assert reread.get_json()["a.py"]["summary"] == "fixed summary"
+
+
+def test_api_files_summary_edit_unknown_file_returns_404(client, tmp_path):
+    aif_path = _write_sample_aif(tmp_path)
+    res = client.post("/api/files/summary", json={"aif_path": aif_path, "file": "nope.py", "summary": "x"})
+    assert res.status_code == 404
+
+
+def test_api_files_summary_edit_requires_all_fields(client):
+    res = client.post("/api/files/summary", json={"aif_path": "x.json"})
+    assert res.status_code == 400
+
+
+def test_api_folders_summary_edit(client, tmp_path):
+    aif_path = tmp_path / "sample.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "sample"},
+        "files": {"a.py": {"summary": "does a thing"}},
+        "folders": {".": {"summary": "Top-level project files."}},
+    }), encoding="utf-8")
+
+    res = client.post("/api/folders/summary", json={"aif_path": str(aif_path), "folder": ".", "summary": "fixed"})
+    assert res.status_code == 200
+    assert res.get_json() == {"folder": ".", "summary": "fixed"}
+
+    reread = client.get("/api/folders", query_string={"aif_path": str(aif_path)})
+    assert reread.get_json()["."]["summary"] == "fixed"
+
+
+def test_api_folders_summary_edit_unknown_folder_returns_404(client, tmp_path):
+    aif_path = tmp_path / "sample.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "sample"},
+        "files": {"a.py": {"summary": "does a thing"}},
+        "folders": {".": {"summary": "Top-level project files."}},
+    }), encoding="utf-8")
+
+    res = client.post("/api/folders/summary", json={"aif_path": str(aif_path), "folder": "nope", "summary": "x"})
+    assert res.status_code == 404
+
+
 def test_api_blast_radius(client, tmp_path):
     aif_path = _write_sample_aif(tmp_path)
     res = client.get("/api/blast_radius", query_string={"aif_path": aif_path, "file": "a.py"})

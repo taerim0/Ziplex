@@ -413,6 +413,51 @@ def api_relationships_unlink():
     return _relationship_edit_route("aif_path", "relationships", pack_service.unlink_saved_relationship)
 
 
+def _summary_edit_route(key_field: str, fn):
+    """Shared body for /api/files/summary and /api/folders/summary below:
+    parse {aif_path, key_field, summary} from the JSON body and call
+    fn(aif_path, key_value, summary). Maps KeyError (an unrecognized
+    file/folder name -- edits.set_file_summary()/set_folder_summary()'s own
+    contract, surfaced through pack_service.edit_saved_summary()/
+    edit_saved_folder_summary()) to 404, the same "not a real key" shape
+    query_service.get_detail() etc. already use elsewhere in this file. An
+    empty/missing summary is rejected the same way submit_review() already
+    silently skips one (see pack_service.submit_review()'s own loop) --
+    rather than a route that would let a human accidentally blank out an
+    existing summary in one click.
+    """
+    data = request.get_json(silent=True) or {}
+    aif_path = data.get("aif_path")
+    key_value = data.get(key_field)
+    summary = data.get("summary")
+    if not aif_path or not key_value or not summary:
+        return jsonify({"error": f"aif_path, {key_field}, summary가 모두 필요합니다"}), 400
+    try:
+        result = fn(aif_path, key_value, summary)
+    except KeyError as e:
+        return jsonify({"error": f"알 수 없음: {e}"}), 404
+    return jsonify(result)
+
+
+@app.route("/api/files/summary", methods=["POST"])
+def api_files_summary_edit():
+    """Post-pack counterpart to /api/pack/finalize's per-file summary field:
+    lets a human fix a summary they notice is wrong while browsing an
+    already-saved project, without a full re-pack -- the same "no job_id,
+    no review screen" shape /api/relationships/link already established for
+    relationships. See pack_service.edit_saved_summary().
+    """
+    return _summary_edit_route("file", pack_service.edit_saved_summary)
+
+
+@app.route("/api/folders/summary", methods=["POST"])
+def api_folders_summary_edit():
+    """The aif["folders"] counterpart to api_files_summary_edit() above. See
+    pack_service.edit_saved_folder_summary().
+    """
+    return _summary_edit_route("folder", pack_service.edit_saved_folder_summary)
+
+
 @app.route("/api/dependents")
 def api_dependents():
     aif_path = request.args["aif_path"]
@@ -423,7 +468,17 @@ def api_dependents():
     # relationship views couldn't offer the "certain relationships only"
     # filter (see AGENTS.md's get_dependents/get_blast_radius bullet).
     include_text_refs = request.args.get("include_text_refs", default="true") == "true"
-    return jsonify(query_service.get_dependents(aif_path, file, include_text_refs=include_text_refs))
+    # Same try/except shape as /api/detail below -- get_dependents() now
+    # raises ValueError for an unrecognized `file` (a real bug found via the
+    # MCP server: a bad path used to come back as an empty, indistinguishable
+    # from "genuinely no dependents"). The GUI's own `file` always comes from
+    # a tree/list it just rendered, so this should never actually fire here
+    # in practice -- this is defensive, not a UX gap this route itself had.
+    try:
+        result = query_service.get_dependents(aif_path, file, include_text_refs=include_text_refs)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify(result)
 
 
 @app.route("/api/blast_radius")
@@ -431,7 +486,11 @@ def api_blast_radius():
     aif_path = request.args["aif_path"]
     file = request.args["file"]
     include_text_refs = request.args.get("include_text_refs", default="true") == "true"
-    return jsonify(query_service.get_blast_radius(aif_path, file, include_text_refs=include_text_refs))
+    try:
+        result = query_service.get_blast_radius(aif_path, file, include_text_refs=include_text_refs)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    return jsonify(result)
 
 
 @app.route("/api/detail")
@@ -495,6 +554,13 @@ def api_search():
     pattern = request.args["pattern"]
     context_lines = request.args.get("context_lines", default=0, type=int)
     ignore_case = request.args.get("ignore_case", default="false") == "true"
+    # Optional -- js/pages/search.js sends the currently loaded project's
+    # aif_path when there is one, so a one-off `pack --include`/`--ignore`
+    # CLI extra that pack ran with is respected here too (query_service.
+    # search_project()'s own aif_path param), not just .ziplex.json's scope.
+    # A blank string (no project loaded yet, or a caller that omits it
+    # entirely) falls back to the pre-existing .ziplex.json-only behavior.
+    aif_path = request.args.get("aif_path", "").strip() or None
     try:
         # max_results=None: unlike an MCP/agent caller, a human browsing
         # the GUI pays no per-token cost and can already scroll/refine --
@@ -502,7 +568,9 @@ def api_search():
         # other transport, not this one. Only "matches" is a bare JSON
         # array here, matching this route's existing response shape --
         # "truncated" is meaningless once max_results=None.
-        result = query_service.search_project(project_path, pattern, context_lines, ignore_case, max_results=None)
+        result = query_service.search_project(
+            project_path, pattern, context_lines, ignore_case, max_results=None, aif_path=aif_path
+        )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     return jsonify(result["matches"])

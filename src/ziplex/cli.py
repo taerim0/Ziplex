@@ -17,13 +17,15 @@ from .tokenizer import analyze_tokens_with_compression
 from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider
 from .packager import pack, save_aif
 from .corrector import correct_aif
-from .edits import finalize_aif
+from .edits import finalize_aif, set_file_summary, set_folder_summary
 from .file.relationship import (
     build_tree, print_tree as print_dependency_tree, add_relationship, remove_relationship, CycleError,
 )
 from .search import search_files, read_detail_range
-from .freshness import check_freshness_scoped, load_pack_scope
-from .skill_export import export_skill
+from .freshness import check_freshness_scoped, load_pack_scope, scope_from_aif
+from .skill_export import (
+    export_skill, resolve_skill_target, read_existing_skill_project_name, resolve_skill_display_name,
+)
 from .config import init_config, CONFIG_FILENAME, collection_kwargs as _collection_kwargs, collect_and_scan as _collect_and_scan
 from . import __version__
 from . import settings as app_settings
@@ -204,6 +206,7 @@ _COMMAND_OVERVIEW = [
     ("freshness <path> <name>.cache.json", "Hash-check aif.json against disk -- no LLM calls"),
     ("skill <name>.json", "Export as a Claude Agent Skill"),
     ("link / unlink <name>.json <file> <target>", "Add/remove a dependency edge"),
+    ("summary <name>.json <file> <text> [--folder]", "Fix a saved file's (or folder's) summary, no re-pack"),
     ("settings [set <key> <value>]", "View/change ~/.ziplex/settings.json"),
     ("checkpoint [clean [<path>|--all]]", "List/delete leftover checkpoint files"),
     ("doctor [<path>]", "Environment sanity check -- no LLM calls"),
@@ -437,6 +440,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sk = sub.add_parser("skill", help="aif.json을 Claude Agent Skill로 내보내기 (.claude/skills/, MCP 서버 없이도 인식됨)")
     sk.add_argument("aif_path", help="aif.json 경로")
     sk.add_argument("--output", "-o", default=None, help="출력 디렉터리 (기본값: .claude/skills/<프로젝트명>/)")
+    sk.add_argument(
+        "--project",
+        default=None,
+        help="프로젝트 폴더 경로 -- 주면 내보내기 전에 무료 freshness 체크(LLM 호출 없음)를 한 번 하고, "
+        "aif.json이 오래됐으면 경고만 하고 계속 내보냅니다 (막지는 않음)",
+    )
 
     ini = sub.add_parser("init", help="프로젝트에 .ziplex.json 설정 파일 생성 (include/ignore 패턴)")
     ini.add_argument("path", help="프로젝트 폴더 경로")
@@ -481,6 +490,15 @@ def _build_parser() -> argparse.ArgumentParser:
     ulk.add_argument("aif_path", help="aif.json 경로")
     ulk.add_argument("file", help="의존하는 쪽 파일")
     ulk.add_argument("target", help="의존받는 쪽 파일")
+
+    sm = sub.add_parser(
+        "summary",
+        help="이미 저장된 aif.json에서 파일(또는 --folder로 폴더) 하나의 summary를 한 번에 수정 (재패킹 없이)",
+    )
+    sm.add_argument("aif_path", help="aif.json 경로")
+    sm.add_argument("file", help="수정할 파일 (files의 키, 예: src/a.py) -- --folder를 주면 폴더 경로")
+    sm.add_argument("summary", help="새 summary 텍스트")
+    sm.add_argument("--folder", action="store_true", help="file 인자를 aif['files'] 대신 aif['folders']의 키로 취급")
 
     return parser
 
@@ -570,7 +588,7 @@ def _cmd_pack(args) -> None:
             aif = finalize_aif(aif)  # skip interactive review, still build relationships
         else:
             aif = correct_aif(aif)  # interactive correct + build relationships
-        save_aif(aif, args.output)
+        save_aif(aif, args.output, project_path=args.path)
 
         print("\n" + "=" * 50)
         print("📄 파일별 Summary")
@@ -736,13 +754,85 @@ def _cmd_freshness(args) -> None:
 
 
 def _cmd_skill(args) -> None:
-    # export_skill() does its own internal open()/json.load() on
-    # aif_path (and, best-effort, its sibling detail.json) -- wrapped
-    # here rather than via _load_json_or_exit() since that function
-    # itself needs the raw path, not a pre-parsed dict. Same "❌ ...
-    # 읽기 실패" shape as every other file-loading command in this CLI.
+    # Real gap found by code review: export_skill() (skill_export.py) never
+    # took a project_path at all, so nothing here could ever tell a human
+    # their aif.json had drifted from disk before baking that stale snapshot
+    # into an always-committed skill directory -- every other read surface
+    # (CLI freshness, MCP check_freshness, the GUI's badges/watcher) already
+    # has this same free (no LLM call) check, skill export was the one gap.
+    # --project is optional and this only ever warns, never blocks: someone
+    # exporting a known-slightly-stale-but-good-enough skill on purpose
+    # shouldn't be stopped, and skill_export.py itself stays freshness-
+    # agnostic (a deliberate split, not an oversight -- see its own
+    # docstring) rather than gaining a second responsibility.
+    # Parsed once and reused for the freshness-scope lookup below, the
+    # collision check, and export_skill() itself -- a real gap found by
+    # code review: this same aif_path used to be read/parsed up to three
+    # separate times in one invocation.
     try:
-        target = export_skill(args.aif_path, args.output)
+        aif = json.loads(Path(args.aif_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        aif = None
+
+    if args.project:
+        _require_dir_or_exit(args.project)
+        aif_path = Path(args.aif_path)
+        cache_path = aif_path.with_name(f"{aif_path.stem}.cache.json")
+        # Best-effort, same as _cmd_freshness()'s own sibling-file lookup --
+        # a missing/corrupt cache.json (an aif.json moved/renamed away from
+        # its siblings, or one produced by a pre-cache.json version of
+        # Ziplex) just means this check is skipped, not that the export
+        # itself should fail.
+        try:
+            manifest = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            manifest = None
+        if manifest is not None:
+            # (None, None) when aif itself failed to parse above, same as
+            # load_pack_scope()'s own failure fallback used to give.
+            extra_include, extra_ignore = scope_from_aif(aif) if aif is not None else (None, None)
+            report = check_freshness_scoped(args.project, manifest, extra_include, extra_ignore)
+            if report.is_stale:
+                print("⚠️  내보내려는 aif.json이 프로젝트의 현재 상태와 다릅니다 (오래됨) -- 그대로 내보냅니다.")
+                if report.changed:
+                    print(f"   변경됨 ({len(report.changed)}): {', '.join(report.changed)}")
+                if report.added:
+                    print(f"   추가됨 ({len(report.added)}): {', '.join(report.added)}")
+                if report.removed:
+                    print(f"   삭제됨 ({len(report.removed)}): {', '.join(report.removed)}")
+                print("   최신 상태로 내보내려면 `ziplex pack`을 다시 실행한 뒤 이 명령을 재실행하세요.")
+
+    # Real gap found by code review: no collision guard at all -- two
+    # differently-named projects that happen to slugify to the same
+    # directory name (a monorepo packing multiple subprojects with generic
+    # names like "backend"/"api" is a real, plausible way to hit this)
+    # silently overwrote each other's skill directory with no warning.
+    # Detecting it needs the *display* name from the existing SKILL.md's
+    # own heading, not the slug or frontmatter `name:` -- both of those are
+    # identical by construction whenever two projects actually collide (see
+    # read_existing_skill_project_name()'s own docstring). Best-effort and
+    # warn-only, the same "never block a real export" philosophy as the
+    # freshness check above.
+    if aif is not None:
+        target_for_collision_check = resolve_skill_target(aif, args.output)
+        existing_name = read_existing_skill_project_name(target_for_collision_check)
+        new_name = resolve_skill_display_name(aif)
+        if existing_name and existing_name != new_name:
+            print(
+                f"⚠️  {target_for_collision_check}에 다른 프로젝트('{existing_name}')의 skill이 "
+                "이미 있습니다 -- 덮어씁니다."
+            )
+
+    # export_skill() does its own internal open()/json.load() on aif_path
+    # (and, best-effort, its sibling detail.json) whenever aif is None --
+    # here it's already been parsed above, so passing it through skips that
+    # read. Still wrapped rather than routed via _load_json_or_exit() since
+    # that function itself needs the raw path, not a pre-parsed dict. Same
+    # "❌ ... 읽기 실패" shape as every other file-loading command in this
+    # CLI -- reachable here whenever the read above already failed (aif is
+    # None, so export_skill() redoes it and raises the same error).
+    try:
+        target = export_skill(args.aif_path, args.output, aif=aif)
     except (OSError, json.JSONDecodeError) as e:
         print(f"❌ {args.aif_path} 읽기 실패: {e}")
         sys.exit(1)
@@ -812,6 +902,33 @@ def _cmd_unlink(args) -> None:
     _edit_saved_relationship(args.aif_path, args.file, args.target, remove_relationship, "연결 해제됨")
 
 
+def _cmd_summary(args) -> None:
+    """`ziplex summary` -- link/unlink's counterpart for fixing a wrong
+    per-file (or, with --folder, per-folder) summary in an already-saved
+    aif.json without a full re-pack. One-shot, no per-path locking (see
+    _edit_saved_relationship()'s own docstring for why a CLI invocation
+    doesn't need gui/pack_service.py's locking) -- wraps
+    edits.set_file_summary()/set_folder_summary() directly, the same
+    functions gui_server.py's /api/files/summary and /api/folders/summary
+    routes reach via gui/pack_service.py's edit_saved_summary()/
+    edit_saved_folder_summary().
+    """
+    aif = _load_json_or_exit(args.aif_path)
+    set_fn, container_key, label = (
+        (set_folder_summary, "folders", "폴더") if args.folder else (set_file_summary, "files", "파일")
+    )
+    if args.file not in aif.get(container_key, {}):
+        print(f"❌ {args.aif_path}에 {label} '{args.file}'이(가) 없습니다")
+        sys.exit(1)
+
+    set_fn(aif, args.file, args.summary)
+
+    with open(args.aif_path, "w", encoding="utf-8") as f:
+        json.dump(aif, f, ensure_ascii=False, indent=2)
+
+    print(f"✅ {args.file} summary 수정됨")
+
+
 # One entry per registered subcommand -- main() just looks up args.command
 # here and calls the match. A bare invocation (args.command is None, no
 # subcommand typed at all) is the one case with no entry, handled by
@@ -839,6 +956,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], None]] = {
     "doctor": _cmd_doctor,
     "link": _cmd_link,
     "unlink": _cmd_unlink,
+    "summary": _cmd_summary,
 }
 
 

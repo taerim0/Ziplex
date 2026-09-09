@@ -942,6 +942,91 @@ def test_unlink_saved_relationship_removes_only_that_edge(tmp_path):
     assert saved["relationships"]["a.py"]["internal"] == ["c.py"]
 
 
+# Real gap found by code review: relationships already had a post-save edit
+# escape hatch (link_saved_relationship()/unlink_saved_relationship()) for a
+# human noticing a wrong edge while browsing an already-packed project --
+# summaries didn't, even though a one-line text fix is a smaller edit than a
+# graph edge.
+def test_edit_saved_summary_edits_the_file_directly(tmp_path):
+    aif_path = tmp_path / "sample.json"
+    _write_saved_aif(aif_path, {"a.py": {"internal": [], "external": []}})
+
+    result = pack_service.edit_saved_summary(str(aif_path), "a.py", "fixed summary")
+    assert result == {"file": "a.py", "summary": "fixed summary"}
+
+    saved = json.loads(aif_path.read_text(encoding="utf-8"))
+    assert saved["files"]["a.py"]["summary"] == "fixed summary"
+    assert saved["project"]["name"] == "sample"  # everything else untouched
+
+
+def test_edit_saved_summary_leaves_confidence_untouched(tmp_path):
+    # set_file_summary() itself never touches confidence, even during the
+    # pre-save review (see submit_review()) -- this stays consistent with
+    # that rather than inventing a new "human confirmed -> 1.0" rule.
+    aif_path = tmp_path / "sample.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "sample"},
+        "files": {"a.py": {"summary": "x", "confidence": 0.1}},
+        "relationships": {"a.py": {"internal": [], "external": []}},
+    }), encoding="utf-8")
+
+    pack_service.edit_saved_summary(str(aif_path), "a.py", "fixed summary")
+
+    saved = json.loads(aif_path.read_text(encoding="utf-8"))
+    assert saved["files"]["a.py"]["confidence"] == 0.1
+
+
+def test_edit_saved_summary_does_not_touch_sibling_detail_or_cache_files(tmp_path):
+    aif_path = tmp_path / "sample.json"
+    _write_saved_aif(aif_path, {"a.py": {"internal": [], "external": []}})
+    detail_path = tmp_path / "sample.detail.json"
+    cache_path = tmp_path / "sample.cache.json"
+    detail_path.write_text(json.dumps({"a.py": {"compressed": "real body"}}), encoding="utf-8")
+    cache_path.write_text(json.dumps({"a.py": "somehash"}), encoding="utf-8")
+
+    pack_service.edit_saved_summary(str(aif_path), "a.py", "fixed summary")
+
+    assert json.loads(detail_path.read_text(encoding="utf-8")) == {"a.py": {"compressed": "real body"}}
+    assert json.loads(cache_path.read_text(encoding="utf-8")) == {"a.py": "somehash"}
+
+
+def test_edit_saved_summary_raises_on_unknown_file(tmp_path):
+    aif_path = tmp_path / "sample.json"
+    _write_saved_aif(aif_path, {"a.py": {"internal": [], "external": []}})
+
+    with pytest.raises(KeyError):
+        pack_service.edit_saved_summary(str(aif_path), "missing.py", "x")
+
+
+def test_edit_saved_folder_summary_edits_the_file_directly(tmp_path):
+    aif_path = tmp_path / "sample.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "sample"},
+        "files": {"a.py": {"summary": "x", "confidence": 1.0}},
+        "folders": {".": {"summary": "old", "confidence": 1.0}},
+        "relationships": {"a.py": {"internal": [], "external": []}},
+    }), encoding="utf-8")
+
+    result = pack_service.edit_saved_folder_summary(str(aif_path), ".", "fixed")
+    assert result == {"folder": ".", "summary": "fixed"}
+
+    saved = json.loads(aif_path.read_text(encoding="utf-8"))
+    assert saved["folders"]["."]["summary"] == "fixed"
+
+
+def test_edit_saved_folder_summary_raises_on_unknown_folder(tmp_path):
+    aif_path = tmp_path / "sample.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "sample"},
+        "files": {"a.py": {"summary": "x", "confidence": 1.0}},
+        "folders": {".": {"summary": "old", "confidence": 1.0}},
+        "relationships": {"a.py": {"internal": [], "external": []}},
+    }), encoding="utf-8")
+
+    with pytest.raises(KeyError):
+        pack_service.edit_saved_folder_summary(str(aif_path), "missing", "x")
+
+
 def test_lock_for_path_returns_the_same_lock_for_equivalent_paths(tmp_path):
     aif_path = tmp_path / "sample.json"
     aif_path.write_text("{}", encoding="utf-8")

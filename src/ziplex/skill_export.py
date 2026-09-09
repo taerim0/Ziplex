@@ -49,6 +49,23 @@ def _slugify(name: str) -> str:
     return slug or "project"
 
 
+def resolve_skill_display_name(aif: dict) -> str:
+    """The display name _skill_md() writes into its own H1 heading and
+    frontmatter description -- project.name if set, else the same
+    _slugify() fallback _skill_md() itself falls back to.
+
+    Split out so cli.py's collision check can compute the exact same
+    fallback _skill_md() uses when comparing against an existing skill's
+    heading (read_existing_skill_project_name()) instead of re-deriving it
+    independently -- a real code-review finding: cli.py's own copy used
+    `project.get("name") or ""` (no slug fallback), so a project with an
+    empty/missing name triggered a false-positive "different project"
+    collision warning on every single re-export of that same project.
+    """
+    name = (aif.get("project") or {}).get("name")
+    return name or _slugify(name or "")
+
+
 def _skill_md(aif: dict, slug: str) -> str:
     project = aif.get("project", {})
     name = project.get("name") or slug
@@ -199,25 +216,85 @@ def generate_skill_files(aif: dict, detail: dict) -> dict[str, str]:
     }
 
 
-def export_skill(aif_path: str, output_dir: str | None = None) -> str:
+def resolve_skill_target(aif: dict, output_dir: str | None = None) -> Path:
+    """Where export_skill() would write to for this already-loaded aif --
+    output_dir if given, else .claude/skills/<slugified project name>/
+    relative to the current working directory, which is where Claude Code
+    looks for project-level skills.
+
+    Split out of export_skill() (which still calls this) so a caller can
+    inspect what's already at that path *before* export_skill() overwrites
+    it there -- cli.py's own collision check (see
+    read_existing_skill_project_name()'s docstring) is the one real
+    consumer of that today, but this needed to be a named, independently
+    testable function either way rather than duplicated inline logic.
+    """
+    slug = _slugify((aif.get("project") or {}).get("name") or "")
+    return Path(output_dir) if output_dir else Path(".claude/skills") / slug
+
+
+_SKILL_MD_TITLE_RE = re.compile(r"^# (.+) — Ziplex reference$", re.MULTILINE)
+
+
+def read_existing_skill_project_name(target: Path) -> str | None:
+    """The display name embedded in an already-exported SKILL.md's own H1
+    heading at `target` (_skill_md()'s own "# {name} -- Ziplex reference"
+    line) -- None if there's no SKILL.md there yet, or it doesn't match that
+    exact shape (a human-authored skill that happens to occupy the same
+    directory, or one from a Ziplex version that predates this format).
+
+    This -- not the slug, and not SKILL.md's own frontmatter `name:` field
+    -- is the one signal that can actually tell two *different* source
+    projects apart when a collision happens: two differently-named projects
+    ("My Project!!!" and "my_project") can both slugify to the identical
+    "my-project", so by the time two exports actually collide on the same
+    `target`, their slug and frontmatter `name:` are already guaranteed
+    identical by construction -- only the free-text display name in the
+    heading (never slugified) can still differ.
+    """
+    try:
+        content = (target / "SKILL.md").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _SKILL_MD_TITLE_RE.search(content)
+    return match.group(1) if match else None
+
+
+def export_skill(aif_path: str, output_dir: str | None = None, aif: dict | None = None) -> str:
     """Loads aif_path (+ its sibling <name>.detail.json, via query_service's
     own _detail_path() rather than re-deriving that convention independently
     here -- one definition of the sibling-file naming, reused, not copied)
-    and writes a Claude Agent Skill directory -- output_dir if given, else
-    .claude/skills/<slugified project name>/ relative to the current
-    working directory, which is where Claude Code looks for project-level
-    skills.
+    and writes a Claude Agent Skill directory (see resolve_skill_target()
+    for exactly where).
 
     A missing/unreadable detail.json degrades to an empty {} rather than
     failing the whole export -- references/detail.json just comes out
     empty, still a valid (if less useful) skill; the summaries/rules/
     relationships references remain fully usable either way.
 
+    aif: an already-loaded/parsed aif dict, for a caller that has one on
+    hand already (cli.py's `_cmd_skill()`, which otherwise would
+    re-read/re-parse the same aif_path a third time in one invocation --
+    once for its own freshness scope lookup, once for its collision check,
+    once more here). aif_path is still required either way, since it's
+    also what locates the sibling detail.json -- only the aif_path read
+    itself is skipped when this is given. None (the default) reads and
+    parses aif_path here exactly as before, including raising the same
+    OSError/json.JSONDecodeError a bad path always has.
+
+    No collision check happens here -- an existing directory at the target
+    path is always overwritten silently, same as before. cli.py's
+    `ziplex skill` command is what optionally warns first (see
+    read_existing_skill_project_name()) -- this function stays
+    collision-agnostic the same deliberate way it stays freshness-agnostic
+    (see this module's own docstring).
+
     Returns the directory actually written to.
     """
     aif_file = Path(aif_path)
-    with open(aif_file, "r", encoding="utf-8") as f:
-        aif = json.load(f)
+    if aif is None:
+        with open(aif_file, "r", encoding="utf-8") as f:
+            aif = json.load(f)
 
     try:
         with open(_detail_path(aif_path), "r", encoding="utf-8") as f:
@@ -225,8 +302,7 @@ def export_skill(aif_path: str, output_dir: str | None = None) -> str:
     except (OSError, json.JSONDecodeError):
         detail = {}
 
-    slug = _slugify((aif.get("project") or {}).get("name") or "")
-    target = Path(output_dir) if output_dir else Path(".claude/skills") / slug
+    target = resolve_skill_target(aif, output_dir)
 
     for relative_path, content in generate_skill_files(aif, detail).items():
         out_path = target / relative_path

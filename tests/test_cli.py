@@ -146,6 +146,163 @@ def test_init_command_reports_missing_directory_instead_of_crashing(monkeypatch,
     assert str(missing) in capsys.readouterr().out
 
 
+# Real gap found by code review: `ziplex skill` never checked freshness
+# before exporting, silently baking a stale aif.json into an always-
+# committed skill directory -- every other read surface (CLI freshness, MCP
+# check_freshness, the GUI's badges/watcher) already had this same free
+# check. --project is optional and this only ever warns, never blocks.
+def _write_skill_test_aif(tmp_path):
+    project = tmp_path / "project"
+    (project / "src").mkdir(parents=True)
+    (project / "src" / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+    aif_path = tmp_path / "out.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "proj", "prompt": "", "scope": {"include": [], "ignore": []}},
+        "files": {"src/main.py": {"summary": "adds two numbers", "confidence": 1.0}},
+        "relationships": {"src/main.py": {"internal": [], "external": []}},
+    }), encoding="utf-8")
+
+    manifest = build_manifest([str(project / "src" / "main.py")], str(project))
+    (tmp_path / "out.cache.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    return project, aif_path
+
+
+def test_skill_command_warns_but_still_exports_when_project_has_drifted(monkeypatch, tmp_path, capsys):
+    project, aif_path = _write_skill_test_aif(tmp_path)
+    # Drift the project after the manifest was captured -- the file on disk
+    # no longer matches what aif_path's own pack was taken from.
+    (project / "src" / "main.py").write_text("def add(a, b):\n    return a + b + 1\n", encoding="utf-8")
+    output_dir = tmp_path / "skill-out"
+
+    monkeypatch.setattr(
+        sys, "argv",
+        ["cli.py", "skill", str(aif_path), "--project", str(project), "--output", str(output_dir)],
+    )
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "오래됨" in out
+    assert "src/main.py" in out
+    assert "✅ Skill 내보내기 완료" in out
+    assert (output_dir / "SKILL.md").exists()  # still exports despite the warning
+
+
+def test_skill_command_no_warning_when_project_matches_the_manifest(monkeypatch, tmp_path, capsys):
+    project, aif_path = _write_skill_test_aif(tmp_path)
+    output_dir = tmp_path / "skill-out"
+
+    monkeypatch.setattr(
+        sys, "argv",
+        ["cli.py", "skill", str(aif_path), "--project", str(project), "--output", str(output_dir)],
+    )
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "오래됨" not in out
+    assert "✅ Skill 내보내기 완료" in out
+
+
+def test_skill_command_skips_freshness_check_without_project_flag(monkeypatch, tmp_path, capsys):
+    # Pre-existing behavior, unchanged: omitting --project never even
+    # attempts the check (no manifest lookup, no warning possible).
+    project, aif_path = _write_skill_test_aif(tmp_path)
+    (project / "src" / "main.py").write_text("def add(a, b):\n    return a + b + 1\n", encoding="utf-8")
+    output_dir = tmp_path / "skill-out"
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "skill", str(aif_path), "--output", str(output_dir)])
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "오래됨" not in out
+    assert "✅ Skill 내보내기 완료" in out
+
+
+# Real gap found by code review: no collision guard at all on the
+# slug-derived output directory -- two differently-named projects that
+# happen to slugify to the same name silently overwrote each other's skill
+# directory with no warning (a monorepo packing multiple subprojects with
+# generic names like "backend"/"api" is a real, plausible way to hit this).
+def test_skill_command_warns_on_a_slug_collision_from_a_different_project(monkeypatch, tmp_path, capsys):
+    output_dir = tmp_path / "skill-out"
+
+    project_a = tmp_path / "project_a"
+    (project_a / "src").mkdir(parents=True)
+    (project_a / "src" / "main.py").write_text("x = 1\n", encoding="utf-8")
+    aif_a = tmp_path / "a.json"
+    aif_a.write_text(json.dumps({
+        "project": {"name": "My_Cool App", "prompt": ""},  # slugifies to "my-cool-app"
+        "files": {"src/main.py": {"summary": "x", "confidence": 1.0}},
+        "relationships": {"src/main.py": {"internal": [], "external": []}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "skill", str(aif_a), "--output", str(output_dir)])
+    cli.main()
+    capsys.readouterr()  # discard the first export's own output
+
+    aif_b = tmp_path / "b.json"
+    aif_b.write_text(json.dumps({
+        "project": {"name": "My Cool App!", "prompt": ""},  # same slug, different display name
+        "files": {"src/main.py": {"summary": "y", "confidence": 1.0}},
+        "relationships": {"src/main.py": {"internal": [], "external": []}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "skill", str(aif_b), "--output", str(output_dir)])
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "My_Cool App" in out  # names the project already there
+    assert "✅ Skill 내보내기 완료" in out  # still exports (warn, never block)
+
+
+def test_skill_command_no_collision_warning_when_re_exporting_the_same_project(monkeypatch, tmp_path, capsys):
+    output_dir = tmp_path / "skill-out"
+    aif_path = tmp_path / "a.json"
+    aif = {
+        "project": {"name": "My Cool App!", "prompt": ""},
+        "files": {"src/main.py": {"summary": "x", "confidence": 1.0}},
+        "relationships": {"src/main.py": {"internal": [], "external": []}},
+    }
+    aif_path.write_text(json.dumps(aif), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "skill", str(aif_path), "--output", str(output_dir)])
+    cli.main()
+    capsys.readouterr()
+
+    # Re-export the *same* project (e.g. after a re-pack) -- must not warn.
+    monkeypatch.setattr(sys, "argv", ["cli.py", "skill", str(aif_path), "--output", str(output_dir)])
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "다른 프로젝트" not in out
+    assert "✅ Skill 내보내기 완료" in out
+
+
+# Real gap found by code review: the collision check's own "current
+# project's display name" fallback was `project.get("name") or ""` --
+# inconsistent with _skill_md()'s own heading fallback (`name or slug`), so
+# a project with an empty/missing name got a bogus "different project"
+# warning on every single re-export of that same, unchanged project.
+def test_skill_command_no_collision_warning_when_project_name_is_empty(monkeypatch, tmp_path, capsys):
+    output_dir = tmp_path / "skill-out"
+    aif_path = tmp_path / "a.json"
+    aif = {
+        "project": {"name": "", "prompt": ""},
+        "files": {"src/main.py": {"summary": "x", "confidence": 1.0}},
+        "relationships": {"src/main.py": {"internal": [], "external": []}},
+    }
+    aif_path.write_text(json.dumps(aif), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "skill", str(aif_path), "--output", str(output_dir)])
+    cli.main()
+    capsys.readouterr()
+
+    # Re-export the same (still-nameless) project -- must not warn.
+    monkeypatch.setattr(sys, "argv", ["cli.py", "skill", str(aif_path), "--output", str(output_dir)])
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "다른 프로젝트" not in out
+    assert "✅ Skill 내보내기 완료" in out
+
+
 def test_version_flag_prints_version_and_exits_zero(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cli.py", "--version"])
 
@@ -490,6 +647,85 @@ def test_link_on_an_aif_without_relationships_errors_out(tmp_path, monkeypatch, 
 def test_link_on_a_missing_aif_path_errors_out(tmp_path, monkeypatch, capsys):
     missing = tmp_path / "does-not-exist.json"
     monkeypatch.setattr(sys, "argv", ["cli.py", "link", str(missing), "a.py", "b.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+
+
+# Real gap found by code review: link/unlink already had this post-save
+# escape hatch for a wrong relationship edge -- summaries didn't, even
+# though a one-line text fix is a smaller edit than a graph edge.
+def test_summary_edits_a_file_summary_and_saves_it(tmp_path, monkeypatch, capsys):
+    aif_path = tmp_path / "test.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "x"},
+        "files": {"a.py": {"summary": "old", "confidence": 0.1}},
+        "relationships": {"a.py": {"internal": [], "external": []}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "summary", str(aif_path), "a.py", "new summary"])
+
+    cli.main()  # must not raise SystemExit
+
+    assert "a.py" in capsys.readouterr().out
+    saved = json.loads(aif_path.read_text(encoding="utf-8"))
+    assert saved["files"]["a.py"]["summary"] == "new summary"
+    assert saved["files"]["a.py"]["confidence"] == 0.1  # untouched, same as set_file_summary()
+
+
+def test_summary_rejects_an_unknown_file(tmp_path, monkeypatch, capsys):
+    aif_path = tmp_path / "test.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "x"},
+        "files": {"a.py": {"summary": "old"}},
+        "relationships": {"a.py": {"internal": [], "external": []}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "summary", str(aif_path), "missing.py", "new summary"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    assert "missing.py" in capsys.readouterr().out
+
+
+def test_summary_with_folder_flag_edits_a_folder_summary(tmp_path, monkeypatch, capsys):
+    aif_path = tmp_path / "test.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "x"},
+        "files": {"a.py": {"summary": "old"}},
+        "folders": {".": {"summary": "old folder summary", "confidence": 1.0}},
+        "relationships": {"a.py": {"internal": [], "external": []}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "summary", str(aif_path), ".", "new folder summary", "--folder"])
+
+    cli.main()
+
+    saved = json.loads(aif_path.read_text(encoding="utf-8"))
+    assert saved["folders"]["."]["summary"] == "new folder summary"
+
+
+def test_summary_never_touches_unrelated_aif_fields(tmp_path, monkeypatch):
+    aif_path = tmp_path / "test.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "x", "prompt": "some AI guide"},
+        "rules": ["a rule"],
+        "files": {"a.py": {"summary": "old"}},
+        "relationships": {"a.py": {"internal": [], "external": []}},
+    }), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "summary", str(aif_path), "a.py", "new summary"])
+
+    cli.main()
+
+    saved = json.loads(aif_path.read_text(encoding="utf-8"))
+    assert saved["project"]["prompt"] == "some AI guide"
+    assert saved["rules"] == ["a rule"]
+
+
+def test_summary_on_a_missing_aif_path_errors_out(tmp_path, monkeypatch):
+    missing = tmp_path / "does-not-exist.json"
+    monkeypatch.setattr(sys, "argv", ["cli.py", "summary", str(missing), "a.py", "new summary"])
 
     with pytest.raises(SystemExit) as exc_info:
         cli.main()
