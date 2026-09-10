@@ -181,6 +181,30 @@ def scope_from_aif(aif: dict) -> tuple[list[str] | None, list[str] | None]:
     return scope.get("include") or None, scope.get("ignore") or None
 
 
+def cache_path_for_aif(aif_path: str) -> Path:
+    """<name>.cache.json, the sibling save_aif() (packager.py) writes next
+    to <name>.json under the same stem. The one place this forward
+    direction is derived -- query_service.py's _cache_path() and cli.py's
+    _cmd_skill() used to each re-derive it inline, a real duplication risk
+    caught by code review (a future versioned-cache-filename change would
+    only get applied to whichever copy a maintainer happened to touch).
+    """
+    p = Path(aif_path)
+    return p.with_name(f"{p.stem}.cache.json")
+
+
+def aif_path_for_cache(cache_path: str) -> Path | None:
+    """The reverse of cache_path_for_aif(): <name>.json for a given
+    <name>.cache.json, or None if `cache_path` doesn't actually end in
+    that suffix (cli.py's _cmd_freshness() accepts any manifest file by
+    path, not necessarily one following the convention).
+    """
+    p = Path(cache_path)
+    if not p.name.endswith(".cache.json"):
+        return None
+    return p.with_name(p.name[: -len(".cache.json")] + ".json")
+
+
 def load_pack_scope(aif_path: str) -> tuple[list[str] | None, list[str] | None]:
     """Reads back aif.json's own `project.scope` (packager.pack()'s record
     of the one-off --include/--ignore CLI extras that pack ran with, see

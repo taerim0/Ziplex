@@ -8,6 +8,7 @@ be re-resolved per call instead of cached at construction).
 """
 
 import json
+import threading
 
 import requests
 
@@ -430,17 +431,42 @@ def test_generate_gives_up_gracefully_after_repeated_transport_failures(monkeypa
     assert provider.generate("prompt", retry=2) == "{}"
 
 
-def test_generate_uses_shared_session(monkeypatch):
+def test_generate_uses_pooled_session(monkeypatch):
     called = []
 
     def fake_session_post(url, **kwargs):
         called.append(url)
         return _FakeResponse({"candidates": [{"content": {"parts": [{"text": "{}"}]}}]})
 
-    monkeypatch.setattr(llm._session, "post", fake_session_post)
+    monkeypatch.setattr(llm._get_session(), "post", fake_session_post)
     provider = llm.GeminiProvider(api_key="x")
     provider.generate("prompt")
 
     assert len(called) == 1
     assert "generativelanguage.googleapis.com" in called[0]
+
+
+def test_get_session_reused_within_thread():
+    # Same thread -> same pooled Session instance, so Keep-Alive connections
+    # actually get reused across the several calls one summarizer worker
+    # thread makes over its lifetime.
+    assert llm._get_session() is llm._get_session()
+
+
+def test_get_session_separate_per_thread():
+    # Different threads must never share a Session -- see llm.py's own
+    # comment on why (a shared CookieJar mutated from concurrent threads).
+    sessions = {}
+
+    def capture(name):
+        sessions[name] = llm._get_session()
+
+    t1 = threading.Thread(target=capture, args=("a",))
+    t2 = threading.Thread(target=capture, args=("b",))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert sessions["a"] is not sessions["b"]
 

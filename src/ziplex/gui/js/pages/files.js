@@ -8,6 +8,85 @@
 import { app, nav, el, api, apiPost, getAif, getProject, setStale, showError, showLoading, confidenceLevel, copyButton, startStaleWatch } from "../app.js";
 import { t } from "../i18n.js";
 
+// Shared inline summary editor: a read-only display element + ✏️ edit
+// button that swaps to a textarea + Save/Cancel in place, POSTing the new
+// text on save -- used by both folderNode()'s per-folder editor and
+// renderFileDetail()'s per-file editor below. These used to be two
+// near-identical copy-pasted implementations of the same read-only/edit-
+// mode toggle, trim/no-op-if-unchanged guard, and try/catch-into-inline-
+// error pattern (a real duplication risk caught by code review: a fix to
+// this shared behavior -- a loading state, say -- had to be applied by
+// hand to both, and the two copies could silently drift with nothing
+// tying them together). Layout stays caller-supplied (tag/class/rows/
+// display formatting, and how the edit controls are grouped) since the
+// two widgets sit in genuinely different DOM shapes -- a folder's
+// <summary> disclosure row vs. a file's standalone section -- only the
+// editing *behavior* is shared here.
+function createSummaryEditor({
+  getValue,
+  formatDisplay = (v) => v,
+  displayTag = "span",
+  displayClass = "",
+  editBtnClass = "secondary",
+  rows = "3",
+  onSave,
+  stopPropagation = false,
+  buildEditRow,
+}) {
+  const displayEl = el(displayTag, { class: displayClass });
+  const errorEl = el("p", { class: "error hidden" });
+  const editBtn = el("button", { class: editBtnClass, text: t("fileDetail.editSummary") });
+  const textarea = el("textarea", { rows });
+  const saveBtn = el("button", { text: t("fileDetail.saveSummary") });
+  const cancelBtn = el("button", { class: "secondary", text: t("fileDetail.cancelEdit") });
+  const editRow = buildEditRow(textarea, saveBtn, cancelBtn);
+
+  function showReadOnly() {
+    displayEl.textContent = formatDisplay(getValue());
+    displayEl.classList.remove("hidden");
+    editRow.classList.add("hidden");
+    editBtn.classList.remove("hidden");
+    errorEl.classList.add("hidden");
+  }
+
+  // stopPropagation is folderNode's own extra need: a folder row is a
+  // native <details>/<summary> disclosure that toggles open/closed on any
+  // click, so its own edit controls have to swallow the click (and
+  // preventDefault(), which is what actually suppresses <summary>'s
+  // native toggle) before it bubbles and collapses the row being edited.
+  function guarded(handler) {
+    return (e) => {
+      if (stopPropagation) { e.preventDefault(); e.stopPropagation(); }
+      handler();
+    };
+  }
+  if (stopPropagation) editRow.addEventListener("click", (e) => e.stopPropagation());
+
+  editBtn.addEventListener("click", guarded(() => {
+    textarea.value = getValue();
+    displayEl.classList.add("hidden");
+    editBtn.classList.add("hidden");
+    editRow.classList.remove("hidden");
+    textarea.focus();
+  }));
+  cancelBtn.addEventListener("click", guarded(showReadOnly));
+  saveBtn.addEventListener("click", guarded(async () => {
+    const newValue = textarea.value.trim();
+    if (!newValue || newValue === getValue()) { showReadOnly(); return; }
+    errorEl.classList.add("hidden");
+    try {
+      await onSave(newValue);
+      showReadOnly();
+    } catch (err) {
+      errorEl.textContent = String(err.message || err);
+      errorEl.classList.remove("hidden");
+    }
+  }));
+
+  showReadOnly();
+  return { displayEl, errorEl, editBtn, editRow };
+}
+
 // Groups a flat {name: {...}} map into a nested {folders: {name: node},
 // files: [name, ...]} tree by path segment -- mirrors folder_summary.py's
 // own group_files_by_folder() one level at a time (each file lands under
@@ -112,65 +191,27 @@ export async function renderFiles() {
       // (the toggle is that click event's default action) -- every other
       // click on the row (the folder name, the description text) still
       // toggles exactly as before.
-      const descSpan = el("span", { class: "muted tree-desc" });
-      const setDescText = () => { descSpan.textContent = folders[path]?.summary ? ` — ${folders[path].summary}` : ""; };
-      setDescText();
-      const folderError = el("p", { class: "error hidden" });
-      const editBtn = el("button", { class: "secondary tree-edit-btn", text: t("fileDetail.editSummary") });
-      const textarea = el("textarea", { rows: "2" });
-      const saveBtn = el("button", { text: t("fileDetail.saveSummary") });
-      const cancelBtn = el("button", { class: "secondary", text: t("fileDetail.cancelEdit") });
-      const editWrap = el("span", { class: "tree-folder-edit hidden" }, [textarea, saveBtn, cancelBtn]);
-
-      function showFolderReadOnly() {
-        setDescText();
-        descSpan.classList.remove("hidden");
-        editWrap.classList.add("hidden");
-        editBtn.classList.remove("hidden");
-        folderError.classList.add("hidden");
-      }
-      // stopPropagation() here too: without it, a click that lands on the
-      // edit form's own background (not a button) while it's open would
-      // still bubble up and toggle the folder -- collapsing the very row
-      // whose form the user is typing into.
-      editWrap.addEventListener("click", (e) => e.stopPropagation());
-      editBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        textarea.value = folders[path]?.summary || "";
-        descSpan.classList.add("hidden");
-        editBtn.classList.add("hidden");
-        editWrap.classList.remove("hidden");
-        textarea.focus();
-      });
-      cancelBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        showFolderReadOnly();
-      });
-      saveBtn.addEventListener("click", async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const newSummary = textarea.value.trim();
-        if (!newSummary || newSummary === folders[path]?.summary) { showFolderReadOnly(); return; }
-        folderError.classList.add("hidden");
-        try {
+      const editor = createSummaryEditor({
+        getValue: () => folders[path]?.summary || "",
+        formatDisplay: (v) => v ? ` — ${v}` : "",
+        displayClass: "muted tree-desc",
+        editBtnClass: "secondary tree-edit-btn",
+        rows: "2",
+        stopPropagation: true,
+        buildEditRow: (textarea, saveBtn, cancelBtn) => el("span", { class: "tree-folder-edit" }, [textarea, saveBtn, cancelBtn]),
+        onSave: async (newSummary) => {
           await apiPost("/api/folders/summary", { aif_path: getAif(), folder: path, summary: newSummary });
           folders[path] = { ...(folders[path] || {}), summary: newSummary };
-          showFolderReadOnly();
-        } catch (err) {
-          folderError.textContent = String(err.message || err);
-          folderError.classList.remove("hidden");
-        }
+        },
       });
 
       const label = el("summary", {}, [
         el("span", { text: "📁 " }),
         el("span", { class: "tree-name tree-name-fixed", text: displayName }),
-        descSpan,
-        editBtn,
-        editWrap,
-        folderError,
+        editor.displayEl,
+        editor.editBtn,
+        editor.editRow,
+        editor.errorEl,
       ]);
       return el("details", { class: "tree-node", open: "" }, [
         label,
@@ -235,42 +276,16 @@ export async function renderFileDetail(name, params) {
     // read-only <p> for a textarea + Save/Cancel in place, no page
     // navigation. `info.summary` is mutated in place on a successful save
     // so fullText()'s Copy button reflects the edit without a re-fetch.
-    const summaryText = el("p", { text: info.summary || "" });
-    const summaryError = el("p", { class: "error hidden" });
-    const editBtn = el("button", { class: "secondary", text: t("fileDetail.editSummary") });
-    const summarySection = el("div", {}, [summaryText, summaryError, editBtn]);
-
-    editBtn.addEventListener("click", () => {
-      const textarea = el("textarea", { rows: "3" });
-      textarea.value = info.summary || "";
-      const saveBtn = el("button", { text: t("fileDetail.saveSummary") });
-      const cancelBtn = el("button", { class: "secondary", text: t("fileDetail.cancelEdit") });
-
-      function showReadOnly() {
-        summarySection.innerHTML = "";
-        summaryText.textContent = info.summary || "";
-        summaryError.classList.add("hidden");
-        summarySection.append(summaryText, summaryError, editBtn);
-      }
-      cancelBtn.addEventListener("click", showReadOnly);
-      saveBtn.addEventListener("click", async () => {
-        const newSummary = textarea.value.trim();
-        if (!newSummary || newSummary === info.summary) { showReadOnly(); return; }
-        summaryError.classList.add("hidden");
-        try {
-          await apiPost("/api/files/summary", { aif_path: getAif(), file: name, summary: newSummary });
-          info.summary = newSummary;
-          showReadOnly();
-        } catch (err) {
-          summaryError.textContent = String(err.message || err);
-          summaryError.classList.remove("hidden");
-        }
-      });
-
-      summarySection.innerHTML = "";
-      summarySection.append(textarea, el("div", { class: "toolbar" }, [saveBtn, cancelBtn]), summaryError);
-      textarea.focus();
+    const editor = createSummaryEditor({
+      getValue: () => info.summary || "",
+      displayTag: "p",
+      buildEditRow: (textarea, saveBtn, cancelBtn) => el("div", {}, [textarea, el("div", { class: "toolbar" }, [saveBtn, cancelBtn])]),
+      onSave: async (newSummary) => {
+        await apiPost("/api/files/summary", { aif_path: getAif(), file: name, summary: newSummary });
+        info.summary = newSummary;
+      },
     });
+    const summarySection = el("div", {}, [editor.displayEl, editor.editBtn, editor.editRow, editor.errorEl]);
 
     // A dependent/blast-radius entry reached only via text_references.py's
     // filename-mention matching (a README naming this file, a Godot scene's

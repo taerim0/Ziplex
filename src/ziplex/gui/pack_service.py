@@ -699,10 +699,16 @@ def remove_dependency_in_job(job_id: str, file_name: str, target: str) -> dict:
         return build_tree(job["aif"]["files"])
 
 
-def _edit_saved_relationships(aif_path: str, edit) -> dict:
-    """Shared load/mutate/save for link_saved_relationship()/
-    unlink_saved_relationship() below -- `edit(relationships) -> relationships`
-    does the actual add_relationship()/remove_relationship() call.
+def _edit_saved_aif(aif_path: str, edit) -> dict:
+    """Shared load/mutate/save primitive for every post-pack, no-live-job
+    edit below (link/unlink_saved_relationship(), edit_saved_summary(),
+    edit_saved_folder_summary()) -- `edit(aif) -> aif` mutates the whole
+    already-parsed aif dict, the same calling convention edits.py's setters
+    (set_file_summary()/set_folder_summary()) and submit_review() already
+    use. _edit_saved_relationships() below is the one caller narrowing this
+    to just the `relationships` sub-dict, for file/relationship.py's
+    add_relationship()/remove_relationship() functions, which take and
+    return `relationships` alone rather than the whole aif.
 
     Deliberately does NOT go through packager.save_aif(): that function
     expects the *in-progress* pack shape (splitting each file's `compressed`
@@ -710,25 +716,43 @@ def _edit_saved_relationships(aif_path: str, edit) -> dict:
     neither of which exists any more on an aif.json already written by a
     finished pack. Calling it on a freshly-reloaded, already-finalized aif
     would overwrite detail.json with empty `compressed` bodies for every
-    file and wipe cache.json's manifest, purely as a side effect of editing
-    one relationship. This instead reads and rewrites aif.json alone, byte
-    for byte identical apart from the `relationships` field, leaving
+    file and wipe cache.json's manifest, purely as a side effect of one
+    small edit. This instead reads and rewrites aif.json alone, byte for
+    byte identical apart from whatever `edit()` actually changed, leaving
     detail.json/cache.json untouched.
 
     Guarded by _lock_for_path() (see its own comment) so the read-modify-
-    write can't race a concurrent edit to the same file.
+    write can't race a concurrent edit to the same file. This one helper
+    used to be two near-identical copies (one hardcoded to the
+    `relationships` sub-dict, one to the whole aif) -- a real duplication
+    risk caught by code review: a fix to this shared load/lock/write
+    sequence (an atomic-write improvement, say) applied to one had no
+    reason to also touch the other, letting them silently diverge despite
+    every caller treating them as siblings.
     """
     with _lock_for_path(aif_path):
         with open(aif_path, "r", encoding="utf-8") as f:
             aif = json.load(f)
 
-        relationships = edit(aif.get("relationships", {}))
-        aif["relationships"] = relationships
+        aif = edit(aif)
 
         with open(aif_path, "w", encoding="utf-8") as f:
             json.dump(aif, f, ensure_ascii=False, indent=2)
 
-        return relationships
+        return aif
+
+
+def _edit_saved_relationships(aif_path: str, edit) -> dict:
+    """link_saved_relationship()/unlink_saved_relationship()'s own narrowing
+    of _edit_saved_aif() above to just the `relationships` sub-dict --
+    `edit(relationships) -> relationships` does the actual
+    add_relationship()/remove_relationship() call.
+    """
+    def edit_whole_aif(aif: dict) -> dict:
+        aif["relationships"] = edit(aif.get("relationships", {}))
+        return aif
+
+    return _edit_saved_aif(aif_path, edit_whole_aif)["relationships"]
 
 
 def link_saved_relationship(aif_path: str, file_name: str, target: str) -> dict:
@@ -752,32 +776,6 @@ def unlink_saved_relationship(aif_path: str, file_name: str, target: str) -> dic
     reasoning. Wraps file/relationship.remove_relationship().
     """
     return _edit_saved_relationships(aif_path, lambda rel: _remove_relationship(rel, file_name, target))
-
-
-def _edit_saved_aif(aif_path: str, edit) -> dict:
-    """Shared load/mutate/save for edit_saved_summary()/
-    edit_saved_folder_summary() below -- `edit(aif) -> aif` mutates the
-    *whole* already-parsed aif dict, unlike _edit_saved_relationships()'s
-    `edit(relationships) -> relationships` above: edits.py's setters
-    (set_file_summary()/set_folder_summary()) all take and return the whole
-    aif, the same way submit_review() already calls them, so this is that
-    same calling convention rather than a second one just for this.
-
-    Same "not through packager.save_aif()" reasoning as
-    _edit_saved_relationships() (see its own docstring) -- this rewrites
-    aif.json alone, leaving detail.json/cache.json untouched. Same
-    _lock_for_path() guard against a concurrent edit to the same file.
-    """
-    with _lock_for_path(aif_path):
-        with open(aif_path, "r", encoding="utf-8") as f:
-            aif = json.load(f)
-
-        aif = edit(aif)
-
-        with open(aif_path, "w", encoding="utf-8") as f:
-            json.dump(aif, f, ensure_ascii=False, indent=2)
-
-        return aif
 
 
 def edit_saved_summary(aif_path: str, file_name: str, summary: str) -> dict:

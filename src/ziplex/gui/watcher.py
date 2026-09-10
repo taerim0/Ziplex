@@ -109,7 +109,7 @@ class _DebouncedHandler(FileSystemEventHandler):
 
     def _relevant(self, path: str) -> bool:
         try:
-            relative = str(Path(path).relative_to(self._root))
+            relative = Path(path).relative_to(self._root).as_posix()
         except ValueError:
             return True  # not under root somehow -- err toward recomputing rather than silently missing it
         return not self._ignore_spec.match_file(relative)

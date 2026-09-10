@@ -44,6 +44,7 @@ as a real dependency this path is no longer the normal case for any
 supported Python version, just a fallback for a broken install.
 """
 
+import functools
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -79,7 +80,17 @@ def _load_json(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+@functools.lru_cache(maxsize=32)
 def _load_toml(path: Path) -> dict:
+    # Cached because pyproject.toml is read through here twice per
+    # detect_tech_stack() call -- once via _parse_pyproject_toml() (the
+    # dependency list) and once via _pyproject_package_manager() (poetry
+    # vs. pip detection) -- a real, if low-cost, duplicate parse on every
+    # single pack, caught by code review. detect_tech_stack() clears this
+    # cache on entry, so the cache's lifetime never outlives one call and a
+    # manifest edited between two packs of the same project (a real GUI
+    # scenario -- the process stays alive across repacks) is never served
+    # stale content from an earlier call.
     if tomllib is None:
         return {}
     text = _read_text(path)
@@ -405,7 +416,15 @@ def _build_stack_entry(filename: str, language: str, package_manager, manifest_p
         try:
             resolved_package_manager = package_manager(manifest_path)
         except Exception:
-            resolved_package_manager = "poetry/pip"
+            # Generic, not "poetry/pip" -- that label is _pyproject_package_
+            # manager()'s own Python-specific last resort, already returned
+            # from inside that function for every case it actually expects
+            # (this except only ever fires for the callable itself raising
+            # unexpectedly). A hardcoded Python label here would mislabel a
+            # future non-Python manifest that adopts the callable form (a
+            # real gap caught by code review, currently dormant since
+            # pyproject.toml is the only caller today).
+            resolved_package_manager = "unknown"
     else:
         resolved_package_manager = package_manager
 
@@ -443,6 +462,11 @@ def detect_tech_stack(root_path: str) -> list[dict]:
     that one manifest is always the right failure mode for a convenience
     fact block, never a crash that takes down the rest of pack() with it.
     """
+    # Scopes _load_toml()'s memoization (see its own comment) to this one
+    # call -- a fresh detect_tech_stack() run always sees the manifest's
+    # current on-disk content, never a previous call's cached read.
+    _load_toml.cache_clear()
+
     root = Path(root_path)
     stacks = []
     for filename, language, package_manager, parser in _MANIFESTS:

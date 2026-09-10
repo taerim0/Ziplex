@@ -22,7 +22,7 @@ from .file.relationship import (
     build_tree, print_tree as print_dependency_tree, add_relationship, remove_relationship, CycleError,
 )
 from .search import search_files, read_detail_range
-from .freshness import check_freshness_scoped, load_pack_scope, scope_from_aif
+from .freshness import check_freshness_scoped, load_pack_scope, scope_from_aif, cache_path_for_aif, aif_path_for_cache
 from .skill_export import (
     export_skill, resolve_skill_target, read_existing_skill_project_name, resolve_skill_display_name,
 )
@@ -722,17 +722,16 @@ def _cmd_freshness(args) -> None:
     _require_dir_or_exit(args.path)
     manifest = _load_json_or_exit(args.cache_path)
 
-    # <name>.cache.json's sibling <name>.json (same convention
-    # query_service.py's _cache_path() derives in the other direction)
-    # -- read back for its own `project.scope`, so a project packed
-    # with a one-off `pack --include`/`--ignore` extra doesn't get
-    # diffed here against an unscoped file tree. Best-effort: any
-    # naming mismatch or read failure just means no extra scope, same
-    # as an aif.json packed before this field existed.
-    cache_path = Path(args.cache_path)
+    # <name>.cache.json's sibling <name>.json (freshness.aif_path_for_cache(),
+    # the reverse of _cmd_skill()'s own cache_path_for_aif() call below) --
+    # read back for its own `project.scope`, so a project packed with a
+    # one-off `pack --include`/`--ignore` extra doesn't get diffed here
+    # against an unscoped file tree. Best-effort: any naming mismatch or
+    # read failure just means no extra scope, same as an aif.json packed
+    # before this field existed.
     extra_include = extra_ignore = None
-    if cache_path.name.endswith(".cache.json"):
-        aif_path = cache_path.with_name(cache_path.name[: -len(".cache.json")] + ".json")
+    aif_path = aif_path_for_cache(args.cache_path)
+    if aif_path is not None:
         extra_include, extra_ignore = load_pack_scope(str(aif_path))
 
     report = check_freshness_scoped(args.path, manifest, extra_include, extra_ignore)
@@ -776,8 +775,7 @@ def _cmd_skill(args) -> None:
 
     if args.project:
         _require_dir_or_exit(args.project)
-        aif_path = Path(args.aif_path)
-        cache_path = aif_path.with_name(f"{aif_path.stem}.cache.json")
+        cache_path = cache_path_for_aif(args.aif_path)
         # Best-effort, same as _cmd_freshness()'s own sibling-file lookup --
         # a missing/corrupt cache.json (an aif.json moved/renamed away from
         # its siblings, or one produced by a pre-cache.json version of

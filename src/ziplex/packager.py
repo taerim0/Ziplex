@@ -911,8 +911,13 @@ def pack(
         root_path, use_cache, discard_checkpoint, interactive, preselected, use_llm, lang,
     )
 
-    # Steps 1-3: collect -> security scan -> select.
-    selected, dangerous, included_anyway = _select_files(
+    # Steps 1-3: collect -> security scan -> select. _select_files()'s own
+    # included_anyway isn't used here -- _compute_security_scan() below
+    # recomputes the equivalent set from `selected`/`dangerous` directly
+    # instead (see that function's own docstring for why), so this third
+    # return value was dead state left over from the pack()/main()
+    # decomposition, a real gap caught by code review.
+    selected, dangerous, _included_anyway = _select_files(
         root_path, root, include, ignore, auto, interactive, preselected,
     )
 

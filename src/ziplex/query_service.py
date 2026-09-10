@@ -24,7 +24,7 @@ from .file.relationship import (
 )
 from .file.textutil import parent_folder
 from .search import search_files, read_detail_range
-from .freshness import check_freshness_scoped, load_pack_scope
+from .freshness import check_freshness_scoped, load_pack_scope, cache_path_for_aif
 from .config import collect_and_scan
 
 
@@ -79,9 +79,12 @@ def _detail_path(aif_path: str) -> Path:
 
 
 def _cache_path(aif_path: str) -> Path:
-    """<name>.cache.json, same sibling-file convention as _detail_path()."""
-    p = Path(aif_path)
-    return p.with_name(f"{p.stem}.cache.json")
+    """<name>.cache.json, same sibling-file convention as _detail_path().
+    Thin wrapper over freshness.cache_path_for_aif() -- the actual
+    convention lives there now, shared with cli.py, so it can't drift
+    between the two (a real duplication risk caught by code review).
+    """
+    return cache_path_for_aif(aif_path)
 
 
 def _stale_warning(project_path: str | None, aif_path: str) -> dict | None:
@@ -295,17 +298,20 @@ def get_relationships(aif_path: str, files: list[str] | None = None) -> dict:
     size" problem list_files()'s own folder/confidence_below params
     address, and the more expensive of the two: measured directly against
     Ziplex's own 115-file self-pack, an unscoped call here costs ~9,400
-    tokens, the single priciest of the nine tools. A name not present in
-    `relationships` is silently skipped rather than raising -- a caller
-    filtering here is narrowing a graph it can already see the keys of
-    (typically via list_files()), not looking one up blind the way
-    get_detail() does.
+    tokens, the single priciest of the nine tools. Each name is normalized
+    ('\\' -> '/') the same way get_dependents()/get_blast_radius() do,
+    since it's matched against relationships' own '/'-separated keys. A
+    name not present in `relationships` (after normalization) is silently
+    skipped rather than raising -- a caller filtering here is narrowing a
+    graph it can already see the keys of (typically via list_files()), not
+    looking one up blind the way get_detail() does.
     """
     aif = _load_json(aif_path)
     relationships = aif.get("relationships", {})
     if files is None:
         return relationships
-    return {name: relationships[name] for name in files if name in relationships}
+    normalized = (_normalize_path_arg(name) for name in files)
+    return {name: relationships[name] for name in normalized if name in relationships}
 
 
 def get_dependents(aif_path: str, file: str, include_text_refs: bool = True) -> list[str]:

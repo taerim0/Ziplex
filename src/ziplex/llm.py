@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import threading
 import time
 from typing import Protocol
 
@@ -26,20 +27,39 @@ load_dotenv()
 # -- it flows straight into the existing transient-failure retry below.
 REQUEST_TIMEOUT = 60
 
-# Shared session for HTTP Keep-Alive connection pooling across provider requests.
-# requests.Session uses urllib3.PoolManager under the hood, which is thread-safe
-# and reuses established TCP/TLS connections to each host across worker threads.
-_session = requests.Session()
+# One requests.Session per worker thread, for HTTP Keep-Alive connection
+# pooling across the several calls each summarizer thread makes over its
+# lifetime. A single *shared* Session used to sit here instead, on the
+# reasoning that urllib3.PoolManager (which it wraps) is thread-safe -- true
+# for the connection pool itself, but Session.post() also extracts/merges
+# response cookies into the Session's own CookieJar on every call
+# (requests.sessions.Session.send()), and http.cookiejar.CookieJar is not
+# documented thread-safe. summarizer.py's MAX_WORKERS-sized ThreadPoolExecutor
+# calls generate() from multiple threads at once, which used to mutate that
+# one CookieJar concurrently -- a real latent race, caught by code review,
+# even though none of these JSON APIs actually need cookies. threading.local()
+# keeps the pooling benefit within a thread while giving each thread its own
+# jar to race with only itself.
+_thread_local = threading.local()
 _ORIGINAL_REQUESTS_POST = requests.post
 
 
+def _get_session() -> requests.Session:
+    session = getattr(_thread_local, "session", None)
+    if session is None:
+        session = requests.Session()
+        _thread_local.session = session
+    return session
+
+
 def _post(url: str, **kwargs) -> requests.Response:
-    """Helper to perform HTTP POST requests using the shared connection-pooling session.
-    Honors monkeypatched requests.post (e.g. in test suites).
+    """Helper to perform HTTP POST requests using this thread's own
+    connection-pooling session. Honors monkeypatched requests.post (e.g. in
+    test suites).
     """
     if requests.post is not _ORIGINAL_REQUESTS_POST:
         return requests.post(url, **kwargs)
-    return _session.post(url, **kwargs)
+    return _get_session().post(url, **kwargs)
 
 # Supported packed-content languages -- what a summary/rule/AI-guide value
 # actually gets *written in*, independent of the GUI's own display-language
