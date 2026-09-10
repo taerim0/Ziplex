@@ -4,7 +4,7 @@ Windows, see _scan_with_secretlint()'s own docstring) never actually runs;
 every real invocation in this suite exercises the fallback path.
 """
 
-from ziplex.file.scanner import scan_file, scan_files
+from ziplex.file.scanner import scan_file, scan_files, _looks_like_a_real_secret
 
 
 def _write(path, content):
@@ -31,9 +31,12 @@ def test_scan_file_reports_the_matched_line_not_the_whole_file(tmp_path):
 
 def test_scan_file_matches_the_first_triggering_line(tmp_path):
     # two lines would both match different patterns -- the first one found
-    # wins, not an arbitrary one, so the reported line is deterministic
+    # wins, not an arbitrary one, so the reported line is deterministic.
+    # Values long enough (3+ chars) to not also trip the too-short-to-be-a-
+    # real-credential guard -- see _looks_like_a_real_secret()'s own test
+    # for that guard specifically.
     path = tmp_path / "multi.env"
-    _write(path, 'PASSWORD = "x"\nAPI_KEY = "y"\n')
+    _write(path, 'PASSWORD = "hunter2"\nAPI_KEY = "abc123"\n')
 
     result = scan_file(str(path))
     assert result["line"] == 1
@@ -96,6 +99,68 @@ def test_scan_file_treats_a_recognized_media_asset_as_always_safe(tmp_path, monk
     path.write_bytes(bytes(range(256)))
 
     assert scan_file(str(path)) is None
+
+
+# The pattern fallback's false-positive fixes, found dogfooding Ziplex on
+# its own repo -- every one of a real pack's 17 flagged files (before this
+# fix) turned out to be one of the two shapes below, never an actual
+# secret. Unit-tested directly against _looks_like_a_real_secret() rather
+# than through scan_file() -- these are about the *value* judgment, not
+# the file-scanning plumbing the tests above already cover.
+
+def test_ellipsis_placeholder_is_not_a_real_secret():
+    # A doc's own setup instruction ("Requires a `.env` with
+    # `GEMINI_API_KEY=...`") tells a *reader* to put their own key there --
+    # not a leaked one.
+    assert _looks_like_a_real_secret("...", "API_KEY") is False
+
+
+def test_scan_file_does_not_flag_a_doc_placeholder_glued_to_trailing_punctuation(tmp_path):
+    # Real false positive: a Markdown code span's closing backtick (or, in
+    # a Korean sentence, a particle glued directly onto it with no space)
+    # used to get swept into the captured "value" by a bare `\S+` capture,
+    # so the value was never recognized as just "...".
+    path = tmp_path / "README.md"
+    _write(path, "Requires a `.env` with `GEMINI_API_KEY=...`를 추가하세요.\n")
+    assert scan_file(str(path)) is None
+
+
+def test_unquoted_self_reference_is_not_a_real_secret():
+    # "self._explicit_api_key = api_key" -- assigning a variable to
+    # another similarly-named variable is a code reference, never a
+    # literal credential value, even though "api_key" is shaped exactly
+    # like a plausible unquoted .env value on its own.
+    assert _looks_like_a_real_secret("api_key", "API_KEY") is False
+
+
+def test_unquoted_dotted_self_reference_is_not_a_real_secret():
+    # "body.gemini_api_key = apiKeyInput.value.trim()" -- the captured
+    # value ("apiKeyInput.value.trim") contains the keyword too, just
+    # embedded in a longer dotted expression.
+    assert _looks_like_a_real_secret("apiKeyInput.value.trim", "API_KEY") is False
+
+
+def test_unquoted_unrelated_value_is_still_a_real_secret():
+    # The self-reference check must not become "reject every bare
+    # identifier-shaped unquoted value" -- .env's own convention
+    # (API_KEY=abc123, no quotes) has to keep matching, since a real
+    # secret's text essentially never happens to spell out the name of the
+    # field holding it.
+    assert _looks_like_a_real_secret("abc123", "API_KEY") is True
+
+
+def test_scan_file_does_not_flag_a_code_expression_assigned_to_a_similarly_named_variable(tmp_path):
+    path = tmp_path / "provider.py"
+    _write(path, "        self._explicit_api_key = api_key\n")
+    assert scan_file(str(path)) is None
+
+
+def test_short_value_is_not_a_real_secret_quoted_or_not():
+    # A 1-2 character placeholder ("x", common in tests unrelated to
+    # secret-scanning itself) is too short to plausibly be a real
+    # credential either way.
+    assert _looks_like_a_real_secret('"x"', "API_KEY") is False
+    assert _looks_like_a_real_secret("x", "API_KEY") is False
 
 
 def test_scan_file_trusts_a_clean_secretlint_result_without_falling_back(tmp_path, monkeypatch):

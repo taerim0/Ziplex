@@ -5,20 +5,93 @@ import re
 from ..file.textutil import read_text
 from .media import classify_media_file
 
-# fallback patterns used when secretlint fails/isn't available.
-# `\S` (not a mandatory quote) after "=" so a standard unquoted dotenv
-# assignment (API_KEY=sk-live-abc123, no quotes at all) matches too --
-# a quote-only pattern used to require API_KEY="..."/API_KEY='...' and
-# silently let the far more common unquoted convention straight through.
-SENSITIVE_PATTERNS = [
-    r'AWS_SECRET\s*=\s*\S',
-    r'API_KEY\s*=\s*\S',
-    r'PASSWORD\s*=\s*\S',
-    r'SECRET_KEY\s*=\s*\S',
-    r'PRIVATE_KEY\s*=\s*\S',
-    r'ACCESS_TOKEN\s*=\s*\S',
-    r'DATABASE_URL\s*=\s*\S',
+# fallback keyword/pattern pairs used when secretlint fails/isn't
+# available. Each pattern captures just the plausible *value* token right
+# after "=" as group 1 -- a quoted string, or an unquoted run limited to
+# characters a real key/path/hostname could actually contain
+# ([A-Za-z0-9_.-/:+]) -- not the rest of the line, and not a bare `\S+`
+# either: both would sweep up trailing punctuation/prose that isn't part of
+# the value at all (a Markdown code span's closing backtick, a Korean
+# particle glued directly onto it with no space -- `GEMINI_API_KEY=...`를 --,
+# a trailing comma/semicolon/paren), which used to keep a doc's placeholder
+# ellipsis or a code expression from ever being recognized as just that.
+# `_looks_like_a_real_secret()` below judges the cleanly-isolated value;
+# unquoted still has to be supported at all (not quote-only) so a standard
+# .env-style assignment (API_KEY=sk-live-abc123, no quotes) keeps matching.
+_VALUE_FRAGMENT = r'("[^"]*"|\'[^\']*\'|[A-Za-z0-9_.\-/:+]+)'
+_SENSITIVE_KEYWORDS = [
+    "AWS_SECRET", "API_KEY", "PASSWORD", "SECRET_KEY",
+    "PRIVATE_KEY", "ACCESS_TOKEN", "DATABASE_URL",
 ]
+SENSITIVE_PATTERNS = [rf'{keyword}\s*=\s*{_VALUE_FRAGMENT}' for keyword in _SENSITIVE_KEYWORDS]
+
+# Values these patterns must not flag on their own, case-insensitively --
+# a real placeholder/reference rather than an actual secret, not a
+# judgment call about entropy or format. Verified directly dogfooding
+# Ziplex on its own repo: every one of a real pack's 17 flagged files
+# turned out to be one of these shapes, never an actual secret.
+_PLACEHOLDER_VALUES = {
+    "...", "…", "todo", "tbd", "n/a", "none", "null", "xxx", "changeme",
+    "change_me", "your_key_here", "your_api_key_here", "placeholder", "example",
+}
+
+_NON_WORD_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _normalize_for_self_reference(value: str) -> str:
+    """Lowercased, non-alphanumerics stripped -- "api_key", "apiKey", and
+    "API-KEY" all collapse to "apikey" so a substring check against a
+    keyword catches any of them the same way.
+    """
+    return _NON_WORD_RE.sub("", value.lower())
+
+
+def _looks_like_a_real_secret(raw_value: str, keyword: str) -> bool:
+    """False for the two false-positive shapes found dogfooding Ziplex on
+    its own repo -- a doc's placeholder ellipsis (`GEMINI_API_KEY=...`,
+    telling a *reader* to put their own key there, not a leaked one) and an
+    unquoted value that's really a reference to another similarly-named
+    variable (`self._explicit_api_key = api_key`, `body.gemini_api_key =
+    apiKeyInput.value.trim()`) rather than a literal. True for anything
+    else, including a quoted placeholder-shaped test value like `"abc123"`
+    -- this stays a heuristic, not a verifier (see this module's own
+    docstring), and a project's own security-scanner test fixtures
+    *should* still trip it the same way a real secret would; a human
+    reviewing "why was this flagged" already has the full matched line to
+    judge that from (file/selector.py's review_dangerous_files()).
+
+    The self-reference check specifically looks for `keyword` (normalized,
+    see _normalize_for_self_reference()) appearing *inside* the unquoted
+    value itself -- e.g. "apiKeyInput" contains "apikey" -- rather than
+    rejecting every bare identifier-shaped unquoted value outright: a real
+    unquoted secret (.env's own convention, `API_KEY=abc123`) is
+    indistinguishable in shape from a bare variable reference
+    (`API_KEY=api_key`) by itself, but a real secret's *text* essentially
+    never happens to spell out the name of the field holding it.
+    """
+    value = raw_value.strip()
+    quoted = bool(value) and value[0] in ("'", '"')
+    if quoted:
+        quote = value[0]
+        end = value.find(quote, 1)
+        value = value[1:end] if end != -1 else value[1:]
+        value = value.strip()
+    if not value or value.strip(".…") == "":
+        return False  # empty, or a bare run of "..."/"…"
+    if value.lower() in _PLACEHOLDER_VALUES:
+        return False
+    if len(value) <= 2:
+        # Too short to plausibly be a real credential, quoted or not -- a
+        # 1-2 character placeholder like "x", common in tests unrelated to
+        # secret-scanning itself (e.g. GeminiProvider(api_key="x") in a
+        # model-resolution test, or GEMINI_API_KEY=x in a doctor.py fixture).
+        return False
+    if quoted:
+        # A quoted value ("abc123", "api_key") is unambiguously a string
+        # literal already, syntactically -- the self-reference check below
+        # is for the unquoted case only.
+        return True
+    return _normalize_for_self_reference(keyword) not in _normalize_for_self_reference(value)
 
 
 def _line_at(file_path: str, line: int | None) -> str | None:
@@ -104,8 +177,9 @@ def _scan_with_pattern(file_path: str) -> dict | None:
     # expects the earliest suspicious line in the file, not whichever
     # pattern this list happened to check first across the whole file.
     for lineno, line in enumerate(content.splitlines(), 1):
-        for pattern in SENSITIVE_PATTERNS:
-            if re.search(pattern, line, re.IGNORECASE):
+        for keyword, pattern in zip(_SENSITIVE_KEYWORDS, SENSITIVE_PATTERNS):
+            match = re.search(pattern, line, re.IGNORECASE)
+            if match and _looks_like_a_real_secret(match.group(1), keyword):
                 return {"reason": f"패턴 일치: {pattern}", "line": lineno, "matched_text": line}
     return None
 
