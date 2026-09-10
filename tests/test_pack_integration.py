@@ -542,6 +542,10 @@ def test_pack_attaches_folder_summaries(tmp_path, monkeypatch):
     # independently verified signal -- present regardless of value.
     assert isinstance(aif["folders"]["."]["confidence"], float)
     assert isinstance(aif["folders"]["src"]["confidence"], float)
+    # How many files that one summary sentence is standing in for -- both
+    # folders here have exactly one file each.
+    assert aif["folders"]["."]["file_count"] == 1
+    assert aif["folders"]["src"]["file_count"] == 1
 
     # survives finalize_aif() the same way tech_stack does -- not a
     # per-file field it prunes

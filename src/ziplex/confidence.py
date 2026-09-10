@@ -35,6 +35,52 @@ _STOPWORDS = {
     "and", "to", "in", "on", "this", "that", "with", "it",
 }
 
+# A short, fixed list of generic English abbreviations every codebase uses --
+# the opposite of the domain-specific glossary this module's own docstring
+# already rejects as unbounded/unmaintainable (a domain glossary only ever
+# covers generic vocabulary, never a project's own terms). Verified
+# necessary against a real false positive found dogfooding Ziplex on its
+# own repo: gui/js/i18n.js's real signatures are just getLang/setLang/t/
+# applyStaticI18n, and its accurate summary ("Handles multi-language
+# internationalization, translation string lookups...") scored 0.0
+# confidence purely because "lang" never equals "language" as plain
+# strings. Keyed on the *full* word (post pluralization-stem, see _stem()
+# below) -> its short form, so both sides of an overlap check collapse to
+# the same token regardless of which form a real identifier or summary
+# happened to use. A couple of entries are the plural full form's own
+# mis-stemmed output (_stem() only strips a single trailing "s", so
+# "utilities"/"directories"/"repositories" land on "utilitie"/"directorie"/
+# "repositorie", not the singular) -- mapped here too rather than fixing
+# the stemmer's own separately-scoped "-ies" limitation.
+_ABBREVIATIONS = {
+    "language": "lang",
+    "configuration": "config",
+    "authentication": "auth",
+    "authorization": "auth",
+    "initialize": "init",
+    "initialization": "init",
+    "database": "db",
+    "argument": "arg",
+    "parameter": "param",
+    "identifier": "id",
+    "identification": "id",
+    "application": "app",
+    "utility": "util",
+    "utilitie": "util",
+    "directory": "dir",
+    "directorie": "dir",
+    "environment": "env",
+    "reference": "ref",
+    "documentation": "doc",
+    "specification": "spec",
+    "repository": "repo",
+    "repositorie": "repo",
+    "temporary": "temp",
+    "message": "msg",
+    "number": "num",
+    "information": "info",
+}
+
 
 def _stem(word: str) -> str:
     """Strips a single trailing "s" so "register"/"registers",
@@ -42,7 +88,9 @@ def _stem(word: str) -> str:
     against real Gemini output: "Defines and *registers* configuration..."
     for a file whose only extracted signature is literally `register()`
     scored 0.0 confidence without this, a false positive from grammatical
-    agreement alone, not an actually questionable summary.
+    agreement alone, not an actually questionable summary. Then collapses
+    onto _ABBREVIATIONS' canonical short form when the word is one of
+    those known generic-abbreviation pairs (see that dict's own comment).
 
     Deliberately minimal: just the single most common mismatch, not real
     stemming (no "-ing"/"-ed"/"-ies" handling). Applied identically to both
@@ -50,8 +98,8 @@ def _stem(word: str) -> str:
     than the two sides staying consistent with each other.
     """
     if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
-        return word[:-1]
-    return word
+        word = word[:-1]
+    return _ABBREVIATIONS.get(word, word)
 
 
 def _tokenize(text: str) -> set[str]:

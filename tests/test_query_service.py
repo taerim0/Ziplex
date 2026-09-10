@@ -129,6 +129,35 @@ def test_get_folders_returns_empty_dict_for_an_aif_json_packed_before_this_field
     assert query_service.get_folders(str(aif_path)) == {}
 
 
+def test_get_overview_confidence_summary_rolls_up_per_file_scores(tmp_path):
+    # A real gap found dogfooding Ziplex on its own repo: finding out how
+    # much of a pack needs review took a separate list_files(confidence_
+    # below=...) call -- get_overview() should answer "is this pack worth
+    # trusting" from the same call that already reports file_count/_stale.
+    aif_path = tmp_path / "out.json"
+    aif_path.write_text(json.dumps({
+        "project": {},
+        "files": {
+            "a.py": {"summary": "x", "confidence": 1.0},
+            "b.py": {"summary": "y", "confidence": 0.0},
+            "c.py": {"summary": "z", "confidence": 0.5},
+        },
+    }), encoding="utf-8")
+
+    result = query_service.get_overview(str(aif_path))
+
+    assert result["confidence_summary"] == {"average": 0.5, "needs_review_count": 1}
+
+
+def test_get_overview_confidence_summary_defaults_for_a_project_with_no_files(tmp_path):
+    aif_path = tmp_path / "out.json"
+    aif_path.write_text(json.dumps({"project": {}, "files": {}}), encoding="utf-8")
+
+    result = query_service.get_overview(str(aif_path))
+
+    assert result["confidence_summary"] == {"average": 1.0, "needs_review_count": 0}
+
+
 def test_search_project_does_not_search_ziplex_json_ignored_files(tmp_path):
     project = tmp_path / "project"
     _write(project / "src" / "main.py", "TARGET_TOKEN = 1\n")

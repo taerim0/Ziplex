@@ -551,12 +551,12 @@ def _generate_prompt(
     return prompt
 
 
-def _generate_folders(rel_files_data: dict, lang: str, use_llm: bool) -> tuple[dict, dict]:
-    """Per-folder summaries + their aggregate confidence -- see
-    folder_summary.py's own module docstring for why this is a single
-    best-effort call (structural fallback per folder on any failure), not
-    wired into the checkpoint/resume system rules/prompt/per-file
-    summaries all get.
+def _generate_folders(rel_files_data: dict, lang: str, use_llm: bool) -> tuple[dict, dict, dict]:
+    """Per-folder summaries + their aggregate confidence + how many files
+    each one directly contains -- see folder_summary.py's own module
+    docstring for why the summary step is a single best-effort call
+    (structural fallback per folder on any failure), not wired into the
+    checkpoint/resume system rules/prompt/per-file summaries all get.
     """
     print(pick("  🗂️  Generating folder summaries...", "  🗂️  폴더 요약 생성 중...") if use_llm else pick(
         "  🗂️  Generating folder summaries (structural info only)...",
@@ -571,7 +571,18 @@ def _generate_folders(rel_files_data: dict, lang: str, use_llm: bool) -> tuple[d
     # own docstring. Computed from rel_files_data, which already carries every
     # file's real confidence.estimate_confidence() score by this point.
     folder_confidences = folder_summary.group_confidence_by_folder(rel_files_data)
-    return folders, folder_confidences
+    # How many files this folder's one-line summary is actually compressing
+    # -- a real gap found dogfooding Ziplex on its own repo: src/ziplex/
+    # alone has 49 files under one generic sentence, with no signal in the
+    # response to tell a reader (human or MCP caller) that the summary is
+    # a coarse rollup rather than a faithful one-to-one description, unlike
+    # a folder with 2-3 files where a single sentence can actually cover
+    # everything. Same grouping generate_folder_summaries() already builds
+    # internally, just also surfaced here rather than only used and discarded.
+    folder_file_counts = {
+        folder: len(entries) for folder, entries in folder_summary.group_files_by_folder(rel_files_data).items()
+    }
+    return folders, folder_confidences, folder_file_counts
 
 
 def _compute_security_scan(dangerous: list[dict], selected: list[str], root: Path) -> dict:
@@ -603,7 +614,7 @@ def _compute_security_scan(dangerous: list[dict], selected: list[str], root: Pat
 def _assemble_aif(
     project_name: str, prompt: str, tech_stack: list[dict], security_scan: dict,
     include: list[str] | None, ignore: list[str] | None, lang: str, rules: list[str],
-    folders: dict, folder_confidences: dict, token_results: dict,
+    folders: dict, folder_confidences: dict, folder_file_counts: dict, token_results: dict,
     files_data: dict, root: Path, selected: list[str], root_path: str,
 ) -> dict:
     """Step 7: assembles the final in-memory aif dict from every piece the
@@ -643,17 +654,29 @@ def _assemble_aif(
             "language": lang,
         },
         "rules": rules,
-        # {folder path: {"summary": "...", "confidence": float}}, one entry
-        # per folder that directly contains at least one collected file --
-        # see folder_summary.py for how each summary is generated and how
-        # `confidence` is aggregated (the average of its own member files'
-        # already-scored confidence, not an independent signal). Editable
-        # via edits.set_folder_summary() the same way per-file summaries/
-        # rules/prompt are (corrector.py's terminal flow, pack_service.py's
-        # GUI review flow) -- and, like per-file summaries, triaged by
-        # confidence.triage() rather than always shown in full.
+        # {folder path: {"summary": "...", "confidence": float, "file_count": int}},
+        # one entry per folder that directly contains at least one collected
+        # file -- see folder_summary.py for how each summary is generated
+        # and how `confidence` is aggregated (the average of its own member
+        # files' already-scored confidence, not an independent signal).
+        # `file_count` (a real gap found dogfooding Ziplex on its own repo --
+        # see _generate_folders()'s own comment) is what lets a reader tell
+        # "one sentence faithfully covers this folder" apart from "one
+        # sentence is compressing dozens of files" without opening
+        # list_files(folder=...) first just to find out which case this is.
+        # Editable via edits.set_folder_summary() the same way per-file
+        # summaries/rules/prompt are (corrector.py's terminal flow,
+        # pack_service.py's GUI review flow) -- and, like per-file
+        # summaries, triaged by confidence.triage() rather than always
+        # shown in full. set_folder_summary() only ever touches `summary`,
+        # so `file_count` (like `confidence`) survives a human's edit
+        # untouched.
         "folders": {
-            folder: {"summary": summary, "confidence": folder_confidences.get(folder, 1.0)}
+            folder: {
+                "summary": summary,
+                "confidence": folder_confidences.get(folder, 1.0),
+                "file_count": folder_file_counts.get(folder, 0),
+            }
             for folder, summary in folders.items()
         },
         "tokens": {
@@ -1158,7 +1181,7 @@ def pack(
         return {}
 
     # Per-folder summaries
-    folders, folder_confidences = _generate_folders(rel_files_data, lang, use_llm)
+    folders, folder_confidences, folder_file_counts = _generate_folders(rel_files_data, lang, use_llm)
 
     # 6. Token counting
     # Compares raw project text against the actual per-file aif.json payload
@@ -1174,7 +1197,7 @@ def pack(
     security_scan = _compute_security_scan(dangerous, selected, root)
     aif = _assemble_aif(
         project_name, prompt, tech_stack, security_scan,
-        include, ignore, lang, rules, folders, folder_confidences,
+        include, ignore, lang, rules, folders, folder_confidences, folder_file_counts,
         token_results, files_data, root, selected, root_path,
     )
 

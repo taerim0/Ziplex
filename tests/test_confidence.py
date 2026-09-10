@@ -65,6 +65,19 @@ def test_estimate_confidence_full_credit_capped_at_three_matches():
     assert estimate_confidence(summary, signatures) == 1.0
 
 
+def test_estimate_confidence_matches_generic_abbreviation_pairs():
+    # Found dogfooding Ziplex on its own repo: gui/js/i18n.js's real
+    # signatures are just getLang/setLang/t/applyStaticI18n, and this exact
+    # accurate summary scored 0.0 before _ABBREVIATIONS existed -- "lang"
+    # and "language" never matched as plain strings, a false positive from
+    # a generic English abbreviation, not an actually questionable summary.
+    score = estimate_confidence(
+        "Handles multi-language internationalization, translation string lookups, and DOM localization.",
+        ["getLang()", "setLang(lang)", "t(key, vars)", "applyStaticI18n()"],
+    )
+    assert score > 0.0
+
+
 def test_estimate_confidence_partial_overlap_is_between_zero_and_one():
     score = estimate_confidence(
         "Handles player interaction events.",
