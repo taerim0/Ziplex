@@ -1,4 +1,4 @@
-from ziplex.confidence import estimate_confidence, confidence_level, triage, REVIEW_THRESHOLD
+from ziplex.confidence import estimate_confidence, confidence_level, triage, project_confidence_summary, REVIEW_THRESHOLD
 from ziplex.summarizer import SUMMARY_FAILED_PLACEHOLDERS
 
 
@@ -111,3 +111,16 @@ def test_triage_treats_missing_confidence_as_fully_trusted():
     needs_review, auto_kept = triage(files)
     assert needs_review == []
     assert auto_kept == ["a.py"]
+
+
+def test_project_confidence_summary_averages_and_counts_needs_review():
+    files = {
+        "a.py": {"confidence": 1.0},
+        "b.py": {"confidence": 0.0},
+        "c.py": {"confidence": 0.5},
+    }
+    assert project_confidence_summary(files) == {"average": 0.5, "needs_review_count": 1}
+
+
+def test_project_confidence_summary_defaults_for_no_files():
+    assert project_confidence_summary({}) == {"average": 1.0, "needs_review_count": 0}

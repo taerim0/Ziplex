@@ -50,10 +50,9 @@ def test_strict_path_boundary_rejects_a_shorter_path_as_a_suffix_of_a_longer_one
     # the split point -- content naming only "sub/scenes/player.gd" must
     # not also count as a match for the unrelated full path
     # "scenes/player.gd". Tested directly against _contains_token() (not
-    # find_text_references()) since a bare filename match -- "player.gd"
-    # alone -- legitimately still fires for either candidate regardless of
-    # this fix; that's a separate, accepted, documented ambiguity of the
-    # filename-only fallback, not what this fix is about.
+    # find_text_references()) since this fix is specifically about the
+    # full-path form -- the bare filename form's own basename-ambiguity
+    # handling is a separate fix, tested separately below.
     content = "Uses sub/scenes/player.gd for this entity."
     assert _contains_token(content, "scenes/player.gd", strict_path_boundary=True) is False
 
@@ -78,6 +77,51 @@ def test_non_strict_boundary_still_matches_a_filename_preceded_by_any_directory(
     # by find_text_references() for it.
     content = "Uses sub/scenes/player.gd for this entity."
     assert _contains_token(content, "player.gd") is True
+
+
+def test_bare_filename_match_skipped_when_two_other_files_share_the_basename():
+    # Real bug found dogfooding Ziplex on its own repo: a single mention of
+    # "AGENTS.md" (no directory) used to link to *every* nested AGENTS.md in
+    # the project, not just the one actually meant -- an ambiguous mention
+    # should match neither candidate rather than guess at all of them, the
+    # same "ambiguous is worse than missed" call already made for bare
+    # stems. Neither candidate here is root-level (both have a directory
+    # prefix), so the full-path branch can't disambiguate either -- that
+    # case (a mention matching one candidate's own exact full path) is
+    # covered separately below.
+    content = "See AGENTS.md for the full pipeline overview."
+    found = find_text_references(content, "workflow.yml", ["src/AGENTS.md", "docs/AGENTS.md"])
+    assert found == []
+
+
+def test_bare_filename_ambiguity_does_not_suppress_an_exact_root_level_match():
+    # A root-level file's own full relative path *is* its bare filename
+    # (no directory component) -- a mention of "AGENTS.md" is a full,
+    # unambiguous match for a root-level AGENTS.md regardless of how many
+    # other, differently-pathed files elsewhere share that basename. This
+    # is the actual real-world shape of the bug above: "the root AGENTS.md"
+    # correctly resolves to the root file (an exact full-path match) while
+    # no longer also fanning out to unrelated nested AGENTS.md files.
+    content = "See the root AGENTS.md for the full pipeline overview."
+    found = find_text_references(content, "workflow.yml", ["AGENTS.md", "src/AGENTS.md"])
+    assert found == ["AGENTS.md"]
+
+
+def test_bare_filename_match_still_fires_when_only_one_other_file_has_that_basename():
+    # The fix above must not regress the common, unambiguous case -- a
+    # single project-wide match for a basename should still resolve.
+    content = "See player.gd for the implementation."
+    found = find_text_references(content, "README.md", ["entities/player.gd", "entities/enemy.gd"])
+    assert found == ["entities/player.gd"]
+
+
+def test_full_path_match_unaffected_by_a_shared_basename_elsewhere():
+    # A full relative path always names one specific candidate -- ambiguity
+    # in the *bare* filename fallback for other same-named files elsewhere
+    # must not suppress this unambiguous form.
+    content = 'Uses "res://src/AGENTS.md" specifically, not the root one.'
+    found = find_text_references(content, "workflow.yml", ["AGENTS.md", "src/AGENTS.md"])
+    assert found == ["src/AGENTS.md"]
 
 
 def test_matches_multiple_distinct_references():

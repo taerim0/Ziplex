@@ -25,6 +25,7 @@ import re
 from pathlib import Path
 
 from .query_service import _detail_path
+from .confidence import project_confidence_summary
 
 
 def _yaml_double_quoted(s: str) -> str:
@@ -92,7 +93,7 @@ This is a Ziplex-packed **snapshot** ({file_count} files, {rule_count} coding ru
 
 ## How to use this
 
-1. **`references/overview.md`** — the AI guide above, coding rules, and token stats (how much smaller this reference is than the raw source).
+1. **`references/overview.md`** — the AI guide above, coding rules, a per-folder map (each folder's role, file count, and confidence), an overall confidence rollup, and token stats (how much smaller this reference is than the raw source).
 2. **`references/files.md`** — every file's one-line summary and a confidence score (0.0-1.0). A low score means the summary's wording didn't overlap much with the file's real signatures -- worth a closer look before trusting it, not a guarantee it's wrong.
 3. **`references/relationships.md`** — the dependency graph: what each file imports, and (derivable from it) what would be affected by changing one.
 4. **`references/detail.json`** — full compressed source per file (structure and signatures kept, function bodies elided), keyed by the same relative path used everywhere else here. Read a file's entry only once its summary/confidence/relationships say it's worth a closer look -- that's the entire point of Ziplex's compression; reading every entry defeats it.
@@ -103,16 +104,46 @@ def _overview_md(aif: dict) -> str:
     project = aif.get("project", {})
     rules = aif.get("rules", [])
     tokens = aif.get("tokens", {})
+    files = aif.get("files", {})
+
+    # Real gap found dogfooding Ziplex on its own repo: judging "is this
+    # pack worth trusting" from inside a skill (no MCP server, no GUI
+    # badge) used to mean reading every one of files.md's 100+ confidence
+    # numbers by hand. Same rollup query_service.get_overview() attaches,
+    # shared via confidence.project_confidence_summary() so the two
+    # distribution channels can't report a different number for the same
+    # pack.
+    confidence_summary = project_confidence_summary(files)
 
     lines = [
         "# Overview", "",
         f"**Project**: {project.get('name') or '(unnamed)'}",
-        f"**Files**: {len(aif.get('files', {}))}", "",
+        f"**Files**: {len(files)}",
+        f"**Confidence**: {confidence_summary['average']:.2f} average, "
+        f"{confidence_summary['needs_review_count']} file(s) flagged for review "
+        f"(see references/files.md)",
+        "",
         "## AI guide", "",
         (project.get("prompt") or "").strip() or "(none)", "",
         "## Coding rules", "",
     ]
     lines += [f"- {r}" for r in rules] if rules else ["(none inferred)"]
+
+    # Per-folder orientation -- a real gap found the same way: a folder
+    # with dozens of files (this project's own src/ziplex/, 49 of them)
+    # got no map at all here, only files.md's flat, alphabetized table.
+    # Older aif.json files packed before "folders" existed simply have no
+    # such key, so this section is skipped rather than shown empty --
+    # same backward-compat guard tech_stack/security_scan below already use.
+    folders = aif.get("folders")
+    if folders:
+        lines += ["", "## Folders", ""]
+        for path in sorted(folders):
+            info = folders[path]
+            summary = (info.get("summary") or "").replace("|", "\\|").replace("\n", " ")
+            count = info.get("file_count")
+            count_text = f"{count} file(s)" if count is not None else "file count unknown"
+            lines.append(f"- `{path}` ({count_text}, confidence {info.get('confidence', 1.0):.2f}): {summary}")
 
     # Free (no LLM call), manifest-based fact block -- see tech_stack.py.
     # Older aif.json files packed before this field existed simply have no

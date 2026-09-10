@@ -26,7 +26,7 @@ from .file.textutil import parent_folder
 from .search import search_files, read_detail_range
 from .freshness import check_freshness_scoped, load_pack_scope, cache_path_for_aif
 from .config import collect_and_scan
-from .confidence import triage as _triage
+from .confidence import project_confidence_summary
 
 
 def _load_json(path: str) -> dict:
@@ -133,40 +133,15 @@ def _stale_warning(project_path: str | None, aif_path: str) -> dict | None:
     return {"is_stale": True, "changed": report.changed, "added": report.added, "removed": report.removed}
 
 
-def _confidence_summary(files: dict) -> dict:
-    """Project-wide rollup of confidence.py's per-file scores: the average
-    and how many files would land in confidence.triage()'s needs_review
-    bucket. Surfaced on get_overview() so a caller can gauge "is this pack
-    worth trusting" from the first, cheapest call -- a real gap found
-    dogfooding Ziplex on its own repo: finding out only 1 of 135 files
-    needed review took a separate list_files(confidence_below=...) call,
-    when get_overview() already reports other pack-wide health signals
-    (_stale, project.security_scan) in one place.
-
-    {"average": 1.0, "needs_review_count": 0} for a project with no files
-    at all -- same "nothing to flag" convention triage() itself uses,
-    rather than an undefined average or a missing key a caller has to
-    branch on.
-    """
-    if not files:
-        return {"average": 1.0, "needs_review_count": 0}
-    scores = [data.get("confidence", 1.0) for data in files.values()]
-    needs_review, _ = _triage(files)
-    return {
-        "average": round(sum(scores) / len(scores), 2),
-        "needs_review_count": len(needs_review),
-    }
-
-
 def get_overview(aif_path: str, project_path: str | None = None) -> dict:
     """Project name, AI-facing guide, inferred coding rules, and token stats
     for an already-packed project. Call this first -- it's the cheapest,
     always-affordable view of a project, and enough context for many
     questions on its own without fetching any file's detail.
 
-    `confidence_summary` (see _confidence_summary() above) is a project-
-    wide rollup of confidence.py's per-file scores -- how much of the pack
-    a human should trust before relying on it, at a glance.
+    `confidence_summary` (see confidence.project_confidence_summary()) is a
+    project-wide rollup of confidence.py's per-file scores -- how much of
+    the pack a human should trust before relying on it, at a glance.
 
     Pass project_path too (the actual project directory aif_path was packed
     from) and this also runs a free freshness check (a hash comparison, no
@@ -183,7 +158,7 @@ def get_overview(aif_path: str, project_path: str | None = None) -> dict:
         "rules": aif.get("rules", []),
         "tokens": aif.get("tokens", {}),
         "file_count": len(files),
-        "confidence_summary": _confidence_summary(files),
+        "confidence_summary": project_confidence_summary(files),
     }
     warning = _stale_warning(project_path, aif_path)
     if warning:

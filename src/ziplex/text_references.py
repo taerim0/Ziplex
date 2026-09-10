@@ -86,22 +86,46 @@ def find_text_references(content: str, self_path: str, other_paths: list[str]) -
     matched -- "config"/"main"/"index"/"utils" are common enough words that
     matching them against arbitrary prose would produce far more noise than
     signal; requiring the extension is most of what keeps this precise.
+
+    A bare filename+extension match additionally requires that exactly one
+    *other* collected file actually has that basename -- a project with
+    several same-named files in different folders (AGENTS.md, __init__.py,
+    and README.md are all common) otherwise fans a single directory-less
+    mention out to every one of them, most of which the text almost never
+    actually meant. Verified directly dogfooding Ziplex on its own repo: a
+    single ".github/workflows/test.yml" comment naming "the root AGENTS.md"
+    used to also link it to 5 unrelated nested AGENTS.md files purely
+    because they share a basename. Same "an ambiguous mention is worse than
+    a missed one" reasoning already applied to bare stems above -- this
+    doesn't reduce to that case (an ambiguous basename here is still
+    genuinely a real filename, just one this project happens to reuse) so
+    it needed its own check rather than following automatically from it.
+    The full-path form is unaffected either way -- it already names one
+    specific candidate unambiguously, regardless of how many other files
+    elsewhere share its basename.
     """
-    found = []
+    found = set()
+
+    # Full relative path -- always unambiguous, independent of the
+    # basename-ambiguity check below.
     for other in other_paths:
-        if other == self_path:
-            continue
-        filename = other.rsplit("/", 1)[-1]
-        # strict_path_boundary=True only for the full-path form: "/" is a
-        # normal, expected delimiter right before a bare filename ("res://
-        # player.gd", "scenes/player.gd" both legitimately precede a
-        # filename match with a directory), but a *full* relative path is a
-        # different story -- see _contains_token()'s own docstring for why
-        # a plain "/" boundary there lets a shorter path false-match as a
-        # suffix of a longer, unrelated one.
-        if _contains_token(content, other, strict_path_boundary=True) or _contains_token(content, filename):
-            found.append(other)
-    return found
+        if other != self_path and _contains_token(content, other, strict_path_boundary=True):
+            found.add(other)
+
+    # Bare filename+extension -- grouped by basename first so an ambiguous
+    # one (2+ *other* candidates sharing it) can be skipped for all of
+    # them rather than guessed at; see this function's own docstring.
+    by_basename: dict[str, list[str]] = {}
+    for other in other_paths:
+        if other != self_path:
+            by_basename.setdefault(other.rsplit("/", 1)[-1], []).append(other)
+
+    for filename, candidates in by_basename.items():
+        if len(candidates) == 1 and _contains_token(content, filename):
+            found.add(candidates[0])
+
+    # other_paths' own order, not found's (a set) or by_basename's (grouped)
+    return [other for other in other_paths if other in found]
 
 
 def _contains_token(content: str, token: str, strict_path_boundary: bool = False) -> bool:

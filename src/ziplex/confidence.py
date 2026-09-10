@@ -177,3 +177,27 @@ def triage(files: dict, threshold: float = REVIEW_THRESHOLD) -> tuple[list[str],
     )
     auto_kept = [name for score, name in scored if score >= threshold]
     return [name for _, name in needs_review], auto_kept
+
+
+def project_confidence_summary(files: dict) -> dict:
+    """Project-wide rollup of aif.json-shaped `files`' per-file confidence:
+    the average score and how many would land in triage()'s needs_review
+    bucket. The one shared place this is computed -- query_service.py's
+    get_overview() and skill_export.py's overview.md both attach it, so a
+    caller judging "is this pack worth trusting" gets the same answer
+    regardless of which of Ziplex's three distribution channels (MCP, GUI,
+    Claude Skill) it's reading from.
+
+    {"average": 1.0, "needs_review_count": 0} for a project with no files
+    at all -- same "nothing to flag" convention triage() itself uses,
+    rather than an undefined average or a missing key a caller has to
+    branch on.
+    """
+    if not files:
+        return {"average": 1.0, "needs_review_count": 0}
+    scores = [data.get("confidence", 1.0) for data in files.values()]
+    needs_review, _ = triage(files)
+    return {
+        "average": round(sum(scores) / len(scores), 2),
+        "needs_review_count": len(needs_review),
+    }

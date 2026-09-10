@@ -97,6 +97,34 @@ def test_files_md_lists_every_file_sorted_with_escaped_summary():
     assert "0.30" in files_md
 
 
+def test_overview_md_reports_confidence_summary():
+    # _sample_aif() has two files: confidence 0.9 (auto-kept) and 0.3
+    # (below REVIEW_THRESHOLD) -- average 0.60, one flagged.
+    overview_md = generate_skill_files(_sample_aif(), {})["references/overview.md"]
+    assert "0.60 average" in overview_md
+    assert "1 file(s) flagged for review" in overview_md
+
+
+def test_overview_md_omits_folders_section_when_field_absent():
+    # _sample_aif() has no "folders" key at all -- an aif.json packed
+    # before this field existed. Must not crash or render an empty heading.
+    files = generate_skill_files(_sample_aif(), {})
+    assert "## Folders" not in files["references/overview.md"]
+
+
+def test_overview_md_lists_folders_when_present():
+    aif = _sample_aif()
+    aif["folders"] = {
+        ".": {"summary": "Top-level files.", "confidence": 1.0, "file_count": 1},
+        "src": {"summary": "Core logic.", "confidence": 0.5, "file_count": 2},
+    }
+    overview_md = generate_skill_files(aif, {})["references/overview.md"]
+
+    assert "## Folders" in overview_md
+    assert "`.` (1 file(s), confidence 1.00): Top-level files." in overview_md
+    assert "`src` (2 file(s), confidence 0.50): Core logic." in overview_md
+
+
 def test_overview_md_omits_tech_stack_section_when_field_absent():
     # _sample_aif() has no "tech_stack" key at all -- an aif.json packed
     # before this field existed. Must not crash or render an empty heading.
