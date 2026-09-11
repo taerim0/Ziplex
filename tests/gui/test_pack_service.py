@@ -7,6 +7,7 @@ test_pack_integration.py.
 """
 
 import json
+import os
 import threading
 import time
 
@@ -1059,7 +1060,21 @@ def test_lock_for_path_normalizes_case_for_a_not_yet_existing_file(tmp_path):
 
     upper = pack_service._lock_for_path(str(aif_path))
     lower = pack_service._lock_for_path(str(tmp_path / "out.json"))
-    assert upper is lower
+
+    # A real gap found live on GitHub Actions (ubuntu-latest): this used to
+    # assert `upper is lower` unconditionally, which only held on the
+    # Windows machine the test was written/run on. _lock_for_path()'s own
+    # os.path.normcase() is a documented no-op on POSIX -- "Out.json" and
+    # "out.json" are genuinely two different not-yet-existing files on a
+    # case-sensitive filesystem, so two different locks is the *correct*
+    # behavior there, not a bug. Asserting against normcase()'s own actual
+    # behavior (rather than a hardcoded platform check) is what makes this
+    # test pass on both Windows and POSIX for the right reason -- it failed
+    # on every Linux CI run since it was added, unnoticed until now since
+    # this project is developed on Windows and CI notifications went
+    # unchecked.
+    same_after_normcase = os.path.normcase("Out.json") == os.path.normcase("out.json")
+    assert (upper is lower) == same_after_normcase
 
 
 def test_lock_for_path_evicts_old_unlocked_entries_past_the_cap(tmp_path, monkeypatch):
