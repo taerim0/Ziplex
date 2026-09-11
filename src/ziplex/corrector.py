@@ -208,7 +208,8 @@ def correct_aif(aif: dict) -> dict:
         for folder_path in folder_needs_review:
             data = folders[folder_path]
             display = folder_path if folder_path != "." else "(최상위)"
-            print(f"\n  ⚠️  {display} (신뢰도 {data.get('confidence', 1.0)}): {data.get('summary', '')}")
+            file_count = data.get("file_count", 0)
+            print(f"\n  ⚠️  {display} (신뢰도 {data.get('confidence', 1.0)}, 파일 {file_count}개): {data.get('summary', '')}")
             new_summary = input("  수정 (엔터=유지): ").strip()
             if new_summary:
                 set_folder_summary(aif, folder_path, new_summary)

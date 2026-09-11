@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from .textutil import normalize_path
+
 
 def build_stem_map(file_names) -> dict:
     """Maps file stem (file name without extension) -> every collected
@@ -333,7 +335,17 @@ def add_relationship(relationships: dict, file_name: str, target: str) -> dict:
     ValueError for an unknown/self file_name/target, CycleError (via
     has_relationship_cycle()) if the edge would close a cycle. Mutates and
     returns `relationships`.
+
+    `file_name`/`target` are normalized (backslash -> slash) before the
+    lookup -- `relationships` keys are always POSIX-style by the time a
+    pack reaches aif.json, but a caller-supplied path isn't guaranteed to
+    be (a real gap: every read-side query_service.py lookup already
+    normalizes for this exact reason, but this write-side pair didn't,
+    so `ziplex link`/`unlink` a Windows-style path used to raise
+    "unknown file" against a real key).
     """
+    file_name = normalize_path(file_name)
+    target = normalize_path(target)
     if file_name not in relationships:
         raise ValueError(f"unknown file: {file_name}")
     if target not in relationships:
@@ -363,9 +375,13 @@ def add_relationship(relationships: dict, file_name: str, target: str) -> dict:
 def remove_relationship(relationships: dict, file_name: str, target: str) -> dict:
     """remove_dependency()'s counterpart for an already-finalized
     `relationships` dict -- see add_relationship()'s docstring for why a
-    separate pair of functions exists for this shape. A no-op if no such
-    edge exists. Raises ValueError if file_name isn't in `relationships`.
+    separate pair of functions exists for this shape, including why
+    `file_name`/`target` are normalized before the lookup. A no-op if no
+    such edge exists. Raises ValueError if file_name isn't in
+    `relationships`.
     """
+    file_name = normalize_path(file_name)
+    target = normalize_path(target)
     if file_name not in relationships:
         raise ValueError(f"unknown file: {file_name}")
 

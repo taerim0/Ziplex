@@ -586,6 +586,11 @@ def test_review_triages_folders_by_confidence(tmp_path, monkeypatch):
     assert [f["folder"] for f in review["folders_needs_review"]] == ["."]
     assert review["folders_needs_review"][0]["summary"]
     assert review["folders_needs_review"][0]["confidence"] < 0.34
+    # A real gap found by code review: file_count is always attached by
+    # _generate_folders() but used to be dropped in the review shape --
+    # the one moment a reviewer most needs to know how many files a single
+    # low-confidence sentence stands in for.
+    assert review["folders_needs_review"][0]["file_count"] == 1
     assert review["folders_auto_kept"] == []
 
 

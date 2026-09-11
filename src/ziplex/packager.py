@@ -9,7 +9,7 @@ from .file.media import classify_media_file, media_summary
 from .file.textutil import relative_key as _rel_key
 from .extract.code.extractor import extract_signatures, extract_dependencies, extract_api
 from .extract.code.compressor import compress_file
-from .text_references import find_text_references_for_file
+from .text_references import find_text_references_for_file, merge_text_references
 from .go_packages import resolve_go_context, expand_dependencies_for_file
 from .tokenizer import analyze_tokens_with_payload
 from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES
@@ -1122,19 +1122,17 @@ def pack(
     # comment above for why the ordering matters.
     for fp, data in files_data.items():
         if text_refs_by_path.get(fp):
-            data["dependencies"] = data["dependencies"] + text_refs_by_path[fp]
-            # Recorded separately (a subset of `dependencies`, exact
-            # collected file names only) so build_tree() can tell a
-            # text-reference-derived edge apart from a real Tree-sitter-
-            # resolved import once both reach `relationships` -- closes the
-            # limitation text_references.py's own docstring documents.
-            # Assigned, not appended: this loop can re-run its merge against
-            # an already-merged `dependencies` restored from a checkpoint
-            # saved past this same step (see text_refs_by_path's comment
-            # above), and a plain reassignment stays correct either way,
-            # unlike appending twice into `dependencies` itself -- a
-            # pre-existing, harmless duplicate build_tree() already dedupes.
-            data["text_dependencies"] = list(text_refs_by_path[fp])
+            # merge_text_references() -- the same shared merge step cli.py's
+            # `tree` subcommand routes through -- assigns rather than
+            # appends: this loop can re-run its merge against an already-
+            # merged `dependencies` restored from a checkpoint saved past
+            # this same step (see text_refs_by_path's comment above), and a
+            # plain reassignment stays correct either way, unlike appending
+            # twice into `dependencies` itself -- a pre-existing, harmless
+            # duplicate build_tree() already dedupes.
+            data["dependencies"], data["text_dependencies"] = merge_text_references(
+                data["dependencies"], text_refs_by_path[fp]
+            )
 
     # Confidence signal for every summary (reused, checkpoint-restored, or
     # freshly generated) -- free, no LLM call: just how much of the file's

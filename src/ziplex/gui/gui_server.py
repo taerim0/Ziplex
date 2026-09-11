@@ -380,7 +380,9 @@ def api_overview():
 def api_files():
     aif_path = request.args["aif_path"]
     project_path = request.args.get("project_path") or None
-    return jsonify(query_service.list_files(aif_path, project_path))
+    folder = request.args.get("folder") or None
+    confidence_below = request.args.get("confidence_below", type=float)
+    return jsonify(query_service.list_files(aif_path, project_path, folder, confidence_below))
 
 
 @app.route("/api/folders")
@@ -392,7 +394,12 @@ def api_folders():
 @app.route("/api/relationships")
 def api_relationships():
     aif_path = request.args["aif_path"]
-    return jsonify(query_service.get_relationships(aif_path))
+    # Repeated ?files=a.py&files=b.py, Flask's own convention for a
+    # multi-valued query param -- getlist() returns [] when the param is
+    # absent entirely, which must stay None (query_service.get_relationships
+    # treats files=[] as "return nothing", not "no filter").
+    files = request.args.getlist("files") or None
+    return jsonify(query_service.get_relationships(aif_path, files))
 
 
 @app.route("/api/relationships/link", methods=["POST"])

@@ -46,6 +46,21 @@ def human_size(size_bytes: int) -> str:
     return f"{size:.1f}GB"
 
 
+def normalize_path(value: str) -> str:
+    """Every key the pipeline compares a caller-supplied path against
+    (`files`/`relationships`) is always POSIX-style (`/`) by the time it
+    reaches aif.json, but nothing on the *reading/editing* side enforced
+    that on a caller-supplied path argument -- a backslash path (natural to
+    type on Windows, a real risk since this project is developed on
+    Windows) used to silently fail to match any real key instead of being
+    normalized first. Shared so query_service.py's read-side lookups and
+    file/relationship.py's add_relationship()/remove_relationship() (the
+    write-side API behind `ziplex link`/`ziplex unlink` and the GUI's
+    relationship editor) can't drift into normalizing differently.
+    """
+    return value.replace("\\", "/")
+
+
 def parent_folder(name: str) -> str:
     """A file's own immediate containing folder, POSIX-normalized -- "."
     for a root-level file (Path.parent's own natural value for a name with

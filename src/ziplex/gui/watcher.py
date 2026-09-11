@@ -33,6 +33,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from ..file.collector import DEFAULT_IGNORE
+from ..file.textutil import read_text
 from ..freshness import check_freshness_scoped, load_pack_scope
 
 # A single save can fire several OS events in quick succession (some
@@ -86,11 +87,14 @@ def _build_ignore_spec(root: Path) -> pathspec.PathSpec:
     patterns = DEFAULT_IGNORE.copy()
     gitignore_path = root / ".gitignore"
     if gitignore_path.exists():
-        try:
-            with open(gitignore_path, "r", encoding="utf-8") as f:
-                patterns.extend(line.strip() for line in f if line.strip() and not line.startswith("#"))
-        except OSError:
-            pass
+        # read_text() (not a raw open()) so a non-UTF-8 .gitignore is
+        # skipped instead of crashing start_watch() -- a real gap found by
+        # code review: file/collector.py's own equivalent .gitignore read
+        # already went through read_text() for this exact reason, but this
+        # copy still used a raw open()/UnicodeDecodeError-uncaught read.
+        content = read_text(str(gitignore_path))
+        if content is not None:
+            patterns.extend(line.strip() for line in content.splitlines() if line.strip() and not line.startswith("#"))
     return pathspec.PathSpec.from_lines("gitignore", patterns)
 
 

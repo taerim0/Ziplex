@@ -216,3 +216,17 @@ def test_evicts_oldest_watcher_past_max_watchers(tmp_path, monkeypatch):
     # the first (oldest) project's watcher should have been evicted
     assert watcher.get_status(str(projects[0][0])) is None
     assert watcher.get_status(str(projects[2][0])) is not None
+
+
+def test_build_ignore_spec_skips_a_non_utf8_gitignore_instead_of_crashing(tmp_path):
+    # Real bug: a raw open()/UTF-8 decode only caught OSError, not
+    # UnicodeDecodeError, so a non-UTF-8 .gitignore crashed start_watch()
+    # outright instead of just being skipped like file/collector.py's own
+    # equivalent .gitignore read already does via read_text().
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".gitignore").write_bytes(b"\xff\xfe not valid utf-8\n")
+
+    spec = watcher._build_ignore_spec(project)
+
+    assert spec is not None

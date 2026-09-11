@@ -318,6 +318,12 @@ def _build_review(aif: dict) -> dict:
             "folder": folder,
             "summary": data.get("summary", ""),
             "confidence": data.get("confidence", 1.0),
+            # A real gap found by code review: _generate_folders() always
+            # attaches this, but it was dropped here -- the one moment
+            # (pre-save human review) a reviewer most needs to know how
+            # many files a single low-confidence sentence stands in for
+            # (e.g. this project's own src/ziplex/, 49 files).
+            "file_count": data.get("file_count", 0),
         }
 
     return {

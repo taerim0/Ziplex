@@ -1,4 +1,25 @@
-from ziplex.text_references import find_text_references, find_text_references_for_file, _contains_token
+from ziplex.text_references import (
+    find_text_references, find_text_references_for_file, merge_text_references, _contains_token,
+)
+
+
+def test_merge_text_references_folds_matches_into_dependencies_and_records_them_separately():
+    # The shared merge step packager.py's per-file loop and cli.py's `tree`
+    # subcommand both route through -- see this module's own docstring for
+    # why this used to be independently reimplemented at each call site.
+    deps, text_deps = merge_text_references(["a.py"], ["readme.md"])
+    assert deps == ["a.py", "readme.md"]
+    assert text_deps == ["readme.md"]
+
+
+def test_merge_text_references_is_a_plain_concatenation_not_a_dedup():
+    # packager.py's caller can re-run this merge against an already-merged
+    # `dependencies` restored from a checkpoint -- a harmless duplicate here
+    # is fine, since build_tree() already dedupes when building internal/
+    # external.
+    deps, text_deps = merge_text_references(["a.py", "readme.md"], ["readme.md"])
+    assert deps == ["a.py", "readme.md", "readme.md"]
+    assert text_deps == ["readme.md"]
 
 
 def test_matches_full_relative_path():
@@ -67,6 +88,25 @@ def test_strict_path_boundary_still_matches_a_full_path_preceded_by_a_uri_scheme
 
 def test_strict_path_boundary_still_matches_a_full_path_at_the_very_start_of_content():
     assert _contains_token("scenes/player.gd is the entry point.", "scenes/player.gd", strict_path_boundary=True) is True
+
+
+def test_strict_path_boundary_matches_a_path_preceded_by_a_relative_link_prefix():
+    # Real gap: a full relative path immediately after a single "./" or
+    # "../" (the common way a Markdown link or config value spells a
+    # relative path) used to never match -- the char right before the path
+    # is always just a bare "/", which the no-prefix alternative excludes
+    # and the URI-scheme alternative requires a doubled "//" for instead.
+    assert _contains_token("see ./scenes/player.gd for details", "scenes/player.gd", strict_path_boundary=True) is True
+    assert _contains_token("see ../scenes/player.gd for details", "scenes/player.gd", strict_path_boundary=True) is True
+    assert _contains_token("../../scenes/player.gd", "scenes/player.gd", strict_path_boundary=True) is True
+
+
+def test_strict_path_boundary_relative_link_prefix_still_rejects_a_longer_word():
+    # The relative-link fix above must not overcorrect into treating any
+    # "/" as a valid boundary again -- "foo../scenes/player.gd" isn't a
+    # real relative path (the ".." isn't its own path segment), so it must
+    # still be rejected the same way the longer-path-suffix case is.
+    assert _contains_token("foo../scenes/player.gd", "scenes/player.gd", strict_path_boundary=True) is False
 
 
 def test_non_strict_boundary_still_matches_a_filename_preceded_by_any_directory():

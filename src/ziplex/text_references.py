@@ -30,14 +30,18 @@ for a caller that wants to exclude the weaker signal entirely, not just see
 it flagged.
 
 Every caller of find_text_references_for_file()/find_text_references() must
-mirror this same pair of steps -- merge the match into `dependencies` *and*
-record it separately as `text_dependencies` -- or `internal_text_refs`
-silently comes back empty for that caller's files, with no error to catch
-it (a real bug caught by code review the same day this was added: cli.py's
-`tree` subcommand has its own independent copy of this merge loop and had
-been updated for the first half only). `packager.py`'s per-file loop and
-`cli.py`'s `tree` subcommand are today's only two callers -- both do this
-correctly now; keep it that way in a third.
+also merge the match into `dependencies` *and* record it separately as
+`text_dependencies`, or `internal_text_refs` silently comes back empty for
+that caller's files with no error to catch it -- a real bug caught by code
+review the same day this was added: cli.py's `tree` subcommand had its own
+independent copy of this merge loop and had been updated for the first half
+only. `merge_text_references()` below is that pair of steps, factored out
+after the same duplication bit a second time (packager.py's loop and
+cli.py's `tree` subcommand had quietly drifted into two non-identical
+copies of it) -- both callers now go through it instead of each inlining
+the merge, so a third caller (or a future change to the merge contract)
+has one place to update instead of a reviewer re-auditing every call site
+by hand again.
 """
 
 import re
@@ -66,6 +70,29 @@ def find_text_references_for_file(file_path: str, name: str, all_names: list[str
     if content is None:
         return []
     return find_text_references(content, name, all_names)
+
+
+def merge_text_references(dependencies: list[str], text_refs: list[str]) -> tuple[list[str], list[str]]:
+    """The two-field merge every caller of find_text_references_for_file()/
+    find_text_references() must perform -- fold `text_refs` into
+    `dependencies` (same as a resolved import) *and* return them again
+    separately as `text_dependencies`, so build_tree() (file/relationship.py)
+    can later tag a text-reference-derived edge apart from a real import as
+    `internal_text_refs` once both reach `relationships`. See this module's
+    own docstring for why skipping the second half silently leaves
+    `internal_text_refs` empty with no error to catch it -- a real bug this
+    exact merge already hit once, between packager.py's per-file loop and
+    cli.py's `tree` subcommand independently reimplementing it. Both now
+    call this instead of each inlining the pair of assignments, so a future
+    change to the merge contract has one place to update.
+
+    A plain concatenation, not a dedup -- callers merging into an already-
+    merged `dependencies` (packager.py's post-summary-generation merge can
+    re-run against a checkpoint-restored dependencies list already carrying
+    a prior merge) get a harmless duplicate, which build_tree() already
+    dedupes when it builds `internal`/`external`.
+    """
+    return dependencies + text_refs, list(text_refs)
 
 
 def find_text_references(content: str, self_path: str, other_paths: list[str]) -> list[str]:
@@ -146,14 +173,24 @@ def _contains_token(content: str, token: str, strict_path_boundary: bool = False
 
     strict_path_boundary additionally requires that a leading "/" not be a
     bare directory separator continuing a longer path -- only a URI-scheme-
-    style "//" (Godot's res://, a rare double-slash) or the true start of
-    content/line still counts as a valid boundary there. Left off (the
-    default) for a bare filename match, where any directory prefix is a
-    normal, expected way to reference it.
+    style "//" (Godot's res://, a rare double-slash), a relative-link prefix
+    ("./"/"../", one or more segments -- the common way a Markdown link or a
+    config value spells a relative path), or the true start of content/line
+    still counts as a valid boundary there. Left off (the default) for a
+    bare filename match, where any directory prefix is a normal, expected
+    way to reference it.
     """
     escaped = re.escape(token)
     if strict_path_boundary:
-        pattern = rf"(?:(?<![\w/])|(?<=//)){escaped}(?!\w)"
+        # Third alternative: one or more "./"/"../" segments, themselves
+        # preceded by start-of-content or a non-word/dot/slash char -- a
+        # real gap found by code review: the first two alternatives alone
+        # never match a path immediately after a single "./" or "../"
+        # prefix (the char right before the path is always just "/", which
+        # the first alternative excludes and the second requires "//" for),
+        # so "see ./pkg_a/util.py" or "see ../pkg_a/util.py" silently
+        # recorded no reference at all.
+        pattern = rf"(?:(?<![\w/])|(?<=//)|(?:^|(?<=[^\w./]))(?:\.\.?/)+){escaped}(?!\w)"
     else:
         pattern = rf"(?<!\w){escaped}(?!\w)"
     return re.search(pattern, content) is not None

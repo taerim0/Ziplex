@@ -11,7 +11,7 @@ from .file.collector import collect_files, print_tree as print_file_tree
 from .file.scanner import scan_files
 from .file.media import classify_media_file
 from .file.textutil import relative_key as _rel_key
-from .text_references import find_text_references_for_file
+from .text_references import find_text_references_for_file, merge_text_references
 from .go_packages import resolve_go_context, expand_dependencies_for_file
 from .tokenizer import analyze_tokens_with_compression
 from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider
@@ -670,13 +670,14 @@ def _cmd_tree(args) -> None:
         name = _rel_key(file_path, args.path)
         deps = expand_dependencies_for_file(file_path, name, extract_dependencies(file_path), go_module_path, go_package_index)
         text_refs = find_text_references_for_file(file_path, name, all_names)
-        # text_dependencies recorded separately, same as packager.py's
-        # own merge step -- this is what lets build_tree() tag a text
-        # reference apart from a real import as internal_text_refs
+        # merge_text_references() -- the same shared merge step packager.py's
+        # per-file loop routes through -- is what lets build_tree() tag a
+        # text reference apart from a real import as internal_text_refs
         # instead of always coming back empty for this command.
+        merged_deps, text_deps = merge_text_references(deps, text_refs)
         files_data[name] = {
-            "dependencies": deps + text_refs,
-            "text_dependencies": text_refs,
+            "dependencies": merged_deps,
+            "text_dependencies": text_deps,
         }
 
     tree = build_tree(files_data)

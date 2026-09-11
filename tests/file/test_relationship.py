@@ -405,6 +405,26 @@ def test_remove_relationship_raises_on_unknown_file():
         remove_relationship(relationships, "missing.py", "a.py")
 
 
+def test_add_relationship_normalizes_backslash_paths():
+    relationships = {
+        "src/a.py": {"internal": [], "external": []},
+        "src/c.py": {"internal": [], "external": []},
+    }
+    add_relationship(relationships, "src\\a.py", "src\\c.py")
+
+    assert relationships["src/a.py"]["internal"] == ["src/c.py"]
+
+
+def test_remove_relationship_normalizes_backslash_paths():
+    relationships = {
+        "src/a.py": {"internal": ["src/b.py"], "external": []},
+        "src/b.py": {"internal": [], "external": []},
+    }
+    remove_relationship(relationships, "src\\a.py", "src\\b.py")
+
+    assert relationships["src/a.py"]["internal"] == []
+
+
 def test_get_dependents_finds_direct_dependents_only():
     # b and c both depend on a; c also depends on b
     relationships = {

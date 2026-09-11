@@ -608,6 +608,34 @@ def test_api_files(client, tmp_path):
     }
 
 
+def test_api_files_scopes_by_folder(client, tmp_path):
+    aif_path = tmp_path / "sample.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "sample"},
+        "files": {
+            "a.py": {"summary": "root file"},
+            "src/b.py": {"summary": "nested file"},
+        },
+    }), encoding="utf-8")
+
+    res = client.get("/api/files", query_string={"aif_path": str(aif_path), "folder": "src"})
+    assert res.get_json() == {"src/b.py": {"summary": "nested file", "confidence": 1.0}}
+
+
+def test_api_files_scopes_by_confidence_below(client, tmp_path):
+    aif_path = tmp_path / "sample.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "sample"},
+        "files": {
+            "a.py": {"summary": "confident", "confidence": 0.9},
+            "b.py": {"summary": "shaky", "confidence": 0.1},
+        },
+    }), encoding="utf-8")
+
+    res = client.get("/api/files", query_string={"aif_path": str(aif_path), "confidence_below": "0.34"})
+    assert list(res.get_json().keys()) == ["b.py"]
+
+
 def test_api_folders(client, tmp_path):
     aif_path = tmp_path / "sample.json"
     aif_path.write_text(json.dumps({
@@ -658,6 +686,12 @@ def test_api_relationships(client, tmp_path):
         "a.py": {"internal": [], "external": []},
         "b.py": {"internal": ["a.py"], "external": []},
     }
+
+
+def test_api_relationships_scopes_by_files(client, tmp_path):
+    aif_path = _write_sample_aif(tmp_path)
+    res = client.get("/api/relationships", query_string={"aif_path": aif_path, "files": ["b.py"]})
+    assert res.get_json() == {"b.py": {"internal": ["a.py"], "external": []}}
 
 
 def test_api_relationships_link(client, tmp_path):

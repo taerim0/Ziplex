@@ -22,7 +22,7 @@ from .file.relationship import (
     get_dependents as _get_dependents,
     get_blast_radius as _get_blast_radius,
 )
-from .file.textutil import parent_folder
+from .file.textutil import parent_folder, normalize_path
 from .search import search_files, read_detail_range
 from .freshness import check_freshness_scoped, load_pack_scope, cache_path_for_aif
 from .config import collect_and_scan
@@ -229,17 +229,13 @@ def list_files(
 
 
 def _normalize_path_arg(value: str) -> str:
-    """Every key this module compares a caller-supplied path against
-    (`files`/`relationships`) is always POSIX-style (`/`), the convention
-    the whole pipeline normalizes to before anything reaches aif.json -- but
-    nothing on the *reading* side enforced that on a caller-supplied `file`/
-    `folder` argument. A backslash path (natural to type on Windows, and a
-    real risk here specifically since this project is developed on Windows)
-    silently failed to match any real key instead of erroring -- see
-    get_dependents()/get_blast_radius()'s own comment for why that's worse
-    than raising outright.
+    """Thin alias for file/textutil.py's shared `normalize_path()` -- kept
+    under this module's own name since every read-side call site here was
+    already written against it; see get_dependents()/get_blast_radius()'s
+    own comment for why a backslash path silently failing to match a real
+    key is worse than raising outright.
     """
-    return value.replace("\\", "/")
+    return normalize_path(value)
 
 
 def _require_known_file(relationships: dict, file: str, aif_path: str) -> str:
