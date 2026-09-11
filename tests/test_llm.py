@@ -173,6 +173,129 @@ def test_openai_generate_retries_when_response_body_is_not_a_json_object(monkeyp
     assert calls["n"] == 2
 
 
+def test_gemini_generate_stops_without_retrying_on_a_safety_blocked_response(monkeypatch):
+    # A safety-blocked or otherwise content-less response (HTTP 200, but no
+    # content/parts at all) isn't a transport or rate-limit failure -- must
+    # be reported and returned as "{}" immediately, not retried the way a
+    # 503/429 or network error is. Regression guard for the _retry_loop()
+    # extraction: this "stop" outcome is distinct from Gemini's own
+    # generic "API error" stop case (see the test just below), and both
+    # must still print their own distinct message via _stop()'s bilingual
+    # pair rather than collapsing into one generic wording.
+    calls = {"n": 0}
+
+    def fake_post(url, json, timeout=None):
+        calls["n"] += 1
+        return _FakeResponse({"candidates": [{"finishReason": "SAFETY"}]})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.GeminiProvider(api_key="x")
+
+    result = provider.generate("prompt", retry=3)
+
+    assert result == "{}"
+    assert calls["n"] == 1  # never retried
+
+
+def test_gemini_generate_retries_on_a_503_error_code(monkeypatch):
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def fake_post(url, json, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _FakeResponse({"error": {"code": 503, "message": "overloaded"}})
+        return _FakeResponse({"candidates": [{"content": {"parts": [{"text": '{"summary": "ok"}'}]}}]})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.GeminiProvider(api_key="x")
+
+    result = provider.generate("prompt", retry=3)
+
+    assert result == '{"summary": "ok"}'
+    assert calls["n"] == 2
+
+
+def test_gemini_generate_stops_on_a_non_retryable_error_code(monkeypatch):
+    calls = {"n": 0}
+
+    def fake_post(url, json, timeout=None):
+        calls["n"] += 1
+        return _FakeResponse({"error": {"code": 400, "message": "bad request"}})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.GeminiProvider(api_key="x")
+
+    result = provider.generate("prompt", retry=3)
+
+    assert result == "{}"
+    assert calls["n"] == 1  # never retried
+
+
+def test_openai_generate_returns_text_on_success(monkeypatch):
+    def fake_post(url, headers=None, json=None, timeout=None):
+        return _FakeResponse({"choices": [{"message": {"content": '{"summary": "ok"}'}}]})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.OpenAIProvider(api_key="x")
+
+    assert provider.generate("prompt") == '{"summary": "ok"}'
+
+
+def test_openai_generate_retries_on_a_5xx_status(monkeypatch):
+    # Checked on the HTTP status, unlike GeminiProvider's error.code -- an
+    # OpenAI-compatible error body commonly carries a string error.type,
+    # not a numeric code.
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _FakeResponse({"error": {"message": "overloaded"}}, status_code=503)
+        return _FakeResponse({"choices": [{"message": {"content": '{"summary": "ok"}'}}]})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.OpenAIProvider(api_key="x")
+
+    result = provider.generate("prompt", retry=3)
+
+    assert result == '{"summary": "ok"}'
+    assert calls["n"] == 2
+
+
+def test_claude_generate_returns_text_on_success(monkeypatch):
+    def fake_post(url, headers=None, json=None, timeout=None):
+        return _FakeResponse({"content": [{"text": '{"summary": "ok"}'}]})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.ClaudeProvider(api_key="x")
+
+    assert provider.generate("prompt") == '{"summary": "ok"}'
+
+
+def test_claude_generate_retries_on_its_own_529_overloaded_status(monkeypatch):
+    # 529 is Anthropic's own overloaded_error status, alongside the usual
+    # 429/5xx set every other provider here also retries on -- not shared
+    # with OpenAIProvider's own retryable-status set.
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _FakeResponse({"error": {"message": "overloaded"}}, status_code=529)
+        return _FakeResponse({"content": [{"text": '{"summary": "ok"}'}]})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.ClaudeProvider(api_key="x")
+
+    result = provider.generate("prompt", retry=3)
+
+    assert result == '{"summary": "ok"}'
+    assert calls["n"] == 2
+
+
 def test_retry_wait_grows_by_5s_then_caps_at_the_max(monkeypatch):
     # Reported directly as "어색한 로직" -- the retry backoff used to grow
     # unbounded (5 * attempt), which combined with the old "(attempt/max)"

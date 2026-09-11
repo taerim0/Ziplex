@@ -130,13 +130,49 @@ export function renderOptions() {
   const claudeDescription = el("p", { class: "muted hidden", text: t("options.claudeDescription") });
   providerDescription.classList.add("hidden");
 
+  // One shared {provider name -> its own fields/description/save payload}
+  // map -- showProvider() (visibility toggle) and the save handler below
+  // both derive from this instead of each independently hardcoding the
+  // same three-way gemini/openai/claude branch, a real drift risk found by
+  // code review (a provider added to one branch but not the other would
+  // silently show fields that save nothing, or vice versa). Each
+  // provider's own field *elements* (labels, hints, preset buttons) still
+  // stay fully bespoke above -- this only consolidates "which provider
+  // owns which fields," not the fields' own genuinely different shapes.
+  const providerGroups = {
+    gemini: {
+      fields: geminiFields,
+      description: geminiDescription,
+      collectBody: () => ({
+        gemini_api_key: apiKeyInput.value.trim(),
+        gemini_model: geminiModelInput.value.trim(),
+      }),
+    },
+    openai: {
+      fields: openaiFields,
+      description: providerDescription,
+      collectBody: () => ({
+        openai_api_key: openaiApiKeyInput.value.trim(),
+        openai_base_url: openaiBaseUrlInput.value.trim(),
+        openai_model: openaiModelInput.value.trim(),
+      }),
+    },
+    claude: {
+      fields: claudeFields,
+      description: claudeDescription,
+      collectBody: () => ({
+        claude_api_key: claudeApiKeyInput.value.trim(),
+        claude_model: claudeModelInput.value.trim(),
+      }),
+    },
+  };
+
   function showProvider(name) {
-    geminiFields.classList.toggle("hidden", name !== "gemini");
-    geminiDescription.classList.toggle("hidden", name !== "gemini");
-    openaiFields.classList.toggle("hidden", name !== "openai");
-    providerDescription.classList.toggle("hidden", name !== "openai");
-    claudeFields.classList.toggle("hidden", name !== "claude");
-    claudeDescription.classList.toggle("hidden", name !== "claude");
+    for (const [key, group] of Object.entries(providerGroups)) {
+      const active = key === name;
+      group.fields.classList.toggle("hidden", !active);
+      group.description.classList.toggle("hidden", !active);
+    }
   }
 
   providerSelect.addEventListener("change", () => showProvider(providerSelect.value));
@@ -194,21 +230,11 @@ export function renderOptions() {
     apiKeySaveButton.disabled = true;
     try {
       // Always sends llm_provider alongside whichever group's own fields
-      // are currently visible -- see showProvider()'s own comment on why
+      // are currently visible -- see providerGroups' own comment on why
       // that has to be one request, not two.
       const provider = providerSelect.value;
-      const body = { llm_provider: provider };
-      if (provider === "gemini") {
-        body.gemini_api_key = apiKeyInput.value.trim();
-        body.gemini_model = geminiModelInput.value.trim();
-      } else if (provider === "openai") {
-        body.openai_api_key = openaiApiKeyInput.value.trim();
-        body.openai_base_url = openaiBaseUrlInput.value.trim();
-        body.openai_model = openaiModelInput.value.trim();
-      } else if (provider === "claude") {
-        body.claude_api_key = claudeApiKeyInput.value.trim();
-        body.claude_model = claudeModelInput.value.trim();
-      }
+      const group = providerGroups[provider];
+      const body = { llm_provider: provider, ...(group ? group.collectBody() : {}) };
       await apiPost("/api/settings", body);
       apiKeySavedNote.classList.remove("hidden");
     } catch (e) {

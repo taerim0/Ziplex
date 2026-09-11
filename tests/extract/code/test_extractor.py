@@ -1,4 +1,4 @@
-from ziplex.extract.code.extractor import extract_signatures, extract_dependencies, extract_api
+from ziplex.extract.code.extractor import extract_signatures, extract_dependencies, extract_api, extract_all
 
 
 def test_extract_signatures_from_python_file(tmp_path):
@@ -1197,3 +1197,82 @@ def test_unsupported_extension_returns_empty_lists(tmp_path):
     assert extract_signatures(str(file_path)) == []
     assert extract_dependencies(str(file_path)) == []
     assert extract_api(str(file_path)) == []
+
+
+def test_extract_all_matches_the_four_individual_calls_for_a_python_file(tmp_path):
+    # extract_all() shares one read_text()/parser.parse() across all four
+    # fields instead of extract_signatures()/extract_dependencies()/
+    # extract_api()/compress_file() each independently re-reading and
+    # re-parsing the same file -- must still produce byte-identical
+    # results to calling all four separately.
+    from ziplex.extract.code.compressor import compress_file
+
+    file_path = tmp_path / "mod.py"
+    file_path.write_text(
+        "import helper\n\n\ndef add(a, b):\n    return a + b\n",
+        encoding="utf-8",
+    )
+
+    result = extract_all(str(file_path))
+
+    assert result["signatures"] == extract_signatures(str(file_path))
+    assert result["dependencies"] == extract_dependencies(str(file_path))
+    assert result["api"] == extract_api(str(file_path))
+    assert result["compressed"] == compress_file(str(file_path))
+    assert result["signatures"] == ["add(a, b)"]
+    assert "helper" in result["dependencies"]  # not stdlib -- survives the filter
+
+
+def test_extract_all_matches_the_four_individual_calls_for_a_js_file_with_api_route(tmp_path):
+    # A second language exercising the api_handler branch too (extract_all()
+    # builds it conditionally on config.api_handler being set) -- Python's
+    # own test above never has one, since .py's api_handler only recognizes
+    # a Flask-style decorator, not Express's app.get(...) call shape.
+    from ziplex.extract.code.compressor import compress_file
+
+    file_path = tmp_path / "server.js"
+    file_path.write_text(
+        'import helper from "./helper";\n\n'
+        'app.get("/status", (req, res) => {\n    res.send("ok");\n});\n',
+        encoding="utf-8",
+    )
+
+    result = extract_all(str(file_path))
+
+    assert result["signatures"] == extract_signatures(str(file_path))
+    assert result["dependencies"] == extract_dependencies(str(file_path))
+    assert result["api"] == extract_api(str(file_path))
+    assert result["compressed"] == compress_file(str(file_path))
+    assert result["api"] != []  # the route was actually found, not just == on two empties
+    assert result["dependencies"] != []  # the import was actually found too
+
+
+def test_extract_all_falls_back_to_compress_file_for_an_unsupported_extension(tmp_path):
+    # No Tree-sitter grammar -> signatures/dependencies/api are all [],
+    # same as calling the three individual functions -- compressed still
+    # goes through compress_file()'s own text-compressor-or-passthrough
+    # fallback rather than losing that file's content entirely.
+    from ziplex.extract.code.compressor import compress_file
+
+    file_path = tmp_path / "notes.xyz"
+    file_path.write_text("whatever", encoding="utf-8")
+
+    result = extract_all(str(file_path))
+
+    assert result == {
+        "signatures": [], "dependencies": [], "api": [],
+        "compressed": compress_file(str(file_path)),
+    }
+    assert result["compressed"] == "whatever"
+
+
+def test_extract_all_handles_an_unreadable_binary_file_with_a_code_extension(tmp_path):
+    # A file whose extension has a real grammar but whose content isn't
+    # valid UTF-8 -- read_text() returns None, same early-return shape as
+    # the "no grammar" case, just reached one step later.
+    file_path = tmp_path / "broken.py"
+    file_path.write_bytes(b"\xff\xfe not valid utf-8")
+
+    assert extract_all(str(file_path)) == {
+        "signatures": [], "dependencies": [], "api": [], "compressed": "",
+    }

@@ -116,6 +116,114 @@ def _label_prefix(label: str) -> str:
     return f"[{label}] " if label else ""
 
 
+class _LLMResult:
+    """One HTTP attempt's outcome, as classified by a provider's own
+    `interpret(data, response)` callback passed to `_retry_loop()` below --
+    "ok" (a real answer, in `text`), "retry" (the same transient-failure
+    treatment a network error already gets), or "stop" (a non-retryable
+    failure, logged via the bilingual `message_en`/`message_ko` pair and
+    returned as "{}" with no further attempts). A plain class with three
+    tiny named constructors rather than a raw tuple, so a provider's own
+    `interpret()` reads as "return _ok(text)" / "return _retry()" /
+    "return _stop(en, ko)" instead of an unlabeled positional shape.
+    """
+
+    __slots__ = ("status", "text", "message_en", "message_ko")
+
+    def __init__(self, status: str, text: str | None = None, message_en: str | None = None, message_ko: str | None = None):
+        self.status = status
+        self.text = text
+        self.message_en = message_en
+        self.message_ko = message_ko
+
+
+def _ok(text: str) -> _LLMResult:
+    return _LLMResult("ok", text=text)
+
+
+def _retry_result() -> _LLMResult:
+    return _LLMResult("retry")
+
+
+def _stop(message_en: str, message_ko: str) -> _LLMResult:
+    return _LLMResult("stop", message_en=message_en, message_ko=message_ko)
+
+
+def _retry_loop(make_request, interpret, retry: int, prefix: str) -> str:
+    """The retry/backoff/JSON-parse scaffolding every LLMProvider's
+    generate() needs -- GeminiProvider/OpenAIProvider/ClaudeProvider each
+    used to reimplement this same ~50-line loop independently, differing
+    only in what request to send and how to read the response. A real
+    duplication gap found by code review: a fix to shared retry semantics
+    (e.g. MAX_RETRY_WAIT_SECONDS's own cap) had to be applied and verified
+    in three separate places, and a fourth provider would have been a
+    fourth full copy-paste.
+
+    `make_request()` is a zero-arg closure sending this attempt's HTTP
+    request -- a provider's own per-call url/headers/body stay entirely on
+    that provider's side of this seam. `interpret(data, response)`
+    classifies the parsed JSON body (already confirmed to be a dict by the
+    time it's called -- a non-dict body is treated as a JSON parse failure
+    below, same as before this was extracted) into an `_LLMResult`: "ok"
+    returns the extracted text via `_clean_json()`; "retry" logs and waits
+    the same "server overloaded" way regardless of *why* a provider
+    considered its response retryable (Gemini's own `error.code`, an HTTP
+    status for OpenAI/Claude); "stop" logs `interpret()`'s own bilingual
+    message and returns "{}" immediately, letting a provider keep a
+    distinct message for a genuinely different failure shape (e.g.
+    GeminiProvider's safety-blocked-response case reads differently from
+    a generic API error, even though both are equally non-retryable).
+    """
+    for attempt in range(retry):
+        try:
+            response = make_request()
+            data = response.json()
+            if not isinstance(data, dict):
+                # Syntactically valid JSON that isn't an object (a bare
+                # `null`, most plausibly from a local server that isn't
+                # fully started) -- routed through the same except branch
+                # below rather than left for `interpret()` to handle, which
+                # would otherwise need every provider's own callback to
+                # separately guard against a non-dict `data` before doing
+                # any `dict`-shaped lookup on it.
+                raise json.JSONDecodeError("response body is not a JSON object", "", 0)
+        except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+            # A transport-level failure (DNS, connection reset, read
+            # timeout) or a non-JSON response body (a proxy's HTML error
+            # page) is just as transient as an explicit 503/429 from the
+            # API itself -- retried the same way, rather than propagating
+            # straight out of generate() uncaught. Left uncaught, this used
+            # to skip every caller's checkpoint-on-failure path
+            # (summarizer.py's thread pool, packager.py's rules/prompt
+            # calls, checkpoint.handle_llm_failure()) entirely, crashing
+            # the whole pack() run and losing all extraction work done so
+            # far instead of saving a resumable checkpoint first.
+            wait = _retry_wait(attempt)
+            print(pick(
+                f"  ⚠️  {prefix}Network error ({e.__class__.__name__}), retrying in {wait}s",
+                f"  ⚠️  {prefix}네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도",
+            ))
+            time.sleep(wait)
+            continue
+
+        result = interpret(data, response)
+        if result.status == "ok":
+            return _clean_json(result.text)
+        if result.status == "retry":
+            wait = _retry_wait(attempt)
+            print(pick(
+                f"  ⚠️  {prefix}Server overloaded, retrying in {wait}s",
+                f"  ⚠️  {prefix}서버 과부하, {wait}초 후 재시도",
+            ))
+            time.sleep(wait)
+            continue
+
+        print(pick(f"  ❌ {prefix}{result.message_en}", f"  ❌ {prefix}{result.message_ko}"))
+        break
+
+    return "{}"
+
+
 # Appended to every per-file summary prompt (analyze_file_summary/
 # analyze_text_summary/analyze_batch_summaries) -- confidence.py's
 # estimate_confidence() scores a summary by word-overlap against the file's
@@ -258,67 +366,39 @@ class GeminiProvider:
     def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         api_key = self._resolve_api_key()
         prefix = _label_prefix(label)
-        for attempt in range(retry):
-            try:
-                response = _post(f"{self.url}?key={api_key}", json={
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    # Every prompt here is a short, single-shot extraction
-                    # task (summarize this file in one line, list these
-                    # rules) with a "JSON only" answer -- none of it benefits
-                    # from Gemini's extended "thinking" mode, which is on by
-                    # default for the 2.5+/3.x Flash generation this
-                    # project's own DEFAULT_MODEL/GEMINI_MODEL point at.
-                    # Confirmed directly against the real API (2026-08-26,
-                    # reported by a user whose AI Studio cost jumped ~10x
-                    # with no code or usage-pattern change on their end,
-                    # traced to exactly this): a trivial one-word request
-                    # billed usageMetadata.thoughtsTokenCount = 142 (of a
-                    # 150-token total) with no thinkingConfig set, and 0
-                    # (field absent, totalTokenCount = 8) with
-                    # thinkingBudget: 0 -- since `-latest` is a floating
-                    # alias (see DEFAULT_MODEL's own comment), the model it
-                    # actually points to -- and therefore whether thinking
-                    # is on by default -- can change with no code change on
-                    # this end at all. Every model reachable through the API
-                    # at the time of this fix (checked directly) is from a
-                    # thinking-capable generation -- both older, non-thinking
-                    # Flash releases tried during this investigation came
-                    # back 404 (sunset) -- so there's no live model left to
-                    # confirm this field is harmlessly ignored elsewhere
-                    # rather than rejected; revisit if a future model
-                    # actually errors on it.
-                    "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}},
-                }, timeout=REQUEST_TIMEOUT)
-                data = response.json()
-                if not isinstance(data, dict):
-                    # Syntactically valid JSON that isn't an object (a bare
-                    # `null`, most plausibly from a local server that isn't
-                    # fully started) -- routed through the same except
-                    # branch below rather than falling through to
-                    # `"candidates" in data`, which raises an uncaught
-                    # TypeError for a non-dict/list/str body and would
-                    # otherwise crash summarizer.py's thread pool outright
-                    # instead of retrying or checkpointing.
-                    raise json.JSONDecodeError("response body is not a JSON object", "", 0)
-            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-                # A transport-level failure (DNS, connection reset, read
-                # timeout) or a non-JSON response body (a proxy's HTML error
-                # page) is just as transient as an explicit 503/429 from the
-                # API itself -- retried the same way, rather than propagating
-                # straight out of generate() uncaught. Left uncaught, this
-                # used to skip every caller's checkpoint-on-failure path
-                # (summarizer.py's thread pool, packager.py's rules/prompt
-                # calls, checkpoint.handle_llm_failure()) entirely, crashing
-                # the whole pack() run and losing all extraction work done
-                # so far instead of saving a resumable checkpoint first.
-                wait = _retry_wait(attempt)
-                print(pick(
-                    f"  ⚠️  {prefix}Network error ({e.__class__.__name__}), retrying in {wait}s",
-                    f"  ⚠️  {prefix}네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도",
-                ))
-                time.sleep(wait)
-                continue
 
+        def make_request():
+            return _post(f"{self.url}?key={api_key}", json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                # Every prompt here is a short, single-shot extraction
+                # task (summarize this file in one line, list these
+                # rules) with a "JSON only" answer -- none of it benefits
+                # from Gemini's extended "thinking" mode, which is on by
+                # default for the 2.5+/3.x Flash generation this
+                # project's own DEFAULT_MODEL/GEMINI_MODEL point at.
+                # Confirmed directly against the real API (2026-08-26,
+                # reported by a user whose AI Studio cost jumped ~10x
+                # with no code or usage-pattern change on their end,
+                # traced to exactly this): a trivial one-word request
+                # billed usageMetadata.thoughtsTokenCount = 142 (of a
+                # 150-token total) with no thinkingConfig set, and 0
+                # (field absent, totalTokenCount = 8) with
+                # thinkingBudget: 0 -- since `-latest` is a floating
+                # alias (see DEFAULT_MODEL's own comment), the model it
+                # actually points to -- and therefore whether thinking
+                # is on by default -- can change with no code change on
+                # this end at all. Every model reachable through the API
+                # at the time of this fix (checked directly) is from a
+                # thinking-capable generation -- both older, non-thinking
+                # Flash releases tried during this investigation came
+                # back 404 (sunset) -- so there's no live model left to
+                # confirm this field is harmlessly ignored elsewhere
+                # rather than rejected; revisit if a future model
+                # actually errors on it.
+                "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}},
+            }, timeout=REQUEST_TIMEOUT)
+
+        def interpret(data, response):
             if "candidates" in data:
                 try:
                     text = data["candidates"][0]["content"]["parts"][0]["text"]
@@ -327,37 +407,23 @@ class GeminiProvider:
                     # (HTTP 200, but no `content`/`parts` at all -- e.g.
                     # finishReason: "SAFETY" on source text containing
                     # words like "kill"/"exploit") isn't a transport or
-                    # rate-limit failure, so it isn't retried; falling
-                    # through to the same "{}" the API-error branch below
-                    # returns keeps this inside the documented
-                    # json.loads()-falls-back-to-default contract instead
-                    # of an uncaught IndexError/KeyError escaping into
-                    # summarizer.py's thread pool or packager.py's
-                    # rules/prompt calls and crashing the whole pack() run.
+                    # rate-limit failure, so it isn't retried; this is its
+                    # own distinct "stop" message rather than the generic
+                    # "API error" one below.
                     finish_reason = data["candidates"][0].get("finishReason", "unknown") if data["candidates"] else "unknown"
-                    print(pick(
-                        f"  ❌ {prefix}Empty response (finishReason: {finish_reason})",
-                        f"  ❌ {prefix}응답에 콘텐츠 없음 (finishReason: {finish_reason})",
-                    ))
-                    break
-                return _clean_json(text)
+                    return _stop(
+                        f"Empty response (finishReason: {finish_reason})",
+                        f"응답에 콘텐츠 없음 (finishReason: {finish_reason})",
+                    )
+                return _ok(text)
 
             error_code = data.get("error", {}).get("code", 0)
             error_msg = data.get("error", {}).get("message", "unknown")
+            if error_code in (503, 429):
+                return _retry_result()
+            return _stop(f"API error: {error_msg}", f"API 에러: {error_msg}")
 
-            if error_code in [503, 429]:
-                wait = _retry_wait(attempt)
-                print(pick(
-                    f"  ⚠️  {prefix}Server overloaded, retrying in {wait}s",
-                    f"  ⚠️  {prefix}서버 과부하, {wait}초 후 재시도",
-                ))
-                time.sleep(wait)
-                continue
-
-            print(pick(f"  ❌ {prefix}API error: {error_msg}", f"  ❌ {prefix}API 에러: {error_msg}"))
-            break
-
-        return "{}"
+        return _retry_loop(make_request, interpret, retry, prefix)
 
 
 class OpenAIProvider:
@@ -408,33 +474,12 @@ class OpenAIProvider:
         body = {"model": self.model, "messages": [{"role": "user", "content": prompt}]}
         prefix = _label_prefix(label)
 
-        for attempt in range(retry):
-            try:
-                response = _post(
-                    f"{self.base_url}/chat/completions", headers=headers, json=body, timeout=REQUEST_TIMEOUT
-                )
-                data = response.json()
-                if not isinstance(data, dict):
-                    # See GeminiProvider.generate()'s matching comment --
-                    # this class is the one most likely to hit it in
-                    # practice, since it's explicitly meant to point at
-                    # local servers (Ollama/LM Studio/vLLM/llama.cpp) that
-                    # can return a non-object body while still starting up.
-                    raise json.JSONDecodeError("response body is not a JSON object", "", 0)
-            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-                # Same transient-failure treatment as GeminiProvider's own
-                # generate() -- see that method's comment for why.
-                wait = _retry_wait(attempt)
-                print(pick(
-                    f"  ⚠️  {prefix}Network error ({e.__class__.__name__}), retrying in {wait}s",
-                    f"  ⚠️  {prefix}네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도",
-                ))
-                time.sleep(wait)
-                continue
+        def make_request():
+            return _post(f"{self.base_url}/chat/completions", headers=headers, json=body, timeout=REQUEST_TIMEOUT)
 
+        def interpret(data, response):
             if response.status_code == 200 and "choices" in data:
-                text = data["choices"][0]["message"]["content"]
-                return _clean_json(text)
+                return _ok(data["choices"][0]["message"]["content"])
 
             # Checked on the HTTP status, not a response body field, unlike
             # GeminiProvider's error.code -- an OpenAI-compatible error body
@@ -442,19 +487,14 @@ class OpenAIProvider:
             # not a numeric code, so the status line is the reliable signal
             # across every backend this class might be pointed at.
             if response.status_code in (429, 500, 502, 503, 504):
-                wait = _retry_wait(attempt)
-                print(pick(
-                    f"  ⚠️  {prefix}Server overloaded, retrying in {wait}s",
-                    f"  ⚠️  {prefix}서버 과부하, {wait}초 후 재시도",
-                ))
-                time.sleep(wait)
-                continue
+                return _retry_result()
 
-            error_msg = data.get("error", {}).get("message", "unknown") if isinstance(data, dict) else "unknown"
-            print(pick(f"  ❌ {prefix}API error: {error_msg}", f"  ❌ {prefix}API 에러: {error_msg}"))
-            break
+            # `data` is already confirmed a dict by _retry_loop() before
+            # interpret() is ever called -- no isinstance guard needed here.
+            error_msg = data.get("error", {}).get("message", "unknown")
+            return _stop(f"API error: {error_msg}", f"API 에러: {error_msg}")
 
-        return "{}"
+        return _retry_loop(make_request, interpret, retry, prefix)
 
 
 class ClaudeProvider:
@@ -502,42 +542,22 @@ class ClaudeProvider:
         }
         prefix = _label_prefix(label)
 
-        for attempt in range(retry):
-            try:
-                response = _post(self.API_URL, headers=headers, json=body, timeout=REQUEST_TIMEOUT)
-                data = response.json()
-                if not isinstance(data, dict):
-                    # See GeminiProvider.generate()'s matching comment.
-                    raise json.JSONDecodeError("response body is not a JSON object", "", 0)
-            except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-                wait = _retry_wait(attempt)
-                print(pick(
-                    f"  ⚠️  {prefix}Network error ({e.__class__.__name__}), retrying in {wait}s",
-                    f"  ⚠️  {prefix}네트워크 오류 ({e.__class__.__name__}), {wait}초 후 재시도",
-                ))
-                time.sleep(wait)
-                continue
+        def make_request():
+            return _post(self.API_URL, headers=headers, json=body, timeout=REQUEST_TIMEOUT)
 
+        def interpret(data, response):
             if response.status_code == 200 and "content" in data:
-                text = data["content"][0]["text"]
-                return _clean_json(text)
+                return _ok(data["content"][0]["text"])
 
             # 529 is Anthropic's own overloaded_error status, alongside the
             # usual 429/5xx set every other provider here also retries on.
             if response.status_code in (429, 500, 502, 503, 504, 529):
-                wait = _retry_wait(attempt)
-                print(pick(
-                    f"  ⚠️  {prefix}Server overloaded, retrying in {wait}s",
-                    f"  ⚠️  {prefix}서버 과부하, {wait}초 후 재시도",
-                ))
-                time.sleep(wait)
-                continue
+                return _retry_result()
 
-            error_msg = data.get("error", {}).get("message", "unknown") if isinstance(data, dict) else "unknown"
-            print(pick(f"  ❌ {prefix}API error: {error_msg}", f"  ❌ {prefix}API 에러: {error_msg}"))
-            break
+            error_msg = data.get("error", {}).get("message", "unknown")
+            return _stop(f"API error: {error_msg}", f"API 에러: {error_msg}")
 
-        return "{}"
+        return _retry_loop(make_request, interpret, retry, prefix)
 
 
 class MockProvider:

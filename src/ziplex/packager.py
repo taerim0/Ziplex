@@ -7,8 +7,7 @@ from .file.scanner import scan_files
 from .file.selector import select_files, review_dangerous_files
 from .file.media import classify_media_file, media_summary
 from .file.textutil import relative_key as _rel_key
-from .extract.code.extractor import extract_signatures, extract_dependencies, extract_api
-from .extract.code.compressor import compress_file
+from .extract.code.extractor import extract_all
 from .text_references import find_text_references_for_file, merge_text_references
 from .go_packages import resolve_go_context, expand_dependencies_for_file
 from .tokenizer import analyze_tokens_with_payload
@@ -615,7 +614,7 @@ def _assemble_aif(
     project_name: str, prompt: str, tech_stack: list[dict], security_scan: dict,
     include: list[str] | None, ignore: list[str] | None, lang: str, rules: list[str],
     folders: dict, folder_confidences: dict, folder_file_counts: dict, token_results: dict,
-    files_data: dict, root: Path, selected: list[str], root_path: str,
+    files_data: dict, root: Path, selected: list[str], root_path: str, current_manifest: dict[str, str],
 ) -> dict:
     """Step 7: assembles the final in-memory aif dict from every piece the
     earlier stages already computed -- no new logic of its own past this
@@ -721,7 +720,12 @@ def _assemble_aif(
         # drifted from the files on disk without re-running any of the above.
         # save_aif() pulls this out into a sibling <name>.cache.json, the
         # same way it pulls `compressed` out into <name>.detail.json.
-        "_manifest": build_manifest(selected, root_path),
+        # Passed in already-computed (pack()'s own current_manifest,
+        # hashed once right after `selected` was finalized) rather than
+        # calling build_manifest(selected, root_path) again here -- this
+        # function used to re-hash the same file set a second time per pack
+        # run, for the exact same result, a real gap found by code review.
+        "_manifest": current_manifest,
     }
 
 
@@ -948,9 +952,19 @@ def pack(
         print(pick("No files selected.", "선택된 파일 없음."))
         return {}
 
+    # Hashed once here and threaded through to both load_previous_summaries()
+    # (staleness stage 2, just below) and _assemble_aif()'s own final
+    # `_manifest` (step 7) -- both used to independently re-hash every
+    # selected file's content, a real gap found by code review: identical
+    # work done twice per pack run for zero behavioral difference, since
+    # neither call mutates `selected` in between.
+    current_manifest = build_manifest(selected, root_path)
+
     # incremental reuse (staleness stage 2): {relative key: summary} for
     # files whose content hasn't changed since the last successful pack
-    previous_summaries = load_previous_summaries(root_path, selected, effective_result_dir, lang=lang) if use_cache else {}
+    previous_summaries = load_previous_summaries(
+        root_path, selected, effective_result_dir, lang=lang, current_manifest=current_manifest,
+    ) if use_cache else {}
     if previous_summaries:
         print(pick(
             f"  ♻️  Found {len(previous_summaries)} unchanged file(s) from a previous pack — reusing their summaries",
@@ -1065,10 +1079,17 @@ def pack(
                 print(pick(f"  🖼️  {name} (media file, no LLM used)", f"  🖼️  {name} (미디어 파일, LLM 미사용)"))
             continue
 
-        sigs = extract_signatures(file_path)
-        deps = expand_dependencies_for_file(file_path, name, extract_dependencies(file_path), go_module_path, go_package_index)
-        apis = extract_api(file_path)
-        compressed = compress_file(file_path)
+        # extract_all() shares one read_text()/parser.parse() call across
+        # signatures/dependencies/api/compressed -- calling
+        # extract_signatures()/extract_dependencies()/extract_api()/
+        # compress_file() separately here used to tree-sitter-parse the
+        # same file 4 times per pack, a real efficiency gap found by code
+        # review (see extract_all()'s own docstring).
+        extracted = extract_all(file_path)
+        sigs = extracted["signatures"]
+        deps = expand_dependencies_for_file(file_path, name, extracted["dependencies"], go_module_path, go_package_index)
+        apis = extracted["api"]
+        compressed = extracted["compressed"]
         reused_summary = previous_summaries.get(name, "")
 
         files_data[file_path] = {
@@ -1196,7 +1217,7 @@ def pack(
     aif = _assemble_aif(
         project_name, prompt, tech_stack, security_scan,
         include, ignore, lang, rules, folders, folder_confidences, folder_file_counts,
-        token_results, files_data, root, selected, root_path,
+        token_results, files_data, root, selected, root_path, current_manifest,
     )
 
     # delete the checkpoint on success

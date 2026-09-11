@@ -108,7 +108,10 @@ class FreshnessReport:
         return bool(self.changed or self.added or self.removed)
 
 
-def check_freshness(file_paths: list[str], root: str, manifest: dict[str, str]) -> FreshnessReport:
+def check_freshness(
+    file_paths: list[str], root: str, manifest: dict[str, str],
+    current_manifest: dict[str, str] | None = None,
+) -> FreshnessReport:
     """Compares file_paths' current content hashes against a previously
     saved manifest (build_manifest()'s output, e.g. loaded from a
     <name>.cache.json). Doesn't touch aif.json/detail.json itself -- just
@@ -118,8 +121,14 @@ def check_freshness(file_paths: list[str], root: str, manifest: dict[str, str]) 
     (e.g. from collect_files() + scan_files()), not just whatever's already
     in `manifest` -- that's what makes added/removed files detectable, not
     only changed ones.
+
+    `current_manifest` lets a caller that already hashed file_paths itself
+    (packager.py's pack(), see load_previous_summaries()'s own docstring)
+    pass that result straight through instead of this function silently
+    re-hashing every file a second time -- every other caller leaves it
+    None and gets the original behavior.
     """
-    current = build_manifest(file_paths, root)
+    current = current_manifest if current_manifest is not None else build_manifest(file_paths, root)
 
     changed = sorted(
         name for name, digest in current.items()
@@ -269,7 +278,10 @@ def check_freshness_scoped(
     return check_freshness(candidates, project_path, manifest)
 
 
-def load_previous_summaries(root_path: str, selected: list[str], result_dir: Path, lang: str = "en") -> dict[str, str]:
+def load_previous_summaries(
+    root_path: str, selected: list[str], result_dir: Path, lang: str = "en",
+    current_manifest: dict[str, str] | None = None,
+) -> dict[str, str]:
     """{relative key: summary} for files in `selected` whose content hash
     matches the last successful pack's manifest, at result_dir (the
     conventional path save_aif() writes to by default: <name>.json +
@@ -306,6 +318,15 @@ def load_previous_summaries(root_path: str, selected: list[str], result_dir: Pat
     existed) is treated as `"en"`, the only language that existed then --
     same default `packager.pack()`/`checkpoint.unpack_snapshot()` already
     use for the same reason.
+
+    `current_manifest` (2026-09-11) lets a caller that's about to hash
+    `selected` again anyway for its own purposes (packager.py's pack(),
+    whose final `_assemble_aif()` builds the saved `_manifest` off the same
+    file set) pass that result straight through to check_freshness() below
+    instead of every selected file's content being hashed twice per pack
+    run for zero behavioral difference -- a real gap found by code review.
+    Left None (the default) for every other caller, which still hashes
+    fresh here exactly as before.
     """
     # .resolve() so root_path == "." (packing from inside the project's own
     # folder) doesn't collapse to "" -- Path(".").name has no name component
@@ -329,7 +350,7 @@ def load_previous_summaries(root_path: str, selected: list[str], result_dir: Pat
         return {}
     previous_files = previous_aif.get("files", {})
 
-    report = check_freshness(selected, root_path, previous_manifest)
+    report = check_freshness(selected, root_path, previous_manifest, current_manifest=current_manifest)
 
     # "changed" + "unchanged" = current files the previous manifest also
     # knew about at all (regardless of hash match); "added" = current files

@@ -1036,6 +1036,70 @@ def test_pack_reuses_summaries_for_unchanged_files_on_a_second_run(tmp_path, mon
     assert aif2["files"]["README.md"]["summary"] == aif1["files"]["README.md"]["summary"]
 
 
+def test_pack_tree_sitter_parses_each_code_file_only_once(tmp_path, monkeypatch):
+    # Real efficiency gap found by code review: the per-file extraction
+    # loop used to call extract_signatures()/extract_dependencies()/
+    # extract_api()/compress_file() back-to-back, each independently
+    # tree-sitter-parsing the same file from scratch -- roughly quadrupling
+    # parse-tree construction cost. packager.py now goes through
+    # extract_all(), which shares one parse across all four. Counting real
+    # tree_sitter.Parser.parse() calls (not extract_all() calls) catches
+    # this regardless of which module's own bound name invokes it.
+    from tree_sitter import Parser
+
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "util.py", "def helper():\n    pass\n")
+
+    calls = []
+    real_parse = Parser.parse
+    monkeypatch.setattr(Parser, "parse", lambda self, *a, **kw: calls.append(1) or real_parse(self, *a, **kw))
+
+    packager.pack(str(project), auto=True, interactive=False)
+
+    # 2 code files, each parsed exactly once (not 4x).
+    assert len(calls) == 2
+
+
+def test_pack_hashes_each_selected_file_only_once_per_run(tmp_path, monkeypatch):
+    # Real gap found by code review: load_previous_summaries() (staleness
+    # stage 2) and _assemble_aif()'s own final `_manifest` used to each
+    # independently re-hash every selected file's content via
+    # freshness.build_manifest() -> hash_file(), doubling the disk-read+
+    # hash cost of every default (use_cache=True) pack() call for zero
+    # behavioral difference. packager.py now hashes once (current_manifest)
+    # and threads that result through both. Counting hash_file() calls
+    # directly (rather than build_manifest() calls) catches this
+    # regardless of which module's own bound name actually invokes it.
+    # Exercised on a *second* run specifically, since that's the one where
+    # load_previous_summaries() actually reaches check_freshness() at all
+    # (a first run with no previous pack on disk returns {} before ever
+    # hashing anything there).
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "README.md", "# Sample\n\nA sample project.\n")
+
+    aif1 = packager.pack(str(project), auto=True, interactive=False)
+    packager.save_aif(aif1, project_path=str(project))
+
+    from ziplex import freshness
+
+    calls = []
+    real_hash_file = freshness.hash_file
+    monkeypatch.setattr(freshness, "hash_file", lambda fp: calls.append(fp) or real_hash_file(fp))
+
+    packager.pack(str(project), auto=True, interactive=False)
+
+    # 2 selected files, each hashed exactly once (not twice) this run.
+    assert len(calls) == 2
+
+
 def test_pack_result_dir_overrides_result_dir_for_cache_lookup(tmp_path, monkeypatch):
     # RESULT_DIR itself points somewhere this test never writes to --
     # proves the cache lookup follows the explicit `result_dir` param

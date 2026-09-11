@@ -81,10 +81,23 @@ def compress_code(code: str, ext: str) -> str | None:
     if not parser:
         return None
 
+    tree = parser.parse(bytes(code, "utf8"))
+    return compress_from_tree(code, ext, tree)
+
+
+def compress_from_tree(code: str, ext: str, tree) -> str:
+    """compress_code()'s own body-stripping logic, taking an already-parsed
+    `tree` instead of parsing `code` itself -- split out so a caller that's
+    already parsed the same code for another reason (extractor.py's
+    extract_all(), see its own docstring) doesn't have to pay for a second,
+    redundant tree-sitter parse just to also compress it. compress_code()
+    itself is unchanged for every other caller (Markdown code-block
+    compression, any future one-off caller with only `code`/`ext` in hand,
+    not an already-parsed tree).
+    """
     config = get_language_config(ext)
     function_types = config.function_types if config else []
 
-    tree = parser.parse(bytes(code, "utf8"))
     lines = code.splitlines()
 
     # collect the line ranges covered by function bodies

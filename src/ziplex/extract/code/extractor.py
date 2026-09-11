@@ -1,7 +1,65 @@
 from .languages import get_language_config
 from .parser import get_parser
+from .compressor import compress_file, compress_from_tree
 from ...file.textutil import read_text
 from pathlib import Path
+
+def extract_all(file_path: str) -> dict:
+    """signatures + dependencies + api + compressed, sharing exactly one
+    read_text()/parser.parse() call -- packager.py's per-file loop is the
+    one real caller that needs all four at once for a code file, and used
+    to get them via extract_signatures()/extract_dependencies()/
+    extract_api()/compress_file() (each still fine standalone -- the CLI's
+    single-file `signatures`/`dependencies`/`api`/`compress` debug
+    subcommands and existing tests call them individually), each
+    independently re-reading and re-tree-sitter-parsing the same file from
+    scratch. A real efficiency gap found by code review: every code file in
+    every pack() run used to be parsed 4 times instead of once, roughly
+    quadrupling parse-tree construction cost project-wide.
+
+    Falls back to compress_file(file_path) itself (accepting its own
+    second read_text() call) for the "no Tree-sitter grammar" and
+    "unreadable as text" cases -- both already return [] for free from the
+    other three fields with no parsing attempted at all (same as calling
+    extract_signatures()/extract_dependencies()/extract_api() individually
+    would), so there's no parse to actually share in either case, and
+    compress_file() alone already carries the real logic for a non-code
+    file (Dockerfile-shaped filename detection, the text-compressor-or-
+    passthrough fallback) that would otherwise have to be duplicated here.
+    """
+    parser = get_parser(file_path)
+    if not parser:
+        return {"signatures": [], "dependencies": [], "api": [], "compressed": compress_file(file_path)}
+
+    code = read_text(file_path)
+    if code is None:
+        return {"signatures": [], "dependencies": [], "api": [], "compressed": compress_file(file_path)}
+
+    ext = Path(file_path).suffix
+    config = get_language_config(ext)
+    tree = parser.parse(bytes(code, "utf8"))
+
+    node_types = config.function_types if config else []
+    implicit_names = config.implicit_names if config else {}
+    name_prefixes = config.name_prefixes if config else {}
+    zero_arg_types = config.zero_arg_types if config else frozenset()
+    field_handler = config.field_handler if config else None
+    signatures = []
+    _traverse_signatures(tree.root_node, signatures, node_types, implicit_names, name_prefixes, zero_arg_types, None, field_handler)
+
+    dependencies = []
+    if config:
+        _traverse_dependencies(tree.root_node, dependencies, config.dependency_handler)
+
+    api = []
+    handler = config.api_handler if config else None
+    if handler is not None:
+        _traverse_api(tree.root_node, api, handler)
+
+    compressed = compress_from_tree(code, ext, tree)
+
+    return {"signatures": signatures, "dependencies": dependencies, "api": api, "compressed": compressed}
+
 
 def extract_signatures(file_path: str) -> list[str]:
     parser = get_parser(file_path)
