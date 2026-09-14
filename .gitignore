@@ -1,5 +1,6 @@
 **/__pycache__/
 .pytest_cache/
+.coverage
 
 # Python packaging build artifacts (pip install -e ., python -m build)
 *.egg-info/
