@@ -243,9 +243,9 @@ Pick a project folder with the native folder picker, check off which files to in
 
 ### Reviewing before anything is saved
 
-![Pack: review project guide, rules, and per-file summaries](docs/images/gui-pack-review.png)
+![Pack: review project guide, rules, and folder/per-file summaries](docs/images/gui-pack-review.png)
 
-Analysis pauses for review before anything is saved: edit the project name, guide, rules, and per-file summaries (only the low-confidence ones are flagged, same triage the CLI uses).
+Analysis pauses for review before anything is saved: edit the project name, guide, rules, and folder/per-file summaries (only the low-confidence ones are flagged, same triage the CLI uses).
 
 ### Dependency graph & relationship editing
 

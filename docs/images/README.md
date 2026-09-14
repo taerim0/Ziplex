@@ -5,7 +5,7 @@ Drop screenshots here with these exact filenames and both `README.md`/`README_ko
 | Filename | Screen |
 |---|---|
 | `gui-pack-select.png` | Pack: project folder picked, files checked off for inclusion |
-| `gui-pack-review.png` | Pack: post-analysis review (project guide/rules/per-file summaries) |
+| `gui-pack-review.png` | Pack: post-analysis review (project guide/rules/folder+per-file summaries) |
 | `gui-relationships.png` | Dependency tree overview or the per-file relationship editor |
 | `gui-overview.png` | An already-packed project's Overview page |
 | `gui-options.png` | The Options page |
