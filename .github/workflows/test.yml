@@ -19,9 +19,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Matches pyproject.toml's own `requires-python`/classifiers -- both
-        # versions this package claims to support.
-        python-version: ["3.10", "3.11"]
+        # 3.10/3.11 match pyproject.toml's own classifiers. requires-python
+        # itself has no upper bound, an implicit claim this workflow never
+        # actually verified until 3.12 was added here -- add the matching
+        # classifier to pyproject.toml once this has actually run green on
+        # 3.12, rather than claiming support pre-emptively.
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
