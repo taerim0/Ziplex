@@ -70,7 +70,12 @@ export function renderPackHome() {
     packButton.classList.add("hidden");
     loadFilesButton.disabled = true;
     try {
-      const data = await api("/api/select_files", { project_path });
+      // progress_lang: see gui_server.py's /api/select_files docstring --
+      // a dangerous file's scan reason (scanner.py's scan_file(), routed
+      // through progress_i18n.pick()) is rendered directly into this page,
+      // so it needs the same display-language value /api/pack sends below,
+      // not the "ko" default this route falls back to when it's missing.
+      const data = await api("/api/select_files", { project_path, progress_lang: getLang() });
       // settings.py's resolved default for *this* project (its own pin, or
       // the Options page's global default) -- shown as a placeholder, not
       // filled into the field's actual value, so leaving the field alone

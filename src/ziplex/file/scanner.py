@@ -3,6 +3,7 @@ import json
 import re
 
 from ..file.textutil import read_text
+from ..progress_i18n import pick
 from .media import classify_media_file
 
 # fallback keyword/pattern pairs used when secretlint fails/isn't
@@ -157,8 +158,16 @@ def _scan_with_secretlint(file_path: str) -> dict | bool | None:
 
         first = messages[0]
         line = first.get("range", {}).get("start", {}).get("line")
+        # first["message"] is secretlint's own output -- always English,
+        # out of this project's control -- so the pick() below only ever
+        # actually localizes the *fallback* half (no message present at
+        # all), not full en/ko parity with the pattern-fallback path below.
+        # Still worth doing: a Korean-display-language GUI user hitting this
+        # exact fallback (secretlint ran, matched a rule, but reported no
+        # message text) shouldn't see English leak in from here alone.
+        reason = first.get("message") or pick("secretlint rule triggered", "secretlint 규칙 위반")
         return {
-            "reason": first.get("message") or "secretlint rule triggered",
+            "reason": reason,
             "line": line,
             "matched_text": _line_at(file_path, line),
         }
@@ -180,7 +189,8 @@ def _scan_with_pattern(file_path: str) -> dict | None:
         for keyword, pattern in zip(_SENSITIVE_KEYWORDS, SENSITIVE_PATTERNS):
             match = re.search(pattern, line, re.IGNORECASE)
             if match and _looks_like_a_real_secret(match.group(1), keyword):
-                return {"reason": f"패턴 일치: {pattern}", "line": lineno, "matched_text": line}
+                reason = pick(f"Pattern match: {pattern}", f"패턴 일치: {pattern}")
+                return {"reason": reason, "line": lineno, "matched_text": line}
     return None
 
 

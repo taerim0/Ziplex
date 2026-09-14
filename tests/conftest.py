@@ -4,7 +4,25 @@ belonging to any one module.
 
 import pytest
 
+from ziplex import progress_i18n
 from ziplex import settings as app_settings
+
+
+@pytest.fixture(autouse=True)
+def _reset_progress_lang():
+    """progress_i18n's ContextVar is process-wide, so a test that calls
+    progress_i18n.set_current() (directly, or indirectly through
+    scan_file()/list_selectable_files()/pack()) would otherwise leak that
+    value into every test that runs after it in the same session --
+    exactly the kind of order-dependent, hard-to-diagnose failure a code
+    review flagged as a real risk once tests started exercising this.
+    Resets to the documented default ("ko") both before and after each
+    test, mirroring _isolate_ziplex_settings below -- individual tests no
+    longer need their own manual try/finally restore dance.
+    """
+    progress_i18n.set_current("ko")
+    yield
+    progress_i18n.set_current("ko")
 
 
 @pytest.fixture(autouse=True)

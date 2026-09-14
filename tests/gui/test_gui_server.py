@@ -20,6 +20,7 @@ import pytest
 import ziplex
 from ziplex import checkpoint
 from ziplex import freshness
+from ziplex import progress_i18n
 from ziplex.gui import gui_server
 from ziplex import llm
 from ziplex import packager
@@ -202,6 +203,38 @@ def test_api_select_files_splits_safe_and_dangerous(client, tmp_path):
     assert data["dangerous"] == [{
         "file": "secret.env", "reason": mock.ANY, "line": 1, "matched_text": 'API_KEY = "abc123"',
     }]
+
+
+def test_api_select_files_progress_lang_reaches_the_scan_reason(client, tmp_path):
+    # conftest.py's autouse _reset_progress_lang handles restoring
+    # progress_i18n's (process-wide) ContextVar afterward.
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "secret.env").write_text('API_KEY = "abc123"\n', encoding="utf-8")
+
+    res = client.get(
+        "/api/select_files",
+        query_string={"project_path": str(project), "progress_lang": "en"},
+    )
+    assert res.status_code == 200
+    assert res.get_json()["dangerous"][0]["reason"].startswith("Pattern match:")
+
+
+def test_before_request_resets_progress_lang_even_for_a_route_that_never_touches_it(client):
+    # The scenario _reset_progress_lang's own docstring describes: Werkzeug's
+    # threaded dev server can reuse the same OS thread (and thus the same
+    # ContextVar context) across several keep-alive requests, so a value one
+    # request's route left behind could otherwise leak into the next one.
+    # /api/select_files and /api/pack both have their own explicit
+    # progress_lang handling, so they'd pass this test even without the
+    # before_request hook -- this hits /api/config instead (a route with no
+    # progress_lang logic of its own at all) specifically to prove the hook
+    # itself is what resets the ContextVar, not some route-level fallback.
+    progress_i18n.set_current("en")
+
+    client.get("/api/config")
+
+    assert progress_i18n.current() == "ko"
 
 
 def test_api_select_files_missing_project_dir_is_404(client, tmp_path):

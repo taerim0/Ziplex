@@ -79,6 +79,8 @@ from .. import settings as app_settings
 from .. import __version__
 from ..file.relationship import CycleError
 from ..llm import LANGUAGE_NAMES
+from ..progress_i18n import normalize as _normalize_progress_lang
+from ..progress_i18n import set_current as _set_progress_lang
 
 # static_folder="." -- not "gui" -- since index.html/the js/ module tree/
 # style.css are this file's own siblings now that gui_server.py itself
@@ -94,6 +96,45 @@ app = Flask(__name__, static_folder=".", static_url_path="")
 # topbar (see router.js's bootstrap) so a human looking at the GUI can tell
 # which build they're running without a separate `ziplex --version` call.
 _default_config = {"aif_path": None, "project_path": None, "version": __version__}
+
+
+@app.before_request
+def _reset_progress_lang():
+    """Guards against a real, if currently latent, cross-request leak: the
+    dev server runs threaded (see main()'s app.run(threaded=True)) with
+    HTTP/1.1 keep-alive, so Werkzeug can reuse the same OS thread for several
+    requests on one persistent connection. progress_i18n's ContextVar.set()
+    mutates that thread's context for the rest of its lifetime, not just for
+    the request that called it -- unlike a Context.run() boundary, nothing
+    about a plain Flask request scopes the value back down afterward.
+    Running this before every request, defaulting to "ko" the same way
+    progress_i18n.normalize() does everywhere else, means no route has to
+    think about this on its own -- today that's exactly what api_select_files
+    relies on (it reads `progress_lang` nowhere in its own body at all,
+    trusting whatever this hook already set from the identical query
+    string moments earlier).
+
+    api_pack_start is a different shape, not an instance of "already
+    covered so this hook is redundant for it": it normalizes its own
+    `progress_lang` from the JSON body (this hook only ever reads the query
+    string, cheap and safe for any method -- request.get_json() would raise
+    on a body-less GET) and forwards that value into start_pack_job(), but
+    never calls progress_i18n.set_current() on *this* (the request-handling)
+    thread at all -- the actual set_current() call for that value happens
+    later, on pack()'s own separately-spawned background threading.Thread
+    (pack_service.start_pack_job() never runs through Flask's request cycle
+    once spawned), which this hook has no reach into either way. So this
+    hook's reset here is only ever protecting the request thread itself --
+    were api_pack_start's own pre-spawn code to ever need a pick()-based
+    string, this is what it would still correctly fall back to.
+    """
+    # set_current() already normalizes internally (progress_i18n.normalize())
+    # -- _normalize_progress_lang() (the same function, imported) is only
+    # needed at a call site that also has to use the normalized value for
+    # something *besides* this call, like api_pack_start's own JSON-body
+    # value below (stored/forwarded into start_pack_job()); this one has no
+    # such second use, so the raw request value goes straight through.
+    _set_progress_lang(request.args.get("progress_lang"))
 
 
 # query_service's functions open aif_path/project_path straight off disk
@@ -187,6 +228,16 @@ def api_select_files():
     project_path and return the safe/dangerous split as relative names, so
     the GUI can show a human a checklist -- the browser equivalent of
     select_files()'s terminal picker. See pack_service.list_selectable_files().
+
+    Optional `progress_lang` query param -- same meaning/values as
+    /api/pack's own (see that route's docstring); sent by `js/pages/landing.js`
+    alongside this request so a dangerous file's scan reason follows the
+    GUI's current display language even at this pre-pack step. Not read
+    here directly -- `_reset_progress_lang` (below) already set
+    `progress_i18n`'s ContextVar from this exact query string before this
+    route body started running, so `list_selectable_files()` is left to its
+    own `None` default (trust the ambient value) instead of this route
+    re-deriving and re-passing the identical value a second time.
     """
     project_path = request.args["project_path"]
     error = _project_dir_error(project_path)
@@ -236,7 +287,7 @@ def api_pack_start():
     no_llm = bool(data.get("no_llm"))
     lang = data.get("lang") if data.get("lang") in LANGUAGE_NAMES else "en"
     resume = bool(data.get("resume"))
-    progress_lang = data.get("progress_lang") if data.get("progress_lang") in ("en", "ko") else "ko"
+    progress_lang = _normalize_progress_lang(data.get("progress_lang"))
     job_id = pack_service.start_pack_job(
         project_path, output_path, no_cache=no_cache, no_llm=no_llm, selected_files=selected_files, lang=lang,
         resume=resume, progress_lang=progress_lang,

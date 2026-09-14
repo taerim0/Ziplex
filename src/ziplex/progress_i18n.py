@@ -23,24 +23,50 @@ only the default, since a plain thread inherits nothing from the one that
 started it.
 
 `pack()`'s own `progress_lang: str = "ko"` parameter (defaulting to today's
-existing CLI behavior) is the only place this ever gets `set()` -- every
-other function in the pipeline just calls `pick()` at its own print site,
+existing CLI behavior) is the pipeline's own entry point for this -- every
+function *inside* the pipeline just calls `pick()` at its own print site,
 so none of those needed a new parameter threaded through the whole call
-chain from `pack()` down to their own `print()`.
+chain from `pack()` down to their own `print()`. It is not the only caller
+of `set_current()` overall, though: `save_aif()` re-asserts it independently
+(saving can happen on its own, after `pack()` already returned), and
+`gui_server.py`'s `before_request` hook resets it at the start of every
+Flask request specifically to guard the *request-handling* thread against a
+keep-alive connection reusing the same OS thread (and thus the same
+`ContextVar` context) across two requests that want different languages --
+see that hook's own docstring. That request-thread guard is a wholly
+separate concern from this one: `pack_service.start_pack_job()` runs
+`pack()` on its own freshly spawned `threading.Thread`, which never goes
+through Flask's request cycle at all, so `before_request` has no effect on
+it one way or the other -- `pack()`'s/`save_aif()`'s own explicit calls are
+still what set the language that thread actually sees.
 """
 
 from contextvars import ContextVar
 
 _current: ContextVar[str] = ContextVar("progress_lang", default="ko")
 
+_VALID = ("en", "ko")
 
-def set_current(lang: str) -> None:
-    """Normalizes an unrecognized value to "ko" (today's long-standing
-    default) rather than raising -- same "never let a bad language value
-    break the pipeline" spirit `packager.pack()`'s own `lang` param already
-    follows.
+
+def normalize(lang) -> str:
+    """An unrecognized value (including None, or anything not a string at
+    all) falls back to "ko" (today's long-standing default) rather than
+    raising -- same "never let a bad language value break the pipeline"
+    spirit `packager.pack()`'s own `lang` param already follows. The one
+    place this rule lives -- `set_current()` below is its main caller, but
+    `gui_server.py` also needs it *before* calling `set_current()`, to
+    normalize a raw request value it's about to both set the ContextVar
+    from and pass through/store elsewhere (`pack_service.py`'s job dict,
+    echoed back via `get_job_status()`'s `retry_params`) -- a code-review
+    finding: gui_server.py used to reimplement this exact rule locally,
+    a real drift risk if the accepted language set ever changes and only
+    one of the two copies gets updated.
     """
-    _current.set(lang if lang in ("en", "ko") else "ko")
+    return lang if lang in _VALID else "ko"
+
+
+def set_current(lang) -> None:
+    _current.set(normalize(lang))
 
 
 def current() -> str:

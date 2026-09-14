@@ -4,6 +4,7 @@ Windows, see _scan_with_secretlint()'s own docstring) never actually runs;
 every real invocation in this suite exercises the fallback path.
 """
 
+from ziplex import progress_i18n
 from ziplex.file.scanner import scan_file, scan_files, _looks_like_a_real_secret
 
 
@@ -161,6 +162,76 @@ def test_short_value_is_not_a_real_secret_quoted_or_not():
     # credential either way.
     assert _looks_like_a_real_secret('"x"', "API_KEY") is False
     assert _looks_like_a_real_secret("x", "API_KEY") is False
+
+
+def test_scan_file_reason_follows_progress_lang(tmp_path):
+    # A real gap found dogfooding Ziplex's own English-language GUI: this
+    # was the one "reason" string in the whole pipeline that stayed
+    # hardcoded Korean regardless of progress_i18n's setting (every other
+    # print/message site already routes through progress_i18n.pick(), see
+    # checkpoint.py/summarizer.py/llm.py) -- misleading specifically because
+    # scan_file()'s reason is rendered straight into the GUI's own display
+    # (landing.js), not "CLI output" that's allowed to stay Korean by
+    # convention. conftest.py's autouse _reset_progress_lang resets the
+    # (process-wide) ContextVar around this test, so no manual restore is
+    # needed here.
+    path = tmp_path / "secret.env"
+    _write(path, 'API_KEY = "abc123"\n')
+
+    progress_i18n.set_current("en")
+    assert scan_file(str(path))["reason"].startswith("Pattern match:")
+
+    progress_i18n.set_current("ko")
+    assert scan_file(str(path))["reason"].startswith("패턴 일치:")
+
+
+def _fake_secretlint_result(stdout: str):
+    class _Result:
+        pass
+    r = _Result()
+    r.stdout = stdout
+    return r
+
+
+def test_scan_with_secretlint_no_message_fallback_follows_progress_lang(tmp_path, monkeypatch):
+    # Found alongside the pattern-fallback fix (see
+    # test_scan_file_reason_follows_progress_lang above): secretlint's own
+    # per-finding "message" is always English (out of this project's
+    # control -- see this branch's own comment in scanner.py), but the
+    # *fallback* string used when a finding carries no message at all is
+    # ours to localize, and used to be hardcoded English unconditionally.
+    # secretlint doesn't actually run in this dev/CI environment (see
+    # _scan_with_secretlint()'s own documented Windows .cmd-shim gap), so
+    # this mocks subprocess.run directly rather than relying on a real
+    # secretlint install to exercise the branch at all.
+    import subprocess
+
+    stdout = '[{"messages": [{"range": {"start": {"line": 1}}}]}]'  # no "message" key
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_secretlint_result(stdout))
+    path = tmp_path / "secret.env"
+    _write(path, "irrelevant -- secretlint itself is mocked\n")
+
+    progress_i18n.set_current("en")
+    assert scan_file(str(path))["reason"] == "secretlint rule triggered"
+
+    progress_i18n.set_current("ko")
+    assert scan_file(str(path))["reason"] == "secretlint 규칙 위반"
+
+
+def test_scan_with_secretlint_real_message_ignores_progress_lang(tmp_path, monkeypatch):
+    # The *other* half of the same branch: when secretlint does report a
+    # message, that text is used verbatim regardless of progress_lang --
+    # it's secretlint's own English output, not something pick() should
+    # ever touch or replace.
+    import subprocess
+
+    stdout = '[{"messages": [{"message": "Found a GitHub token", "range": {"start": {"line": 2}}}]}]'
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_secretlint_result(stdout))
+    path = tmp_path / "secret.env"
+    _write(path, "irrelevant -- secretlint itself is mocked\n")
+
+    progress_i18n.set_current("ko")
+    assert scan_file(str(path))["reason"] == "Found a GitHub token"
 
 
 def test_scan_file_trusts_a_clean_secretlint_result_without_falling_back(tmp_path, monkeypatch):

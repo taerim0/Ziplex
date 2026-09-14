@@ -21,11 +21,17 @@
 // applyStaticI18n() (for index.html's own static markup -- the
 // sidebar/topbar links aren't rendered by any render*() function, so
 // nothing else in this app would ever re-translate them on a language
-// switch without this). Not persisted to the backend -- landing.js's own
-// pack-start request is the one place getLang() rides along as a plain
-// request field (`progress_lang`, so a pack job's own progress log
-// matches this same language -- see packager.pack()'s param of the same
-// name), a one-off value for that single call, not a stored preference.
+// switch without this). Not persisted to the backend -- landing.js sends
+// getLang() along as a plain `progress_lang` request field on two calls,
+// a one-off value each time, not a stored preference: the pack-start
+// request (so a pack job's own progress log matches this same language --
+// see packager.pack()'s param of the same name) and the file-selection
+// request before it (so a flagged file's scan reason -- scanner.py's
+// scan_file(), routed through progress_i18n.pick() -- matches too, even
+// before a pack job exists to carry the value any other way). Either
+// request omitting it falls back to gui_server.py's own default ("ko") --
+// see that file's `_reset_progress_lang` before_request hook, the more
+// general backstop behind both call sites.
 
 const LANG_KEY = "ziplex.lang";
 

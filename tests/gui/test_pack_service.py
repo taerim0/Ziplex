@@ -56,6 +56,21 @@ def test_list_selectable_files_splits_safe_and_dangerous(tmp_path):
     assert result["dangerous"][0]["matched_text"] == 'API_KEY = "abc123"'
 
 
+def test_list_selectable_files_dangerous_reason_follows_progress_lang(tmp_path):
+    # A real gap: this function runs before start_pack_job() (which already
+    # threads progress_lang through) ever exists, so a dangerous file's
+    # scan reason used to show hardcoded Korean on this screen no matter
+    # what the GUI's own display language was set to -- see
+    # scanner.py's test_scan_file_reason_follows_progress_lang for the
+    # underlying mechanism this exercises end to end. (conftest.py's
+    # autouse _reset_progress_lang handles restoring the ContextVar.)
+    project = tmp_path / "project"
+    _write(project / "secret.env", 'API_KEY = "abc123"\n')
+
+    result = pack_service.list_selectable_files(str(project), progress_lang="en")
+    assert result["dangerous"][0]["reason"].startswith("Pattern match:")
+
+
 def test_list_selectable_files_default_output_path_empty_when_unconfigured(tmp_path, monkeypatch):
     monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
     project = tmp_path / "project"

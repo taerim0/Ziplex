@@ -91,6 +91,7 @@ from ..file.relationship import build_tree
 from ..file.relationship import remove_dependency as _remove_dependency
 from ..file.relationship import remove_relationship as _remove_relationship
 from ..file.textutil import relative_key as _rel_key
+from ..progress_i18n import set_current as _set_progress_lang
 
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()  # guards _jobs itself (insert/lookup) only -- see module docstring
@@ -246,7 +247,7 @@ def _capture_for_job(job: dict):
         yield
 
 
-def list_selectable_files(project_path: str) -> dict:
+def list_selectable_files(project_path: str, progress_lang: str | None = None) -> dict:
     """Runs config.collect_and_scan() over project_path and returns the
     safe/dangerous split -- the read-only step a GUI file-selection screen
     calls before a pack job exists at all, so a human sees the real file
@@ -264,7 +265,31 @@ def list_selectable_files(project_path: str) -> dict:
     be re-included by submitting selected_files with its name in it --
     pack()'s own collection step wouldn't have produced it either, so it
     just silently wouldn't match anything in `preselected`.
+
+    progress_lang -- same meaning as start_pack_job()'s own param
+    (packager.pack()'s progress_i18n mechanism) -- matters here because a
+    dangerous entry's `reason` (scanner.py's scan_file(), routed through
+    progress_i18n.pick()) is rendered straight into this GUI's own display,
+    not "CLI output" that's allowed to stay Korean by convention -- a real
+    gap found dogfooding Ziplex's own English-language GUI: this screen is
+    reached *before* start_pack_job() ever runs, so nothing had set the
+    language yet and a flagged file's reason showed hardcoded Korean
+    regardless of what the Options page had selected.
+
+    Defaults to `None`, not a literal "ko" -- gui_server.py's own
+    `_reset_progress_lang` `before_request` hook (see that function's
+    docstring) already sets `progress_i18n`'s ContextVar correctly before
+    `api_select_files()`'s route body ever runs, from the very same request
+    query string this function would otherwise have to re-read and
+    re-normalize itself (a code-review finding: that used to be duplicated,
+    easy-to-drift logic in two places for a value that was already correct
+    by the time this function ran). `None` means "trust whatever's already
+    set" -- only a caller that actually needs a *specific* value regardless
+    of ambient state (every test in this file that isn't going through
+    Flask at all) passes one explicitly.
     """
+    if progress_lang is not None:
+        _set_progress_lang(progress_lang)
     scan_result = collect_and_scan(project_path)
     dangerous = sorted(
         ({**entry, "file": _rel_key(entry["file"], project_path)} for entry in scan_result["dangerous"]),
