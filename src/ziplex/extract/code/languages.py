@@ -799,8 +799,8 @@ def _append_php_use_clause(clause: Node, prefix: str | None, results: list) -> N
     """A single namespace_use_clause's real path, with an optional group
     prefix prepended (see _php_dependency_handler below for the two shapes
     this is called from). The clause's own children are either
-    [qualified_name|name] for a plain `use Foo\Bar;`, or
-    [name, "as", name(field="alias")] for an aliased `use Foo\Bar as B;" --
+    [qualified_name|name] for a plain `use Foo\\Bar;`, or
+    [name, "as", name(field="alias")] for an aliased `use Foo\\Bar as B;" --
     either way the *first* qualified_name/name child is always the real
     path (the alias, when present, is always the second one), so taking
     the first match and returning immediately already skips the alias with
@@ -824,15 +824,15 @@ def _append_php_use_clause(clause: Node, prefix: str | None, results: list) -> N
 def _php_dependency_handler(node: Node, results: list) -> bool:
     """Two distinct dependency shapes in PHP, both handled here.
 
-    `use Foo\Bar;` / `use Foo\Bar as B;` / a grouped `use Foo\{Bar, Baz as
+    `use Foo\\Bar;` / `use Foo\\Bar as B;` / a grouped `use Foo\\{Bar, Baz as
     B};` all parse as one namespace_use_declaration node type, but with two
     different internal shapes: a plain or aliased use has its
     namespace_use_clause as a direct child (or several, comma-separated,
-    for `use Foo\A, Foo\B;`); a grouped use instead has a namespace_name
+    for `use Foo\\A, Foo\\B;`); a grouped use instead has a namespace_name
     prefix sibling plus a namespace_use_group (field "body") wrapping one
     namespace_use_clause per sibling -- each needs the prefix re-attached
     since the group's own clauses only carry their own suffix
-    ("Bar"/"Baz", not "Foo\Bar"/"Foo\Baz"). Handled by walking node's
+    ("Bar"/"Baz", not "Foo\\Bar"/"Foo\\Baz"). Handled by walking node's
     direct children once, tracking any namespace_name prefix seen along
     the way and dispatching each namespace_use_clause (direct or nested
     inside the group) through _append_php_use_clause with the right
