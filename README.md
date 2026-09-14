@@ -237,7 +237,7 @@ ziplex-gui --no-window                                # plain browser tab instea
 
 ### Packing a project
 
-![Pack: pick a project and select files](docs/images/gui-pack-select.png)
+![Pack: project setup — folder, output path, and packing language](docs/images/gui-pack-select.png)
 
 Pick a project folder with the native folder picker, check off which files to include (the same safe/dangerous split `collect`'s security scan produces), pick the packing language (`pack --lang`'s GUI equivalent — what language summaries/rules/the AI guide are *written in*, separate from the Options page's own display-language setting below), optionally check "no LLM" (`pack --no-llm`'s GUI equivalent), and watch the pack run in the background.
 

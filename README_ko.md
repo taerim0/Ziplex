@@ -236,7 +236,7 @@ ziplex-gui --no-window                                # 창 대신 일반 브라
 
 ### 프로젝트 패킹하기
 
-![패킹: 프로젝트 선택 및 파일 체크](docs/images/gui-pack-select.png)
+![패킹: 프로젝트 설정 — 폴더/출력 경로, 패킹 언어](docs/images/gui-pack-select.png)
 
 네이티브 폴더 선택창으로 프로젝트 폴더를 고르고, 어떤 파일을 포함할지 체크박스로 고른 뒤(`collect`의 보안 스캔이 만드는 것과 같은 safe/dangerous 구분), 패킹 언어(`pack --lang`의 GUI 버전 — summary/rules/AI 가이드가 실제로 *작성될* 언어이며, 아래 옵션 페이지의 화면 표시 언어와는 별개)를 고르고, 원하면 "LLM 사용 안 함"(`pack --no-llm`의 GUI 버전)도 체크하고, 백그라운드에서 돌아가는 패킹 과정을 지켜봅니다.
 
