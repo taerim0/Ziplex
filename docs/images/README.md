@@ -1,6 +1,13 @@
 # Screenshots referenced by the main README
 
-Drop screenshots here with these exact filenames and both `README.md`/`README_ko.md`'s GUI section picks them up automatically — no other change needed.
+Two parallel sets, split by which language the `ziplex-gui` window itself was
+showing when the screenshot was taken (the GUI's own display-language
+setting, Options page — separate from `--lang`, which is what *packed*
+summaries/rules/the AI guide are written in): this directory holds the
+Korean-language GUI screenshots, referenced by `README_ko.md`; `en/` holds
+the English-language ones, referenced by `README.md`. Same five filenames in
+both places — drop a same-named replacement into whichever set changed and
+that README's GUI section picks it up automatically, no other edit needed.
 
 | Filename | Screen |
 |---|---|

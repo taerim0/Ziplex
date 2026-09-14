@@ -237,31 +237,31 @@ ziplex-gui --no-window                                # plain browser tab instea
 
 ### Packing a project
 
-![Pack: project setup — folder, output path, and packing language](docs/images/gui-pack-select.png)
+![Pack: project setup — folder, output path, and packing language](docs/images/en/gui-pack-select.png)
 
 Pick a project folder with the native folder picker, check off which files to include (the same safe/dangerous split `collect`'s security scan produces), pick the packing language (`pack --lang`'s GUI equivalent — what language summaries/rules/the AI guide are *written in*, separate from the Options page's own display-language setting below), optionally check "no LLM" (`pack --no-llm`'s GUI equivalent), and watch the pack run in the background.
 
 ### Reviewing before anything is saved
 
-![Pack: review project guide, rules, and folder/per-file summaries](docs/images/gui-pack-review.png)
+![Pack: review project guide, rules, and folder/per-file summaries](docs/images/en/gui-pack-review.png)
 
 Analysis pauses for review before anything is saved: edit the project name, guide, rules, and folder/per-file summaries (only the low-confidence ones are flagged, same triage the CLI uses).
 
 ### Dependency graph & relationship editing
 
-![Dependency tree and relationship editor](docs/images/gui-relationships.png)
+![Dependency tree and relationship editor](docs/images/en/gui-relationships.png)
 
 The dependency graph opens as a collapsible whole-tree overview first — click a file's name once you've spotted one worth fixing to drop into an edit view for just that file, linking or unlinking individual edges (a file with more than one real parent keeps its other references intact). The Relationships page (for a project already packed) reuses this same whole-tree-then-edit-one-file flow, so a relationship noticed after the fact can be fixed without re-running the pipeline.
 
 ### Browsing an already-packed project
 
-![Overview page for a packed project](docs/images/gui-overview.png)
+![Overview page for a packed project](docs/images/en/gui-overview.png)
 
 The same overview/files/relationships/detail/search views the MCP server exposes, as web pages instead of MCP tool calls. Each page has a Copy button; the intended flow is looking around here and pasting what's useful into a separate AI chat by hand, not the GUI talking to that chat itself.
 
 ### Options page
 
-![Options page: language, output folder, AI provider](docs/images/gui-options.png)
+![Options page: language, output folder, AI provider](docs/images/en/gui-options.png)
 
 Display language, the default output folder new packs save to, and which AI provider every pack uses (Gemini / OpenAI-compatible / Claude — see [Other AI providers](#quick-start)), with one-click presets for Ollama's and LM Studio's default local ports so a fully local setup needs no typed URL.
 
