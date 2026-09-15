@@ -39,6 +39,32 @@ def build_stem_map(file_names) -> dict:
 _HEADER_EXTENSIONS = (".h", ".hpp", ".hh", ".hxx")
 
 
+def _same_ext_candidate(candidates: list[str], source_ext: str | None) -> str | None:
+    """The first candidate sharing source_ext's own extension, or None.
+
+    A same-stem collision isn't only a C/C++ header/impl pair -- a bare
+    stem match (e.g. a Python `from . import search` reduced to the bare
+    stem "search") can just as easily land on an *unrelated file in a
+    different language* that happens to share the same stem (e.g.
+    `search.js` sitting elsewhere in the project). No language actually
+    imports a sibling module across languages by a bare stem, so a
+    candidate matching the importing file's own extension is always the
+    right pick over one that doesn't -- confirmed as a real, live bug in
+    Ziplex's own repo: `cli.py`/`query_service.py` (both Python) each have
+    a `from . import search` (reduced to the bare stem "search") that used
+    to resolve onto `gui/js/pages/search.js` instead of the real sibling
+    `search.py`, purely because the JS file happened to sort earlier in
+    collection order -- silently dropping the real edge to `search.py`
+    from `relationships` entirely.
+    """
+    if not source_ext:
+        return None
+    for name in candidates:
+        if Path(name).suffix == source_ext:
+            return name
+    return None
+
+
 def _flatten_stem_map(stem_map: dict) -> set:
     """Flat set of every file name appearing anywhere in stem_map's value
     lists -- every file name appears in exactly one stem group (its own),
@@ -55,26 +81,43 @@ def _flatten_stem_map(stem_map: dict) -> set:
     return {name for names in stem_map.values() for name in names}
 
 
-def _pick_candidate(candidates: list[str]) -> str:
+def _pick_candidate(candidates: list[str], source_ext: str | None = None) -> str:
     """Disambiguates resolve_dependency()'s bare-stem match when more than
     one collected file shares that stem. A single candidate returns
     immediately -- the overwhelmingly common case, and the only case that
     existed at all before same-stem collisions were even distinguished
-    from an unambiguous match. Several candidates prefer a header
-    extension (see _HEADER_EXTENSIONS); failing that, the first one in
-    collection order, same as build_stem_map()'s old last-write-wins
-    behavior would have picked anyway for two same-kind files (e.g. two
-    unrelated "config" stems that aren't a header/impl pair at all).
+    from an unambiguous match.
+
+    Several candidates are ranked in order:
+    1. A header extension (see _HEADER_EXTENSIONS) -- an #include-style
+       path-based import overwhelmingly names what's being *declared*,
+       never what implements it, regardless of which language the
+       importing file itself is written in.
+    2. A candidate sharing the *importing* file's own extension
+       (_same_ext_candidate(), see its own docstring for the real,
+       confirmed bug this closes) -- only reached once (1) finds nothing,
+       so it never overrides the header/impl preference.
+    3. The first candidate in collection order, same as build_stem_map()'s
+       old last-write-wins behavior would have picked anyway for two
+       same-kind files (e.g. two unrelated "config" stems in the same
+       language that aren't a header/impl pair at all) -- also what a
+       caller with no source_ext (an old call site, or a one-off resolve
+       with no importing file to compare against) always falls back to.
     """
     if len(candidates) == 1:
         return candidates[0]
     for name in candidates:
         if Path(name).suffix in _HEADER_EXTENSIONS:
             return name
+    same_ext = _same_ext_candidate(candidates, source_ext)
+    if same_ext:
+        return same_ext
     return candidates[0]
 
 
-def resolve_dependency(dep: str, stem_map: dict, all_names: set | None = None) -> str | None:
+def resolve_dependency(
+    dep: str, stem_map: dict, all_names: set | None = None, source_name: str | None = None
+) -> str | None:
     """Matches a dependencies entry against an internal project file name.
 
     all_names is the flat set _flatten_stem_map(stem_map) would build --
@@ -83,6 +126,14 @@ def resolve_dependency(dep: str, stem_map: dict, all_names: set | None = None) -
     below explains why); left as None and computed on the fly here for a
     one-off caller (a test, corrector.py's interactive loop) that doesn't
     already have one lying around.
+
+    source_name is the name of the file `dep` was extracted *from* --
+    passed through to _pick_candidate() (via its own extension) as a
+    disambiguation hint when a bare-stem match has more than one same-stem
+    candidate and none of them is a header extension. Optional and only
+    ever used for that one tie-break; every exact-filename match (the
+    first check below, which covers the overwhelming majority of real
+    dependencies) ignores it entirely.
 
     dep can come in three shapes:
     - a raw dotted import path extracted by Tree-sitter (e.g.
@@ -113,7 +164,10 @@ def resolve_dependency(dep: str, stem_map: dict, all_names: set | None = None) -
     if dep in (all_names if all_names is not None else _flatten_stem_map(stem_map)):
         return dep
     candidates = stem_map.get(dep) or stem_map.get(dep.split(".")[-1])
-    return _pick_candidate(candidates) if candidates else None
+    if not candidates:
+        return None
+    source_ext = Path(source_name).suffix if source_name else None
+    return _pick_candidate(candidates, source_ext)
 
 
 def _drop_text_dep(data: dict, key: str, keep) -> None:
@@ -177,7 +231,7 @@ def has_cycle(
             continue
         visited.add(current)
         for dep in files.get(current, {}).get("dependencies", []):
-            matched = resolve_dependency(dep, stem_map, all_names)
+            matched = resolve_dependency(dep, stem_map, all_names, source_name=current)
             if matched:
                 queue.append(matched)
     return False
@@ -210,9 +264,11 @@ def move_file(files: dict, file_name: str, new_parent: str) -> dict:
         raise CycleError(new_parent, file_name)
 
     # remove file_name from wherever it's currently listed as a dependency
-    for data in files.values():
+    for name, data in files.items():
         deps = data.get("dependencies", [])
-        data["dependencies"] = [d for d in deps if resolve_dependency(d, stem_map, all_names) != file_name]
+        data["dependencies"] = [
+            d for d in deps if resolve_dependency(d, stem_map, all_names, source_name=name) != file_name
+        ]
         # text_dependencies is always an exact-filename subset of
         # dependencies (see build_tree()'s docstring) -- a plain equality
         # check keeps it in sync without needing resolve_dependency() again.
@@ -260,13 +316,13 @@ def add_dependency(files: dict, file_name: str, target: str) -> dict:
         raise CycleError(file_name, target)
 
     deps = files[file_name].setdefault("dependencies", [])
-    if not any(resolve_dependency(d, stem_map, all_names) == target for d in deps):
+    if not any(resolve_dependency(d, stem_map, all_names, source_name=file_name) == target for d in deps):
         deps.append(target)
     else:
         _drop_text_dep(
             files[file_name],
             "text_dependencies",
-            lambda d: resolve_dependency(d, stem_map, all_names) != target,
+            lambda d: resolve_dependency(d, stem_map, all_names, source_name=file_name) != target,
         )
 
     return files
@@ -289,11 +345,13 @@ def remove_dependency(files: dict, file_name: str, target: str) -> dict:
     all_names = _flatten_stem_map(stem_map)
     deps = files[file_name].get("dependencies", [])
     files[file_name]["dependencies"] = [
-        d for d in deps if resolve_dependency(d, stem_map, all_names) != target
+        d for d in deps if resolve_dependency(d, stem_map, all_names, source_name=file_name) != target
     ]
 
     _drop_text_dep(
-        files[file_name], "text_dependencies", lambda d: resolve_dependency(d, stem_map, all_names) != target
+        files[file_name],
+        "text_dependencies",
+        lambda d: resolve_dependency(d, stem_map, all_names, source_name=file_name) != target,
     )
 
     return files
@@ -424,7 +482,7 @@ def build_tree(files: dict) -> dict:
         internal, external = [], []
         code_targets, text_only_targets = set(), set()
         for dep in deps:
-            matched = resolve_dependency(dep, stem_map, all_names)
+            matched = resolve_dependency(dep, stem_map, all_names, source_name=name)
             if matched == name:
                 continue  # a file referencing itself isn't a real relationship in either direction
             if matched:

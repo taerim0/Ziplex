@@ -142,6 +142,37 @@ def test_resolve_dependency_prefers_header_extension_for_a_bare_stem_collision()
     assert resolve_dependency("Config", stem_map) == "Config.h"
 
 
+def test_resolve_dependency_prefers_same_extension_as_importer_for_a_cross_language_stem_collision():
+    # A real, confirmed bug in Ziplex's own repo: a bare-stem dependency
+    # (e.g. a Python `from . import search`, reduced to the stem "search")
+    # can collide with an *unrelated file in a different language* that
+    # happens to share the same stem -- here, a JS file living elsewhere in
+    # the project. No language imports a sibling module across languages by
+    # a bare stem, so the candidate sharing the importing file's own
+    # extension must win, regardless of collection order. Without
+    # source_name, resolution falls back to collection order (still
+    # documented, still correct for a caller with no importer to compare
+    # against).
+    stem_map = build_stem_map(["gui/js/pages/search.js", "search.py"])  # .js collected first
+    assert resolve_dependency("search", stem_map, source_name="cli.py") == "search.py"
+    assert resolve_dependency("search", stem_map, source_name="pages/router.js") == "gui/js/pages/search.js"
+    assert resolve_dependency("search", stem_map) == "gui/js/pages/search.js"  # no source -- old fallback
+
+
+def test_build_tree_resolves_a_bare_stem_dependency_to_the_same_language_sibling():
+    # End-to-end regression for the bug above: build_tree() must thread
+    # each file's own name through to resolve_dependency() as source_name,
+    # so a Python file's dependency on another Python module never lands on
+    # an unrelated same-stem file in a different language.
+    files = {
+        "cli.py": {"dependencies": [".search"]},
+        "search.py": {"dependencies": []},
+        "gui/js/pages/search.js": {"dependencies": []},
+    }
+    tree = build_tree(files)
+    assert tree["cli.py"]["internal"] == ["search.py"]
+
+
 def test_build_tree_resolves_both_sides_of_a_header_impl_pair(tmp_path):
     # End-to-end regression for the bug this was caught by: a project with
     # a real Config.h/Config.cpp pair, where a third file references

@@ -268,7 +268,33 @@ def _py_dependency_handler(node: Node, results: list) -> bool:
     if node.type == "import_from_statement":
         module = node.child_by_field_name("module_name")
         if module:
-            _append_if_not_stdlib(module.text.decode(), results)
+            module_text = module.text.decode()
+            _append_if_not_stdlib(module_text, results)
+            # `from . import settings as app_settings` / `from .. import
+            # checkpoint` -- a bare relative prefix with no dotted_name
+            # component at all (module_text is only dots, e.g. "."/"..").
+            # module_text alone can never resolve to a file there, but this
+            # repo's own convention (see AGENTS.md: "Internal imports are
+            # package-relative") uses exactly this shape to import a
+            # *sibling module*, not a symbol inside one -- the real target
+            # is one of the names actually being imported. Every other
+            # shape (`from .paths import REPO_ROOT`) already carries the
+            # real submodule in module_text itself (".paths"), where the
+            # imported names are genuine symbols, not files -- skipping
+            # this branch there avoids treating a symbol like "REPO_ROOT"
+            # as a spurious candidate file name.
+            if module.type == "relative_import" and not any(
+                c.type == "dotted_name" for c in module.children
+            ):
+                for child in node.children:
+                    if child.type == "dotted_name":
+                        name_node = child
+                    elif child.type == "aliased_import":
+                        name_node = child.child_by_field_name("name")
+                    else:
+                        continue
+                    if name_node is not None:
+                        _append_if_not_stdlib(module_text + name_node.text.decode(), results)
         return True
 
     if node.type == "import_statement":

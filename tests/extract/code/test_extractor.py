@@ -337,6 +337,32 @@ def test_extract_dependencies_keeps_relative_imports_named_like_stdlib(tmp_path)
     assert ".json" in extract_dependencies(str(file_path))
 
 
+def test_extract_dependencies_from_bare_relative_import(tmp_path):
+    # `from . import settings as app_settings` / `from .. import checkpoint`
+    # -- a real, common pattern in Ziplex's own repo (see cli.py/doctor.py/
+    # llm.py/mcp_server.py) for importing a sibling module directly, rather
+    # than a symbol from a named submodule. The relative_import node here
+    # (module_name field) has no dotted_name component at all -- its text is
+    # only dots ("."/"..") -- so it alone can never resolve to a file the
+    # way ".json" does above. This used to make the actual imported sibling
+    # module (settings/checkpoint below) invisible to the dependency graph
+    # entirely: only "." was ever appended, and resolve_dependency()'s
+    # last-dotted-segment fallback on "." produces an empty string, matching
+    # nothing. Each imported name (plain or aliased via "as") must now also
+    # be captured, qualified by the same dot prefix, so it resolves exactly
+    # like a direct `from .settings import X` would.
+    file_path = tmp_path / "mod.py"
+    file_path.write_text(
+        "from . import settings as app_settings\n"
+        "from .. import checkpoint\n",
+        encoding="utf-8",
+    )
+
+    deps = extract_dependencies(str(file_path))
+    assert ".settings" in deps
+    assert "..checkpoint" in deps
+
+
 def test_extract_signatures_from_lua_file(tmp_path):
     file_path = tmp_path / "mod.lua"
     file_path.write_text(

@@ -39,15 +39,15 @@ def correct_relationships(aif: dict) -> dict:
     files = list(aif["files"].keys())
     stem_map = build_stem_map(files)
 
-    def resolve(dep: str) -> str | None:
-        return resolve_dependency(dep, stem_map)
+    def resolve(dep: str, source_name: str | None = None) -> str | None:
+        return resolve_dependency(dep, stem_map, source_name=source_name)
 
     def print_current_tree():
         all_children = set()
         for name in files:
             deps = aif["files"][name].get("dependencies", [])
             for dep in deps:
-                matched = resolve(dep)
+                matched = resolve(dep, name)
                 if matched:
                     all_children.add(matched)
 
@@ -55,7 +55,7 @@ def correct_relationships(aif: dict) -> dict:
             indent = "  " * depth
             deps = aif["files"].get(name, {}).get("dependencies", [])
             for dep in deps:
-                matched = resolve(dep)
+                matched = resolve(dep, name)
                 if matched:
                     if matched in ancestors:
                         print(f"{indent}   └── 📄 {matched} (순환 참조 → 생략)")
