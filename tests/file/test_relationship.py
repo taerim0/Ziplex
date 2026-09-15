@@ -173,6 +173,41 @@ def test_build_tree_resolves_a_bare_stem_dependency_to_the_same_language_sibling
     assert tree["cli.py"]["internal"] == ["search.py"]
 
 
+def test_resolve_dependency_rejects_a_dotted_import_whose_path_doesnt_align():
+    # A real, confirmed bug in Ziplex's own repo: `from ruamel.yaml import
+    # YAML` (tests/extract/text/test_text_compressors.py's own genuine
+    # external dependency) used to silently resolve onto this project's
+    # own extract/text/yaml.py, purely because both dotted paths end in
+    # "yaml" -- resolve_dependency()'s bare-stem fallback only ever
+    # compared a dotted dep's *last* segment, blind to the rest of the
+    # path. A single-segment dep still resolves fine (nothing else to
+    # check it against); a multi-segment one must actually align with the
+    # candidate's real path, not just its stem.
+    stem_map = build_stem_map(["src/ziplex/extract/text/yaml.py"])
+    assert resolve_dependency("ruamel.yaml", stem_map) is None
+    assert resolve_dependency("ziplex.extract.text.yaml", stem_map) == "src/ziplex/extract/text/yaml.py"
+    assert resolve_dependency(".extract.text.yaml", stem_map) == "src/ziplex/extract/text/yaml.py"
+    assert resolve_dependency("yaml", stem_map) == "src/ziplex/extract/text/yaml.py"  # bare stem, unaffected
+
+
+def test_build_tree_keeps_a_same_leaf_name_external_import_external():
+    # End-to-end regression for the bug above: a file with both a genuine
+    # internal import and an unrelated external import that happens to
+    # share its deepest module name must show both -- the external one
+    # never silently disappears into the internal edge.
+    files = {
+        "tests/extract/text/test_text_compressors.py": {
+            "dependencies": ["ruamel.yaml", "ziplex.extract.text.yaml"],
+        },
+        "src/ziplex/extract/text/yaml.py": {"dependencies": []},
+    }
+    tree = build_tree(files)
+    assert tree["tests/extract/text/test_text_compressors.py"]["internal"] == [
+        "src/ziplex/extract/text/yaml.py"
+    ]
+    assert tree["tests/extract/text/test_text_compressors.py"]["external"] == ["ruamel.yaml"]
+
+
 def test_build_tree_resolves_both_sides_of_a_header_impl_pair(tmp_path):
     # End-to-end regression for the bug this was caught by: a project with
     # a real Config.h/Config.cpp pair, where a third file references

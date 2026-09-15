@@ -269,7 +269,6 @@ def _py_dependency_handler(node: Node, results: list) -> bool:
         module = node.child_by_field_name("module_name")
         if module:
             module_text = module.text.decode()
-            _append_if_not_stdlib(module_text, results)
             # `from . import settings as app_settings` / `from .. import
             # checkpoint` -- a bare relative prefix with no dotted_name
             # component at all (module_text is only dots, e.g. "."/"..").
@@ -282,7 +281,9 @@ def _py_dependency_handler(node: Node, results: list) -> bool:
             # real submodule in module_text itself (".paths"), where the
             # imported names are genuine symbols, not files -- skipping
             # this branch there avoids treating a symbol like "REPO_ROOT"
-            # as a spurious candidate file name.
+            # as a spurious candidate file name. Mutually exclusive with the
+            # plain append below -- appending both left a bogus bare "."/
+            # ".." entry in `results` alongside the real per-name ones.
             if module.type == "relative_import" and not any(
                 c.type == "dotted_name" for c in module.children
             ):
@@ -295,6 +296,8 @@ def _py_dependency_handler(node: Node, results: list) -> bool:
                         continue
                     if name_node is not None:
                         _append_if_not_stdlib(module_text + name_node.text.decode(), results)
+            else:
+                _append_if_not_stdlib(module_text, results)
         return True
 
     if node.type == "import_statement":

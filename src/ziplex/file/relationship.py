@@ -65,6 +65,39 @@ def _same_ext_candidate(candidates: list[str], source_ext: str | None) -> str | 
     return None
 
 
+def _dotted_path_matches(dep_segments: list[str], candidate: str) -> bool:
+    """True when dep_segments (a dotted dependency's own "."-separated
+    segments, most-specific last) plausibly names candidate's real
+    location, not just its bare stem.
+
+    resolve_dependency()'s bare-stem fallback keys stem_map by a dotted
+    dep's *last* segment alone (see its own docstring) -- correct for a
+    genuine project-relative import ("from .extract.code import
+    extractor" reduces to "...extractor", whose remaining segments really
+    are extract/code/), but blind to the rest of the path otherwise. That
+    blindness is harmless for a single-segment dep (nothing else to check
+    it against), but a real, confirmed bug for a multi-segment *absolute*
+    import of an unrelated third-party package that happens to share its
+    own deepest submodule name with an internal file's stem -- e.g.
+    `from ruamel.yaml import YAML` (a genuine external dependency,
+    tests/extract/text/test_text_compressors.py) used to resolve onto
+    this project's own extract/text/yaml.py purely because both dotted
+    paths end in "yaml", silently dropping ruamel.yaml from that file's
+    external dependencies with no trace it was ever imported at all.
+
+    Checked by aligning dep_segments against candidate's own path
+    components from the right (extension stripped) -- a real
+    project-relative import's segments are always a genuine trailing
+    slice of the file's own path, where an unrelated package's aren't.
+    Only ever called for a multi-segment dep (see resolve_dependency's own
+    guard) -- a single-segment dep has nothing beyond the stem itself to
+    validate, so it's never filtered here.
+    """
+    cand_parts = list(Path(candidate).with_suffix("").parts)
+    k = min(len(dep_segments), len(cand_parts))
+    return cand_parts[-k:] == dep_segments[-k:]
+
+
 def _flatten_stem_map(stem_map: dict) -> set:
     """Flat set of every file name appearing anywhere in stem_map's value
     lists -- every file name appears in exactly one stem group (its own),
@@ -155,6 +188,18 @@ def resolve_dependency(
     variant/state-script naming pattern) would otherwise get re-split and
     truncated to "controller", matching nothing.
 
+    A dep that reaches the split-on-"." fallback with more than one
+    segment (a real dotted module path, not a bare stem) is additionally
+    checked via _dotted_path_matches() -- its own segments must actually
+    align with the matched candidate's real path, not just its bare stem.
+    Without this, an *absolute* dotted import of an unrelated third-party
+    package whose deepest submodule name happens to collide with an
+    internal file's stem (e.g. `ruamel.yaml` vs. this project's own
+    extract/text/yaml.py) silently resolves as if it were that internal
+    file -- a real, confirmed bug (see _dotted_path_matches()'s own
+    docstring). A single-segment dep skips this check entirely, same as
+    before: it has nothing beyond the stem itself to validate.
+
     Returns the file name on a match, or None for an external dependency.
     An exact-filename dep (the first check below) always matches its own
     name regardless of how many other files share its stem -- only a
@@ -163,7 +208,13 @@ def resolve_dependency(
     """
     if dep in (all_names if all_names is not None else _flatten_stem_map(stem_map)):
         return dep
-    candidates = stem_map.get(dep) or stem_map.get(dep.split(".")[-1])
+    candidates = stem_map.get(dep)
+    if not candidates:
+        dep_segments = [s for s in dep.split(".") if s]
+        last_segment = dep_segments[-1] if dep_segments else dep.split(".")[-1]
+        candidates = stem_map.get(last_segment)
+        if candidates and len(dep_segments) > 1:
+            candidates = [c for c in candidates if _dotted_path_matches(dep_segments, c)] or None
     if not candidates:
         return None
     source_ext = Path(source_name).suffix if source_name else None
