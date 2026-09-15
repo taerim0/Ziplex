@@ -239,7 +239,7 @@ ziplex-gui --no-window                                # plain browser tab instea
 
 ![Pack: project setup — folder, output path, and packing language](docs/images/en/gui-pack-select.png)
 
-Pick a project folder with the native folder picker, check off which files to include (the same safe/dangerous split `collect`'s security scan produces), pick the packing language (`pack --lang`'s GUI equivalent — what language summaries/rules/the AI guide are *written in*, separate from the Options page's own display-language setting below), optionally check "no LLM" (`pack --no-llm`'s GUI equivalent), and watch the pack run in the background.
+Pick a project folder with the native folder picker, check off which files to include (the same safe/dangerous split `collect`'s security scan produces), pick the packing language (`pack --lang`'s GUI equivalent — what language summaries/rules/the AI guide are *written in*, separate from the topbar's own display-language toggle), optionally check "no LLM" (`pack --no-llm`'s GUI equivalent), and watch the pack run in the background.
 
 ### Reviewing before anything is saved
 
@@ -261,9 +261,9 @@ The same overview/files/relationships/detail/search views the MCP server exposes
 
 ### Options page
 
-![Options page: language, output folder, AI provider](docs/images/en/gui-options.png)
+![Options page: output folder, AI provider](docs/images/en/gui-options.png)
 
-Display language, the default output folder new packs save to, and which AI provider every pack uses (Gemini / OpenAI-compatible / Claude — see [Other AI providers](#quick-start)), with one-click presets for Ollama's and LM Studio's default local ports so a fully local setup needs no typed URL.
+The default output folder new packs save to, and which AI provider every pack uses (Gemini / OpenAI-compatible / Claude — see [Other AI providers](#quick-start)), with one-click presets for Ollama's and LM Studio's default local ports so a fully local setup needs no typed URL. Display language and light/dark theme live in the topbar itself instead (two small toggles next to the nav links) — a display-only chrome preference, not something worth a trip to a separate page for.
 
 Binds to `127.0.0.1` only — no `--host` flag, no way to expose it to a network.
 

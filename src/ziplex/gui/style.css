@@ -145,6 +145,52 @@ body {
 .topbar a:hover { opacity: 1; background: var(--hover-overlay); }
 .topbar a.active { opacity: 1; color: var(--accent); background: rgba(var(--accent-rgb), 0.12); }
 
+/* Language/theme toggles -- a segmented pill pair (two buttons sharing one
+   bordered pill, the active side filled with --accent) pushed to the
+   topbar's far right via margin-left:auto on the first one; the second
+   just needs its own left margin since the topbar's own `gap` is too
+   tight to also separate two unrelated toggle groups from each other.
+   flex-shrink:0/white-space:nowrap keep these two short, fixed-content
+   pills from being the first thing squeezed illegibly at a narrow window
+   width -- .topbar itself still has no wrap/overflow strategy of its own
+   (a pre-existing gap this doesn't attempt to fix), so a genuinely narrow
+   window can still crowd the nav links next to these, just not mangle the
+   pills' own text while doing it. */
+.topbar-toggle {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  white-space: nowrap;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px;
+  font-size: 0.78em;
+}
+/* #lang-toggle by id, not .topbar-toggle:first-of-type -- :first-of-type
+   matches by tag name (both toggles are <div>s), not by this shared class,
+   so it only happened to work while these were the topbar's first two
+   <div> children at all; any future <div> added anywhere earlier in
+   #topbar would silently break it with no error, just a layout regression
+   (a code-review finding). Naming the specific element it's a rule for
+   directly, since there are exactly two, both already have ids. */
+#lang-toggle { margin-left: auto; }
+#theme-toggle { margin-left: 8px; }
+.topbar-toggle button {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  opacity: 0.7;
+  font: inherit;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.topbar-toggle button:hover { opacity: 1; }
+.topbar-toggle button[aria-pressed="true"] { opacity: 1; color: var(--accent); background: rgba(var(--accent-rgb), 0.15); }
+.topbar-toggle button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
 /* Sidebar, not a top hyperlink bar -- a local desktop program's own window
    chrome (a settings/utility app's nav) reads as "runs on your machine"
    more than a SaaS dashboard's top bar does, matching what this GUI

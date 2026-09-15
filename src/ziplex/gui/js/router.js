@@ -6,7 +6,7 @@
 // by listing <script> tags in the correct sequence.
 // ---- router -----------------------------------------------------------
 
-import { api, getAif, setActiveNav, setActiveTopbar, stopStaleWatch } from "./app.js";
+import { api, getAif, setActiveNav, setActiveTopbar, stopStaleWatch, initTopbarToggles } from "./app.js";
 import { applyStaticI18n } from "./i18n.js";
 import { renderPackJob, hasActiveGuard, confirmLeaveActivePackJob } from "./pack.js";
 import { renderHome, renderPackHome, renderCheck } from "./pages/landing.js";
@@ -149,6 +149,13 @@ function guardedRoute() {
 window.addEventListener("hashchange", guardedRoute);
 window.addEventListener("DOMContentLoaded", () => {
   applyStaticI18n(); // index.html's own static topbar/sidebar labels (i18n.js) -- route() below never touches them
+  // The topbar's own language/theme pills -- same static-markup reasoning
+  // as applyStaticI18n() above. hasActiveGuard is already imported here for
+  // the click-delegation/guardedRoute() below; passed through so the
+  // language toggle knows to skip its own route() call (not to ask to
+  // leave -- see app.js's own comment for why that would be the wrong
+  // question) while a pack job's guard is active.
+  initTopbarToggles(route, hasActiveGuard);
   route();
   // Fire-and-forget: the topbar's version footnote (see style.css's
   // .topbar-version) is a nice-to-have, not something any route depends on

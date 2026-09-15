@@ -26,6 +26,43 @@
   <a href="#/pack" data-topbar="pack" data-i18n="nav.pack">📦 프로젝트 패킹</a>
   <a href="#/check" data-topbar="check" data-i18n="nav.check">📂 프로젝트 확인</a>
   <a href="#/options" data-topbar="options" data-i18n="nav.options">⚙️ 옵션</a>
+  <!-- Display-only chrome prefs (language/theme), not pack-behavior
+       settings -- deliberately live here, not on the Options page, so
+       either can be flipped in one click from anywhere in the app. Wired
+       up once by app.js's initTopbarToggles() (called from router.js's
+       DOMContentLoaded), not re-rendered per route the way #app's own
+       pages are -- this markup, like the rest of #topbar/#nav, is static. -->
+  <div class="topbar-toggle" id="lang-toggle" role="group" data-i18n-aria="topbar.langLabel" aria-label="언어">
+    <button type="button" data-lang-btn="ko" aria-pressed="true">KO</button>
+    <button type="button" data-lang-btn="en" aria-pressed="false">EN</button>
+  </div>
+  <div class="topbar-toggle" id="theme-toggle" role="group" data-i18n-aria="topbar.themeLabel" aria-label="테마">
+    <button type="button" data-theme-btn="dark" data-i18n="options.themeDark" aria-pressed="true">다크</button>
+    <button type="button" data-theme-btn="light" data-i18n="options.themeLight" aria-pressed="false">라이트</button>
+  </div>
+  <script>
+    // Same "before first paint" reasoning as the <head> theme script above,
+    // applied to these two buttons' own aria-pressed/highlight state --
+    // placed here, right after the buttons exist, rather than in <head>
+    // alongside that script, because these elements don't exist yet at
+    // that point in parsing; a synchronous inline script this far down
+    // still runs immediately as the parser reaches it, well before the
+    // deferred router.js module (and its own DOMContentLoaded-triggered
+    // initTopbarToggles()/syncPressed()) ever would. A real gap found by
+    // code review: the raw markup above hardcodes ko/dark="true" as a
+    // reasonable Korean-first/dark-first default (matching every
+    // data-i18n element's own starting text), but a returning user who'd
+    // actually picked en/light used to see the wrong pill lit up for the
+    // brief window before that deferred module ran.
+    (function () {
+      var lang = localStorage.getItem("ziplex.lang") === "en" ? "en" : "ko";
+      var theme = localStorage.getItem("ziplex.theme") === "light" ? "light" : "dark";
+      document.querySelector('#lang-toggle button[data-lang-btn="' + lang + '"]').setAttribute("aria-pressed", "true");
+      document.querySelector('#lang-toggle button[data-lang-btn="' + (lang === "en" ? "ko" : "en") + '"]').setAttribute("aria-pressed", "false");
+      document.querySelector('#theme-toggle button[data-theme-btn="' + theme + '"]').setAttribute("aria-pressed", "true");
+      document.querySelector('#theme-toggle button[data-theme-btn="' + (theme === "light" ? "dark" : "light") + '"]').setAttribute("aria-pressed", "false");
+    })();
+  </script>
 </header>
 <div class="shell">
 <nav id="nav" class="sidebar hidden">

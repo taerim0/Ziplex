@@ -135,6 +135,8 @@ const I18N = {
     "nav.check": "📂 프로젝트 확인",
     "nav.options": "⚙️ 옵션",
     "nav.changeProject": "📂 프로젝트 변경",
+    "topbar.langLabel": "언어",
+    "topbar.themeLabel": "테마",
     "nav.overview": "📊 개요",
     "nav.files": "📄 파일",
     "nav.relationships": "🔗 관계",
@@ -174,9 +176,6 @@ const I18N = {
     "check.freshness.fresh": "✅ 최신",
     "check.recentTitle": "최근 프로젝트",
 
-    "options.displayTitle": "화면 설정",
-    "options.languageLabel": "언어",
-    "options.themeLabel": "테마",
     "options.themeDark": "다크",
     "options.themeLight": "라이트",
     "options.outputDirPlaceholder": "비우면 각 프로젝트 폴더의 .ziplex/<프로젝트명>.json",
@@ -322,6 +321,8 @@ const I18N = {
     "nav.check": "📂 Check Project",
     "nav.options": "⚙️ Options",
     "nav.changeProject": "📂 Change Project",
+    "topbar.langLabel": "Language",
+    "topbar.themeLabel": "Theme",
     "nav.overview": "📊 Overview",
     "nav.files": "📄 Files",
     "nav.relationships": "🔗 Relationships",
@@ -361,9 +362,6 @@ const I18N = {
     "check.freshness.fresh": "✅ Up to date",
     "check.recentTitle": "Recent Projects",
 
-    "options.displayTitle": "Display",
-    "options.languageLabel": "Language",
-    "options.themeLabel": "Theme",
     "options.themeDark": "Dark",
     "options.themeLight": "Light",
     "options.outputDirPlaceholder": "Defaults to .ziplex/<project-name>.json inside each project's own folder",
@@ -447,10 +445,21 @@ export function t(key, vars) {
 // render*() -- nothing re-translates them on navigation the way t() calls
 // inside a render*() body do automatically. Each carries a data-i18n
 // attribute naming its own key; called once on DOMContentLoaded and again
-// whenever the language switcher changes (see pages/options.js's
-// renderOptions()).
+// whenever the language switcher changes (see app.js's
+// initTopbarToggles()).
 export function applyStaticI18n() {
   for (const el of document.querySelectorAll("[data-i18n]")) {
     el.textContent = t(el.dataset.i18n);
+  }
+  // Same idea, for an attribute instead of visible text -- added for the
+  // topbar's #lang-toggle/#theme-toggle groups' own aria-label (a real gap
+  // found by code review: every other user-facing string in this app goes
+  // through t(), but a group's accessible name isn't textContent, so the
+  // [data-i18n] loop above never touched it, leaving it hardcoded English
+  // regardless of getLang()). Generic by attribute name rather than
+  // hardcoded to aria-label specifically, in case a future static element
+  // needs a different translated attribute (title, placeholder, ...).
+  for (const el of document.querySelectorAll("[data-i18n-aria]")) {
+    el.setAttribute("aria-label", t(el.dataset.i18nAria));
   }
 }

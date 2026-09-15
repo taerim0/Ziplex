@@ -16,7 +16,8 @@
 // helpers used across every page. The lowest-level shared module --
 // everything else in js/ imports from this one.
 
-import { t } from "./i18n.js";
+import { t, getLang, setLang, applyStaticI18n } from "./i18n.js";
+import { getTheme, setTheme } from "./theme.js";
 
 const LS_AIF = "ziplex.aif_path";
 const LS_PROJECT = "ziplex.project_path";
@@ -409,5 +410,82 @@ export function setActiveNav(routeName) {
 export function setActiveTopbar(name) {
   for (const a of topbar.querySelectorAll("a[data-topbar]")) {
     a.classList.toggle("active", a.dataset.topbar === name);
+  }
+}
+
+// Wires up the topbar's language/theme pills (index.html's static
+// #lang-toggle/#theme-toggle) once at startup -- called from router.js's
+// DOMContentLoaded, alongside applyStaticI18n(). Deliberately not part of
+// pages/options.js any more: these are display-only chrome prefs a human
+// might flip from anywhere, not pack-behavior settings, so they moved out
+// of the Options page entirely (a real usability gap -- toggling either
+// used to mean navigating there first) rather than just gaining a second,
+// duplicate control alongside the Options page's own.
+//
+// Takes route()/hasActiveGuard() as parameters rather than importing them --
+// router.js already imports from this file (app.js is meant to stay the
+// lowest-level shared module, see this file's own header comment) and
+// hasActiveGuard() lives in pack.js, so importing either back from here
+// would be a circular import.
+export function initTopbarToggles(route, hasActiveGuard) {
+  function syncPressed(container, activeValue, datasetKey) {
+    for (const btn of container.querySelectorAll("button")) {
+      btn.setAttribute("aria-pressed", String(btn.dataset[datasetKey] === activeValue));
+    }
+  }
+
+  const langToggle = document.getElementById("lang-toggle");
+  // Guards against a real gap found by code review: this runs before
+  // route() in router.js's DOMContentLoaded handler, so an uncaught throw
+  // here (a missing element -- a stale cached index.html after an
+  // upgrade, or a future refactor that renames/removes this div without
+  // updating this call) would abort that whole handler and route() would
+  // never run at all, leaving the app rendering nothing rather than just
+  // a missing toggle.
+  if (langToggle) {
+    syncPressed(langToggle, getLang(), "langBtn");
+    langToggle.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-lang-btn]");
+      if (!btn || btn.dataset.langBtn === getLang()) return;
+      setLang(btn.dataset.langBtn);
+      syncPressed(langToggle, btn.dataset.langBtn, "langBtn");
+      // Same two-step refresh options.js's own switcher used before this
+      // moved: applyStaticI18n() re-translates this bar/the sidebar (static
+      // markup route() never touches), route() re-renders whatever page is
+      // current in the new language.
+      applyStaticI18n();
+      // A real gap found by code review, in two parts. First pass: called
+      // route() unconditionally, bypassing the "reviewing"/"running" pack-job
+      // guard entirely -- these buttons are visible on every page, including
+      // mid-job, unlike the old Options-page switcher which only ever lived
+      // behind an already-guarded topbar link. Second pass: routing it
+      // through confirmLeaveActivePackJob() (like every real navigation does)
+      // was itself wrong for a different reason -- that guard's confirmation
+      // *is* "leave, stopping/discarding the job as a side effect," and this
+      // toggle was never asking to leave, just to change language in place.
+      // Confirming it would have silently killed a live job the user only
+      // meant to keep looking at in a different language. So: skip route()
+      // entirely while a guard is active, rather than asking a question whose
+      // only "yes" answer does something the click never requested. The
+      // language preference is still saved and the static chrome above still
+      // updates immediately either way -- only the job screen's own body
+      // stays in whatever language it was last rendered in until it's next
+      // safe to re-render (the job finishing, or the user actually leaving).
+      if (!hasActiveGuard()) route();
+    });
+  }
+
+  const themeToggle = document.getElementById("theme-toggle");
+  if (themeToggle) {
+    syncPressed(themeToggle, getTheme(), "themeBtn");
+    themeToggle.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-theme-btn]");
+      if (!btn || btn.dataset.themeBtn === getTheme()) return;
+      setTheme(btn.dataset.themeBtn);
+      syncPressed(themeToggle, btn.dataset.themeBtn, "themeBtn");
+      // Applying a theme is instant (a CSS custom-property flip via the
+      // data-theme attribute) -- no route()/applyStaticI18n() needed, unlike
+      // the language toggle above.
+    });
   }
 }
