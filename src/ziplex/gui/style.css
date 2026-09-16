@@ -407,6 +407,25 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
    warning-specific look on top rather than duplicating the bold weight. */
 .select-all-row { font-weight: 600; }
 
+/* Pack form's per-folder select tree (landing.js's folderNode()) -- a
+   plain div row, not a <label>, since it also carries its own toggle
+   <button> and a checkbox neither of which should double-fire off a
+   label's native click-forwarding. .folder-select-name gets its own
+   pointer cursor + click handler instead, so clicking the folder name
+   toggles its checkbox the same way clicking a file row's label does. */
+.folder-select-row { font-weight: 600; }
+.folder-select-name { cursor: pointer; }
+.tree-toggle-btn {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  line-height: 1;
+  font-size: 0.75em;
+}
+/* Nested folders indent the same way the post-pack Files tree does. */
+.file-checklist .tree-children { margin: 2px 0 2px 8px; }
+
 .dangerous-files { margin: 6px 0 14px; }
 .dangerous-explain {
   color: var(--muted);

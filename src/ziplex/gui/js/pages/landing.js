@@ -12,7 +12,7 @@
 import {
   app, nav, el, api, apiPost, getAif, getProject, getRecent, removeRecent,
   openProject, relativeTime, browseButton, browseAifButton, browseSaveButton,
-  staleTooltip, renderStaleDetail,
+  staleTooltip, renderStaleDetail, buildPathTree,
 } from "../app.js";
 import { t, getLang } from "../i18n.js";
 
@@ -91,31 +91,108 @@ export function renderPackHome() {
       if (!data.safe.length) {
         fileListBox.appendChild(el("p", { class: "muted", text: t("pack.form.noSafeFiles") }));
       } else {
+        // Folder-level checkboxes -- reported directly: a game project can
+        // dump 500+ files into one junk asset folder, and checking each one
+        // off by hand doesn't scale. Every folder gets its own tri-state
+        // checkbox (checked/unchecked/indeterminate) that includes or
+        // excludes its whole subtree in one click, collapsed by default so
+        // a folder can be ruled out without ever opening it. folderRegistry
+        // holds every folder's {cb, leafCbs} pair; refreshFolderStates()
+        // recomputes all of them (plus the top "전체" select-all) from
+        // scratch on any leaf/folder/select-all change, rather than walking
+        // parent chains by hand on every toggle -- simpler, and cheap even
+        // at hundreds of files.
+        const folderRegistry = [];
+
         const selectAll = el("input", { type: "checkbox", checked: "checked" });
         selectAll.checked = true;
+
+        function refreshFolderStates() {
+          for (const { cb, leafCbs } of folderRegistry) {
+            const checkedCount = leafCbs.filter(c => c.checked).length;
+            cb.checked = checkedCount > 0 && checkedCount === leafCbs.length;
+            cb.indeterminate = checkedCount > 0 && checkedCount < leafCbs.length;
+          }
+          const allChecked = selectableCheckboxes.every(c => c.checked);
+          selectAll.checked = allChecked;
+          selectAll.indeterminate = !allChecked && selectableCheckboxes.some(c => c.checked);
+        }
+
         selectAll.addEventListener("change", () => {
+          selectAll.indeterminate = false;
           for (const cb of selectableCheckboxes) cb.checked = selectAll.checked;
+          refreshFolderStates();
         });
         fileListBox.appendChild(el("label", { class: "file-checklist-row select-all-row" }, [
           selectAll, el("span", { text: t("pack.form.allFiles", { n: data.safe.length }) }),
         ]));
 
-        const list = el("div", { class: "file-checklist" });
-        for (const name of data.safe) {
+        function fileRow(name) {
           const cb = el("input", { type: "checkbox", checked: "checked", "data-name": name });
           cb.checked = true;
           selectableCheckboxes.push(cb);
-          // Keeps the select-all's own checked state honest if a human
-          // unchecks (or re-checks) one file individually -- same two-way
-          // sync the dangerous-files select-all below uses, for consistency
-          // between the two lists (flagged by code review: the first
-          // version only synced this one-way, only for the dangerous list).
-          cb.addEventListener("change", () => {
-            selectAll.checked = selectableCheckboxes.every(c => c.checked);
-          });
-          list.appendChild(el("label", { class: "file-checklist-row" }, [cb, el("span", { text: name })]));
+          cb.addEventListener("change", refreshFolderStates);
+          const row = el("label", { class: "file-checklist-row" }, [cb, el("span", { text: name.split("/").pop() })]);
+          return { row, cb };
         }
-        fileListBox.appendChild(list);
+
+        // Custom expand/collapse (a toggle button, not <details>/<summary>)
+        // rather than the tree pattern files.js uses elsewhere -- a
+        // checkbox nested inside a native <summary> would have its click
+        // ambiguously double as the disclosure toggle in some browsers, and
+        // this row needs the checkbox's own click to never do that.
+        // Collapsed by default: the point is to exclude a whole junk folder
+        // via its checkbox alone, without ever having to open it.
+        function folderNode(path, node) {
+          const leafCbs = [];
+          const childRows = [];
+          for (const [childName, childNode] of Object.entries(node.folders).sort(([a], [b]) => a.localeCompare(b))) {
+            const childPath = `${path}/${childName}`;
+            const child = folderNode(childPath, childNode);
+            childRows.push(child.el);
+            leafCbs.push(...child.leafCbs);
+          }
+          for (const name of node.files.slice().sort()) {
+            const { row, cb } = fileRow(name);
+            childRows.push(row);
+            leafCbs.push(cb);
+          }
+
+          const childrenBox = el("div", { class: "tree-children hidden" }, childRows);
+          const toggleBtn = el("button", { type: "button", class: "secondary tree-toggle-btn", text: "▶" });
+          toggleBtn.addEventListener("click", () => {
+            const expanded = childrenBox.classList.toggle("hidden") === false;
+            toggleBtn.textContent = expanded ? "▼" : "▶";
+          });
+
+          const folderCb = el("input", { type: "checkbox", checked: "checked" });
+          folderCb.checked = true;
+          folderRegistry.push({ cb: folderCb, leafCbs });
+          folderCb.addEventListener("change", () => {
+            for (const cb of leafCbs) cb.checked = folderCb.checked;
+            refreshFolderStates();
+          });
+
+          const nameSpan = el("span", { class: "folder-select-name", text: `📁 ${path.split("/").pop()} (${leafCbs.length})` });
+          nameSpan.addEventListener("click", () => {
+            folderCb.checked = !folderCb.checked;
+            folderCb.dispatchEvent(new Event("change"));
+          });
+
+          const row = el("div", { class: "file-checklist-row folder-select-row" }, [toggleBtn, folderCb, nameSpan]);
+          return { el: el("div", {}, [row, childrenBox]), leafCbs };
+        }
+
+        const tree = buildPathTree(data.safe);
+        const rootRows = [];
+        for (const [childName, childNode] of Object.entries(tree.folders).sort(([a], [b]) => a.localeCompare(b))) {
+          rootRows.push(folderNode(childName, childNode).el);
+        }
+        for (const name of tree.files.slice().sort()) {
+          const { row } = fileRow(name);
+          rootRows.push(row);
+        }
+        fileListBox.appendChild(el("div", { class: "file-checklist" }, rootRows));
       }
       // Shown whenever there's anything selectable at all -- safe files,
       // or (an edge case, but a real one: a project that's nothing but

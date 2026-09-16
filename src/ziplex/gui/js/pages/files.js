@@ -5,7 +5,7 @@
 // a flat file list) after a reported usability gap: a human browsing the
 // GUI to understand a project had no sense of directory structure at all.
 
-import { app, nav, el, api, apiPost, getAif, getProject, setStale, showError, showLoading, confidenceLevel, copyButton, startStaleWatch } from "../app.js";
+import { app, nav, el, api, apiPost, getAif, getProject, setStale, showError, showLoading, confidenceLevel, copyButton, startStaleWatch, buildPathTree } from "../app.js";
 import { t } from "../i18n.js";
 
 // Shared inline summary editor: a read-only display element + ✏️ edit
@@ -85,27 +85,6 @@ function createSummaryEditor({
 
   showReadOnly();
   return { displayEl, errorEl, editBtn, editRow };
-}
-
-// Groups a flat {name: {...}} map into a nested {folders: {name: node},
-// files: [name, ...]} tree by path segment -- mirrors folder_summary.py's
-// own group_files_by_folder() one level at a time (each file lands under
-// its *immediate* parent only; a deeper file's own ancestors are built up
-// by the recursion in folderNode() below, not duplicated into every
-// ancestor's own `files` list) so the two trees agree on which folder
-// summary belongs to which files.
-function buildFolderTree(files) {
-  const root = { folders: {}, files: [] };
-  for (const name of Object.keys(files)) {
-    const parts = name.split("/");
-    const filename = parts.pop();
-    let node = root;
-    for (const part of parts) {
-      node = node.folders[part] || (node.folders[part] = { folders: {}, files: [] });
-    }
-    node.files.push(name);
-  }
-  return root;
 }
 
 export async function renderFiles() {
@@ -228,7 +207,10 @@ export async function renderFiles() {
       );
 
       treeBox.innerHTML = "";
-      const rootNode = folderNode(".", buildFolderTree(files), matches);
+      // buildPathTree() groups by *immediate* parent one level at a time,
+      // mirroring folder_summary.py's own group_files_by_folder() -- so the
+      // two trees agree on which folder summary belongs to which files.
+      const rootNode = folderNode(".", buildPathTree(Object.keys(files)), matches);
       treeBox.appendChild(rootNode || el("p", { class: "muted", text: t("files.noResults") }));
     }
     filterInput.addEventListener("input", draw);

@@ -99,6 +99,29 @@ export async function apiPost(path, body = {}) {
   return data;
 }
 
+// Groups a flat list of "/"-separated relative paths into a nested
+// {folders, files} tree by path segment -- shared by files.js's post-pack
+// Files page and landing.js's pre-pack folder-checkbox tree, so the two
+// can't drift into two copies of the same grouping algorithm. Each level's
+// `folders` map is Object.create(null), not a plain {} -- a real path
+// segment literally named "__proto__" (or "constructor") would otherwise
+// resolve through Object.prototype instead of being treated as a missing
+// key, silently pointing `node` at the wrong object and crashing once a
+// later segment tries to read .folders off it (found by code review).
+export function buildPathTree(names) {
+  const root = { folders: Object.create(null), files: [] };
+  for (const name of names) {
+    const parts = name.split("/");
+    parts.pop();
+    let node = root;
+    for (const part of parts) {
+      node = node.folders[part] || (node.folders[part] = { folders: Object.create(null), files: [] });
+    }
+    node.files.push(name);
+  }
+  return root;
+}
+
 export function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
