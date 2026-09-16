@@ -136,6 +136,19 @@ FORMAT_NOTES: dict[str, str] = {
 # means most real projects stay well under this anyway.
 MAX_ARCHITECTURE_FILES = 80
 
+# analyze_rules()'s own cap, same value/rationale as MAX_ARCHITECTURE_FILES
+# but kept as its own named constant since it bounds a different prompt's
+# input (raw per-file signatures, not summary lines) -- confirmed via a
+# real self-packed run: a 502-source-file project's uncapped signatures_map
+# repr alone ran to ~94k tokens, past what the model could return as a
+# complete JSON response, so analyze_rules() came back truncated/malformed
+# on *every* attempt (not a transient 429/503 -- generate() only retries
+# HTTP-level failures, and this "succeeded" at that level every time),
+# which non-interactive pack() has no way to tell apart from a real repeated
+# failure, so it checkpoints and exits deterministically on any large
+# enough project.
+MAX_RULES_FILES = 80
+
 
 def _build_architecture_summary(files_data: dict, tech_stack: list[dict]) -> list[str]:
     """Real project-understanding signal for analyze_prompt() -- what it used
@@ -444,8 +457,17 @@ def _extract_rules(
     rules = carried_rules if have_restored_rules else []
     if not have_restored_rules and use_llm:
         print(pick("  📋 Extracting coding rules...", "  📋 코딩 룰 추출 중..."))
+        # Capped the same way _build_architecture_summary() caps its own
+        # per-file input -- see MAX_RULES_FILES's own comment. Coding rules
+        # are an implicit, project-wide pattern; a sample of the project's
+        # own files is enough to infer them from, so truncating here (kept
+        # in dict insertion order, same as the architecture cap) doesn't
+        # need a "N more not shown" note the way a human-facing list would.
+        scoped_signatures_map = signatures_map
+        if len(signatures_map) > MAX_RULES_FILES:
+            scoped_signatures_map = dict(list(signatures_map.items())[:MAX_RULES_FILES])
         while not rules:
-            rules_response = analyze_rules(signatures_map, lang=lang)
+            rules_response = analyze_rules(scoped_signatures_map, lang=lang)
             try:
                 rules_data = json.loads(rules_response)
             except json.JSONDecodeError:
