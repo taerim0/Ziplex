@@ -259,6 +259,8 @@ The dependency graph opens as a collapsible whole-tree overview first — click 
 
 The same overview/files/relationships/detail/search views the MCP server exposes, as web pages instead of MCP tool calls. Each page has a Copy button; the intended flow is looking around here and pasting what's useful into a separate AI chat by hand, not the GUI talking to that chat itself.
 
+**Debugging in a plain web chat (no file access, no MCP)**: paste `aif.json`'s content once at the start of the conversation — it's small on purpose, just summaries and relationships, meant to be pasted whole. Once the AI points at a suspect file from those summaries/relationships, don't paste the rest of `detail.json` too — open that one file's page here and hit its own Copy button (or run `ziplex detail <name>.detail.json <file-key>` for just a line range of a large file) and paste only that into the same chat. The AI now has that file's full compressed source without you ever handing over anything for the files it didn't ask about.
+
 ### Options page
 
 ![Options page: output folder, AI provider](docs/images/en/gui-options.png)
