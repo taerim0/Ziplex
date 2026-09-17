@@ -485,6 +485,14 @@
           </div>
           <p class="twig-desc">aif.json이 이 프로젝트 문서 하나 없이 단독으로 다른 사람/AI에게 넘어가도, 마커·confidence 의미를 스스로 설명하는 고정 문구.</p>
         </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">패킹 언어 선택</span>
+            <span class="twig-mod">project.language</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">pack --lang en|ko (GUI 드롭다운도 동일) — summary/rules/AI 가이드를 그 언어로 직접 작성. GUI 화면 표시 언어(상단바 토글)와는 별개 설정.</p>
+        </div>
       </div>
     </details>
 
@@ -513,6 +521,14 @@
           </div>
           <p class="twig-desc">Tree-sitter 문법이 없는 파일(Godot 씬, README)도 실제 파일명 언급을 찾아 관계에 편입 — 무료, LLM 없음. 산문 언급과 구조적 참조를 구분 못 함(둘 다 그냥 dependencies에 섞임).</p>
         </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name">Go 패키지 임포트 확장</span>
+            <span class="twig-mod">go_packages.py</span>
+            <span class="chip ok">안정</span>
+          </div>
+          <p class="twig-desc">Go의 import는 파일이 아니라 패키지(디렉터리) 단위라 기본 방식으론 항상 external 처리됨 — go.mod의 module 경로 + 패키지별 파일 인덱스로 실제 파일들로 펼쳐줌. 무료, LLM 없음, Go 아닌 프로젝트엔 영향 없음.</p>
+        </div>
       </div>
     </details>
 
@@ -531,7 +547,7 @@
             <span class="twig-mod">mcp_server.py</span>
             <span class="chip ok">안정</span>
           </div>
-          <p class="twig-desc">읽기 전용 툴 8개. Claude Code/Cursor 등에서 aif.json을 복붙 없이 바로 질의. get_dependents/get_blast_radius는 사람이 보정한 그래프 위에서 동작.</p>
+          <p class="twig-desc">읽기 전용 툴 9개. Claude Code/Cursor 등에서 aif.json을 복붙 없이 바로 질의. get_dependents/get_blast_radius는 사람이 보정한 그래프 위에서 동작.</p>
         </div>
         <div class="twig">
           <div class="twig-head">
@@ -653,15 +669,21 @@
         </div>
         <div class="twig">
           <div class="twig-head">
-            <span class="twig-name"><code class="twig-mod">select</code> · <code class="twig-mod">analyze</code></span>
-          </div>
-          <p class="twig-desc">대화형 파일 선택만 / LLM 분석만 (요약+룰+가이드, 압축·저장 없음).</p>
-        </div>
-        <div class="twig">
-          <div class="twig-head">
             <span class="twig-name"><code class="twig-mod">signatures</code> · <code class="twig-mod">dependencies</code> · <code class="twig-mod">api</code> · <code class="twig-mod">compress</code> · <code class="twig-mod">debug</code></span>
           </div>
           <p class="twig-desc">단일 파일에 대해 추출 단계 하나만 실행 — 디버깅용.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name"><code class="twig-mod">link</code> · <code class="twig-mod">unlink</code> · <code class="twig-mod">summary</code></span>
+          </div>
+          <p class="twig-desc">이미 저장된 aif.json을 재패킹 없이 부분 수정 — 관계 엣지 추가/삭제, 파일·폴더 요약 한 줄 고치기.</p>
+        </div>
+        <div class="twig">
+          <div class="twig-head">
+            <span class="twig-name"><code class="twig-mod">settings</code> · <code class="twig-mod">checkpoint</code> · <code class="twig-mod">doctor</code></span>
+          </div>
+          <p class="twig-desc">~/.ziplex/settings.json 조회/수정(GUI Options의 CLI 버전) / 남은 체크포인트 조회·삭제 / 환경 진단(파이썬 버전, 활성 LLM 프로바이더·모델·키, secretlint 설치 여부, 남은 체크포인트 — LLM 호출 없음).</p>
         </div>
       </div>
     </details>
@@ -709,7 +731,7 @@
   </div>
 
   <footer>
-    2026-08-25 세션 기준 스냅샷 · 코드가 계속 바뀌니 자동 동기화되는 문서는 아닙니다
+    2026-09-17 세션 기준 스냅샷 · 코드가 계속 바뀌니 자동 동기화되는 문서는 아닙니다
   </footer>
 
 </div>
