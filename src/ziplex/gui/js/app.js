@@ -9,12 +9,12 @@
 // This file: localStorage-backed state (aif_path/project_path/recent-
 // projects list), the shared `app`/`nav`/`topbar`/`staleBadge` DOM
 // element references, the api()/apiPost() fetch wrappers, the el()-
-// adjacent DOM-builder helpers (el, copyButton, showError, showLoading),
-// the native-picker button family (browseButton and friends, backed by
-// window.pywebview.api -- see gui_server.py's _Api), and the small
-// confidenceLevel()/setStale()/setActiveNav()/setActiveTopbar() display
-// helpers used across every page. The lowest-level shared module --
-// everything else in js/ imports from this one.
+// adjacent DOM-builder helpers (el, copyButton, showError, showLoading,
+// createSummaryEditor), the native-picker button family (browseButton and
+// friends, backed by window.pywebview.api -- see gui_server.py's _Api),
+// and the small confidenceLevel()/setStale()/setActiveNav()/
+// setActiveTopbar() display helpers used across every page. The lowest-
+// level shared module -- everything else in js/ imports from this one.
 
 import { t, getLang, setLang, applyStaticI18n } from "./i18n.js";
 import { getTheme, setTheme } from "./theme.js";
@@ -196,6 +196,88 @@ export function showConfirmModal(message, buttons) {
     (buttons.find(b => b.primary) ? buttonEls[buttons.findIndex(b => b.primary)] : buttonEls[0]).focus();
   });
   return openModal;
+}
+
+// Shared inline summary editor: a read-only display element + ✏️ edit
+// button that swaps to a textarea + Save/Cancel in place. Originally two
+// near-identical copy-pasted implementations inside files.js (per-file and
+// per-folder editors) -- a real duplication risk caught by code review: a
+// fix to this shared behavior had to be applied by hand to both, and the
+// two copies could silently drift with nothing tying them together. Moved
+// here (rather than staying files.js-local) once pack.js's own pre-save
+// review screen needed the identical read-only/edit-mode toggle, trim/
+// no-op-if-unchanged guard, and try/catch-into-inline-error pattern for its
+// own file/folder summary tree -- the only difference between the two
+// callers is what `onSave` actually does with the new text (POST
+// immediately vs. mutate in-memory state until the whole review is
+// submitted), which was already the one caller-supplied seam here. Layout
+// stays caller-supplied (tag/class/rows/display formatting, and how the
+// edit controls are grouped) since callers place this in genuinely
+// different DOM shapes -- a folder's <summary> disclosure row vs. a file's
+// standalone section -- only the editing *behavior* is shared.
+export function createSummaryEditor({
+  getValue,
+  formatDisplay = (v) => v,
+  displayTag = "span",
+  displayClass = "",
+  editBtnClass = "secondary",
+  rows = "3",
+  onSave,
+  stopPropagation = false,
+  buildEditRow,
+}) {
+  const displayEl = el(displayTag, { class: displayClass });
+  const errorEl = el("p", { class: "error hidden" });
+  const editBtn = el("button", { class: editBtnClass, text: t("fileDetail.editSummary") });
+  const textarea = el("textarea", { rows });
+  const saveBtn = el("button", { text: t("fileDetail.saveSummary") });
+  const cancelBtn = el("button", { class: "secondary", text: t("fileDetail.cancelEdit") });
+  const editRow = buildEditRow(textarea, saveBtn, cancelBtn);
+
+  function showReadOnly() {
+    displayEl.textContent = formatDisplay(getValue());
+    displayEl.classList.remove("hidden");
+    editRow.classList.add("hidden");
+    editBtn.classList.remove("hidden");
+    errorEl.classList.add("hidden");
+  }
+
+  // stopPropagation is a folder row's own extra need: a folder row is a
+  // native <details>/<summary> disclosure that toggles open/closed on any
+  // click, so its own edit controls have to swallow the click (and
+  // preventDefault(), which is what actually suppresses <summary>'s
+  // native toggle) before it bubbles and collapses the row being edited.
+  function guarded(handler) {
+    return (e) => {
+      if (stopPropagation) { e.preventDefault(); e.stopPropagation(); }
+      handler();
+    };
+  }
+  if (stopPropagation) editRow.addEventListener("click", (e) => e.stopPropagation());
+
+  editBtn.addEventListener("click", guarded(() => {
+    textarea.value = getValue();
+    displayEl.classList.add("hidden");
+    editBtn.classList.add("hidden");
+    editRow.classList.remove("hidden");
+    textarea.focus();
+  }));
+  cancelBtn.addEventListener("click", guarded(showReadOnly));
+  saveBtn.addEventListener("click", guarded(async () => {
+    const newValue = textarea.value.trim();
+    if (!newValue || newValue === getValue()) { showReadOnly(); return; }
+    errorEl.classList.add("hidden");
+    try {
+      await onSave(newValue);
+      showReadOnly();
+    } catch (err) {
+      errorEl.textContent = String(err.message || err);
+      errorEl.classList.remove("hidden");
+    }
+  }));
+
+  showReadOnly();
+  return { displayEl, errorEl, editBtn, editRow };
 }
 
 export function copyButton(getText, label = t("core.copy")) {

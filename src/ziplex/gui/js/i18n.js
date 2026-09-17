@@ -110,8 +110,6 @@ const I18N = {
     "pack.review.newRulePlaceholder": "새 룰 추가",
     "pack.review.addRule": "추가",
     "pack.review.backToTree": "← 트리로 돌아가기",
-    "pack.review.noNeedsReview": "검토가 필요한 낮은 신뢰도 요약이 없습니다.",
-    "pack.review.noFolderNeedsReview": "검토가 필요한 낮은 신뢰도 폴더 요약이 없습니다.",
     "pack.review.submit": "완료 및 저장",
     "pack.review.cancel": "취소",
     "pack.review.confirmCancel": "검토 중인 내용을 취소하고 버릴까요? 저장되지 않은 편집 내용이 모두 사라집니다.",
@@ -125,11 +123,13 @@ const I18N = {
     "pack.review.projectName": "프로젝트 이름",
     "pack.review.aiGuide": "AI 가이드",
     "pack.review.codingRules": "코딩 룰",
-    "pack.review.folderSummariesHeader": "폴더 Summary",
     "pack.review.fileRelations": "파일 관계",
     "pack.review.relationsHelp": "전체 의존성 트리입니다 (▶ 를 클릭해 하위 트리를 접거나 펼치세요). 수정하고 싶은 파일 이름을 클릭하면 그 파일의 관계 편집 화면이 열립니다 -- 그래프의 다른 파일 노드를 클릭해 이동하거나, \"끊기\"로 의존성을 제거하거나, 검색창에 파일명을 입력해 새 의존성을 추가할 수 있습니다. 외부 패키지(📦)는 읽기 전용입니다.",
-    "pack.review.needsReviewHeader": (v) => `⚠️ 검토 필요 (${v.n}개)`,
-    "pack.review.autoKeptHeader": (v) => `자동 승인됨 (${v.n}개, 필요 시 수정 가능)`,
+    // 프로젝트 확인의 Files 트리와 같은 방식(폴더 트리 + 인라인 ✏️ 수정)
+    // -- 예전의 "검토 필요"/"자동 승인" 플랫 리스트는 낮은 신뢰도 파일이
+    // 많아지면 스크롤이 끝없이 길어진다는 지적을 받아 대체됨.
+    "pack.review.summariesHeader": "파일 / 폴더 Summary",
+    "pack.review.summariesHelp": (v) => `⚠️ 낮은 신뢰도로 표시된 항목 ${v.n}개를 확인하세요 (빨간 배지). 나머지는 자동 승인되지만 필요하면 그대로 수정할 수 있습니다.`,
 
     "nav.pack": "📦 프로젝트 패킹",
     "nav.check": "📂 프로젝트 확인",
@@ -301,8 +301,6 @@ const I18N = {
     "pack.review.newRulePlaceholder": "Add a new rule",
     "pack.review.addRule": "Add",
     "pack.review.backToTree": "← Back to tree",
-    "pack.review.noNeedsReview": "No low-confidence summaries need review.",
-    "pack.review.noFolderNeedsReview": "No low-confidence folder summaries need review.",
     "pack.review.submit": "Finish & Save",
     "pack.review.cancel": "Cancel",
     "pack.review.confirmCancel": "Cancel and discard this review? Any unsaved edits will be lost.",
@@ -311,11 +309,14 @@ const I18N = {
     "pack.review.projectName": "Project name",
     "pack.review.aiGuide": "AI guide",
     "pack.review.codingRules": "Coding rules",
-    "pack.review.folderSummariesHeader": "Folder summaries",
     "pack.review.fileRelations": "File relationships",
     "pack.review.relationsHelp": "This is the full dependency tree (click ▶ to expand/collapse a subtree). Click a file's name to open its relationship editor -- from there, click another file node in the graph to jump to it, \"Unlink\" to remove a dependency, or type a filename in the search box to add a new one. External packages (📦) are read-only.",
-    "pack.review.needsReviewHeader": (v) => `⚠️ Needs review (${v.n})`,
-    "pack.review.autoKeptHeader": (v) => `Auto-kept (${v.n}, still editable)`,
+    // Same folder tree + inline ✏️ editor as the post-pack Files page --
+    // replaced the old flat "needs review"/"auto-kept" list, reported as
+    // unusably long once a project had more than a handful of
+    // low-confidence files.
+    "pack.review.summariesHeader": "File / folder summaries",
+    "pack.review.summariesHelp": (v) => `⚠️ ${v.n} item(s) flagged as low-confidence (red badge) are worth a look. Everything else is auto-kept but still editable.`,
 
     "nav.pack": "📦 Pack Project",
     "nav.check": "📂 Check Project",

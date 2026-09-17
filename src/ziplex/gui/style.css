@@ -466,19 +466,6 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
   border-bottom: 1px solid var(--border);
 }
 
-.file-edit-row {
-  margin-bottom: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-.file-edit-row.needs-review { border-left: 3px solid var(--danger); }
-.file-edit-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-}
 .file-edit-name { font-family: var(--mono); font-size: 0.9em; }
 
 .tree-overview {
@@ -521,6 +508,11 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
 .tree-row:hover { background: var(--hover-overlay); }
 .tree-name { overflow-wrap: anywhere; }
 .tree-row.tree-flagged .tree-name { color: var(--danger); }
+/* pack.js's pre-save review tree applies .tree-flagged to a folder's own
+   <summary> label too (a low-confidence aggregate score, same threshold
+   as a file row) -- files.js's post-pack folder rows don't need this,
+   since they don't carry a confidence badge at all. */
+.tree-node > summary.tree-flagged .tree-name { color: var(--danger); }
 .tree-row.muted { cursor: default; }
 .tree-row.muted:hover { background: none; }
 /* A true cycle (buildNode()'s ancestors.has(dep) branch) reuses the same

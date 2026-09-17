@@ -5,87 +5,8 @@
 // a flat file list) after a reported usability gap: a human browsing the
 // GUI to understand a project had no sense of directory structure at all.
 
-import { app, nav, el, api, apiPost, getAif, getProject, setStale, showError, showLoading, confidenceLevel, copyButton, startStaleWatch, buildPathTree } from "../app.js";
+import { app, nav, el, api, apiPost, getAif, getProject, setStale, showError, showLoading, confidenceLevel, copyButton, startStaleWatch, buildPathTree, createSummaryEditor } from "../app.js";
 import { t } from "../i18n.js";
-
-// Shared inline summary editor: a read-only display element + ✏️ edit
-// button that swaps to a textarea + Save/Cancel in place, POSTing the new
-// text on save -- used by both folderNode()'s per-folder editor and
-// renderFileDetail()'s per-file editor below. These used to be two
-// near-identical copy-pasted implementations of the same read-only/edit-
-// mode toggle, trim/no-op-if-unchanged guard, and try/catch-into-inline-
-// error pattern (a real duplication risk caught by code review: a fix to
-// this shared behavior -- a loading state, say -- had to be applied by
-// hand to both, and the two copies could silently drift with nothing
-// tying them together). Layout stays caller-supplied (tag/class/rows/
-// display formatting, and how the edit controls are grouped) since the
-// two widgets sit in genuinely different DOM shapes -- a folder's
-// <summary> disclosure row vs. a file's standalone section -- only the
-// editing *behavior* is shared here.
-function createSummaryEditor({
-  getValue,
-  formatDisplay = (v) => v,
-  displayTag = "span",
-  displayClass = "",
-  editBtnClass = "secondary",
-  rows = "3",
-  onSave,
-  stopPropagation = false,
-  buildEditRow,
-}) {
-  const displayEl = el(displayTag, { class: displayClass });
-  const errorEl = el("p", { class: "error hidden" });
-  const editBtn = el("button", { class: editBtnClass, text: t("fileDetail.editSummary") });
-  const textarea = el("textarea", { rows });
-  const saveBtn = el("button", { text: t("fileDetail.saveSummary") });
-  const cancelBtn = el("button", { class: "secondary", text: t("fileDetail.cancelEdit") });
-  const editRow = buildEditRow(textarea, saveBtn, cancelBtn);
-
-  function showReadOnly() {
-    displayEl.textContent = formatDisplay(getValue());
-    displayEl.classList.remove("hidden");
-    editRow.classList.add("hidden");
-    editBtn.classList.remove("hidden");
-    errorEl.classList.add("hidden");
-  }
-
-  // stopPropagation is folderNode's own extra need: a folder row is a
-  // native <details>/<summary> disclosure that toggles open/closed on any
-  // click, so its own edit controls have to swallow the click (and
-  // preventDefault(), which is what actually suppresses <summary>'s
-  // native toggle) before it bubbles and collapses the row being edited.
-  function guarded(handler) {
-    return (e) => {
-      if (stopPropagation) { e.preventDefault(); e.stopPropagation(); }
-      handler();
-    };
-  }
-  if (stopPropagation) editRow.addEventListener("click", (e) => e.stopPropagation());
-
-  editBtn.addEventListener("click", guarded(() => {
-    textarea.value = getValue();
-    displayEl.classList.add("hidden");
-    editBtn.classList.add("hidden");
-    editRow.classList.remove("hidden");
-    textarea.focus();
-  }));
-  cancelBtn.addEventListener("click", guarded(showReadOnly));
-  saveBtn.addEventListener("click", guarded(async () => {
-    const newValue = textarea.value.trim();
-    if (!newValue || newValue === getValue()) { showReadOnly(); return; }
-    errorEl.classList.add("hidden");
-    try {
-      await onSave(newValue);
-      showReadOnly();
-    } catch (err) {
-      errorEl.textContent = String(err.message || err);
-      errorEl.classList.remove("hidden");
-    }
-  }));
-
-  showReadOnly();
-  return { displayEl, errorEl, editBtn, editRow };
-}
 
 export async function renderFiles() {
   nav.classList.remove("hidden");

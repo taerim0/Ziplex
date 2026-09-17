@@ -5,7 +5,7 @@
 // dependency-tree overview + editor from graph.js for relationships)
 // before submit/finalize.
 
-import { app, nav, el, api, apiPost, openProject, confidenceLevel, showConfirmModal } from "./app.js";
+import { app, nav, el, api, apiPost, openProject, confidenceLevel, showConfirmModal, buildPathTree, createSummaryEditor } from "./app.js";
 import { t } from "./i18n.js";
 import { renderDependencyTreeOverview, renderRelationshipEditor } from "./graph.js";
 
@@ -215,48 +215,6 @@ export async function renderPackJob(jobId) {
     ]));
   }
 
-  // one summary editor row, shared between the "needs review" (flagged,
-  // shown with its real signatures so a human can judge the mismatch
-  // without opening the file -- same info corrector.py prints to a
-  // terminal) and "auto kept" (collapsed, still editable) sections.
-  function fileEditor(entry, flagged, summaryInputs) {
-    const input = flagged ? el("textarea", { rows: "2" }) : el("input", { type: "text" });
-    input.value = entry.summary || "";
-    summaryInputs[entry.file] = input;
-
-    const level = confidenceLevel(entry.confidence);
-    const header = el("div", { class: "file-edit-header" }, [
-      el("span", { class: "file-edit-name", text: entry.file }),
-      el("span", { class: `confidence ${level}`, text: entry.confidence.toFixed(2) }),
-    ]);
-    const children = [header, input];
-
-    if (flagged && entry.signatures && entry.signatures.length) {
-      const sigItems = entry.signatures.map(s => el("li", { text: s }));
-      if (entry.signatures_more) sigItems.push(el("li", { class: "muted", text: t("pack.review.moreSignatures", { n: entry.signatures_more }) }));
-      children.push(el("ul", { class: "file-list" }, sigItems));
-    }
-    return el("div", { class: `file-edit-row${flagged ? " needs-review" : ""}` }, children);
-  }
-
-  // Same shape as fileEditor() above -- folder confidence is an aggregate
-  // of its own member files' already-scored confidence (see
-  // folder_summary.group_confidence_by_folder()), not signatures of its
-  // own, so there's no signatures list to show even when flagged.
-  function folderEditor(entry, flagged, folderInputs) {
-    const input = el("textarea", { rows: "2" });
-    input.value = entry.summary || "";
-    folderInputs[entry.folder] = input;
-
-    const display = entry.folder === "." ? t("files.rootFolder") : entry.folder;
-    const level = confidenceLevel(entry.confidence);
-    const header = el("div", { class: "file-edit-header" }, [
-      el("span", { class: "file-edit-name", text: display }),
-      el("span", { class: `confidence ${level}`, text: entry.confidence.toFixed(2) }),
-    ]);
-    return el("div", { class: `file-edit-row${flagged ? " needs-review" : ""}` }, [header, input]);
-  }
-
   async function showReviewState() {
     statusBadge.className = "pack-status reviewing";
     statusBadge.textContent = t("pack.status.reviewing");
@@ -395,19 +353,109 @@ export async function renderPackJob(jobId) {
 
     showTreeOverview();
 
-    const summaryInputs = {};
-    const needsReviewBox = el("div", {}, review.needs_review.length
-      ? review.needs_review.map(entry => fileEditor(entry, true, summaryInputs))
-      : [el("p", { class: "muted", text: t("pack.review.noNeedsReview") })]);
-    const autoKeptBox = el("div", {}, review.auto_kept.map(entry => fileEditor(entry, false, summaryInputs)));
+    // File/folder summary review, reworked to match the post-pack Files
+    // page's own folder tree + inline ✏️ editor (files.js's folderNode/
+    // fileRow/createSummaryEditor) instead of a flat "needs review" list
+    // followed by a flat "auto kept" list -- reported directly as
+    // unusably long the moment a project had more than a handful of
+    // low-confidence files, since every one of them got its own always-
+    // expanded textarea stacked in a single scrolling column. fileInfo/
+    // folderInfo combine both triage buckets (every file/folder is in
+    // exactly one) into the one map the tree below reads from; a
+    // low-confidence entry is flagged the same way the Files page flags
+    // one (a colored name + confidence badge, via .tree-flagged), not by
+    // living in a separate section. The one real difference from the
+    // post-pack editor: onSave here mutates fileInfo/folderInfo in place
+    // instead of POSTing immediately, since nothing is actually saved
+    // until "완료 및 저장" bundles every summary into one
+    // /api/pack/finalize call below.
+    const fileInfo = {};
+    for (const e of review.needs_review) fileInfo[e.file] = { ...e, flagged: true };
+    for (const e of review.auto_kept) fileInfo[e.file] = { ...e, flagged: false };
 
-    const folderInputs = {};
-    const folderNeedsReview = review.folders_needs_review || [];
-    const folderAutoKept = review.folders_auto_kept || [];
-    const folderNeedsReviewBox = el("div", {}, folderNeedsReview.length
-      ? folderNeedsReview.map(entry => folderEditor(entry, true, folderInputs))
-      : [el("p", { class: "muted", text: t("pack.review.noFolderNeedsReview") })]);
-    const folderAutoKeptBox = el("div", {}, folderAutoKept.map(entry => folderEditor(entry, false, folderInputs)));
+    const folderInfo = {};
+    for (const e of (review.folders_needs_review || [])) folderInfo[e.folder] = { ...e, flagged: true };
+    for (const e of (review.folders_auto_kept || [])) folderInfo[e.folder] = { ...e, flagged: false };
+
+    const needsReviewCount = review.needs_review.length + (review.folders_needs_review || []).length;
+
+    const summaryFilterInput = el("input", { type: "text", placeholder: t("files.searchPlaceholder") });
+    const summaryTreeBox = el("div", { class: "tree-overview" });
+
+    function summaryFileRow(name) {
+      const info = fileInfo[name];
+      const level = confidenceLevel(info.confidence);
+      const editor = createSummaryEditor({
+        getValue: () => info.summary || "",
+        formatDisplay: (v) => v ? ` — ${v}` : "",
+        displayClass: "muted tree-desc",
+        editBtnClass: "secondary tree-edit-btn",
+        rows: "2",
+        onSave: async (newSummary) => { info.summary = newSummary; },
+      });
+      const row = el("div", { class: `tree-row${level === "low" ? " tree-flagged" : ""}` }, [
+        el("span", { text: "📄 " }),
+        el("span", { class: "tree-name tree-name-fixed", text: name.split("/").pop() }),
+        el("span", { class: `confidence ${level}`, text: info.confidence.toFixed(2) }),
+        editor.displayEl, editor.editBtn, editor.editRow, editor.errorEl,
+      ]);
+      if (!(info.flagged && info.signatures && info.signatures.length)) return row;
+
+      // Signatures are only ever sent for a flagged entry (see
+      // pack_service._build_review()) -- shown right under the row so a
+      // human can judge the summary/code mismatch without leaving this
+      // screen, the same reason corrector.py prints them to a terminal.
+      const sigItems = info.signatures.map(s => el("li", { text: s }));
+      if (info.signatures_more) sigItems.push(el("li", { class: "muted", text: t("pack.review.moreSignatures", { n: info.signatures_more }) }));
+      return el("div", {}, [row, el("ul", { class: "file-list" }, sigItems)]);
+    }
+
+    function summaryFolderNode(path, node, matches) {
+      const fileRows = node.files.filter(name => matches.has(name)).map(summaryFileRow);
+      const childNodes = Object.entries(node.folders)
+        .map(([childName, childNode]) => summaryFolderNode(path === "." ? childName : `${path}/${childName}`, childNode, matches))
+        .filter(Boolean);
+      if (!fileRows.length && !childNodes.length) return null;
+
+      const displayName = path === "." ? t("files.rootFolder") : path.split("/").pop();
+      const info = folderInfo[path] || { summary: "", confidence: 1.0, flagged: false };
+      const level = confidenceLevel(info.confidence);
+      const editor = createSummaryEditor({
+        getValue: () => folderInfo[path]?.summary || "",
+        formatDisplay: (v) => v ? ` — ${v}` : "",
+        displayClass: "muted tree-desc",
+        editBtnClass: "secondary tree-edit-btn",
+        rows: "2",
+        stopPropagation: true,
+        buildEditRow: (textarea, saveBtn, cancelBtn) => el("span", { class: "tree-folder-edit" }, [textarea, saveBtn, cancelBtn]),
+        onSave: async (newSummary) => { folderInfo[path] = { ...(folderInfo[path] || {}), summary: newSummary }; },
+      });
+
+      const label = el("summary", { class: level === "low" ? "tree-flagged" : "" }, [
+        el("span", { text: "📁 " }),
+        el("span", { class: "tree-name tree-name-fixed", text: displayName }),
+        el("span", { class: `confidence ${level}`, text: info.confidence.toFixed(2) }),
+        editor.displayEl, editor.editBtn, editor.editRow, editor.errorEl,
+      ]);
+      return el("details", { class: "tree-node", open: "" }, [
+        label,
+        el("div", { class: "tree-children" }, [...childNodes, ...fileRows]),
+      ]);
+    }
+
+    function drawSummaryTree() {
+      const q = summaryFilterInput.value.toLowerCase();
+      const matches = new Set(
+        Object.entries(fileInfo)
+          .filter(([name, info]) => !q || name.toLowerCase().includes(q) || (info.summary || "").toLowerCase().includes(q))
+          .map(([name]) => name)
+      );
+      summaryTreeBox.innerHTML = "";
+      const rootNode = summaryFolderNode(".", buildPathTree(Object.keys(fileInfo)), matches);
+      summaryTreeBox.appendChild(rootNode || el("p", { class: "muted", text: t("files.noResults") }));
+    }
+    summaryFilterInput.addEventListener("input", drawSummaryTree);
+    drawSummaryTree();
 
     const submitError = el("div", { class: "error hidden" });
     const submitButton = el("button", { text: t("pack.review.submit") });
@@ -418,9 +466,9 @@ export async function renderPackJob(jobId) {
       submitButton.disabled = true;
       cancelButton.disabled = true;
       const summaries = {};
-      for (const [file, input] of Object.entries(summaryInputs)) summaries[file] = input.value.trim();
+      for (const [file, info] of Object.entries(fileInfo)) summaries[file] = (info.summary || "").trim();
       const folder_summaries = {};
-      for (const [folder, input] of Object.entries(folderInputs)) folder_summaries[folder] = input.value.trim();
+      for (const [folder, info] of Object.entries(folderInfo)) folder_summaries[folder] = (info.summary || "").trim();
       try {
         const result = await apiPost("/api/pack/finalize", {
           job_id: jobId,
@@ -461,14 +509,13 @@ export async function renderPackJob(jobId) {
       el("h3", { text: t("pack.review.aiGuide") }), promptInput,
       el("h3", { text: t("pack.review.codingRules") }), rulesList,
       el("div", { class: "toolbar" }, [newRuleInput, addRuleButton]),
-      el("h3", { text: t("pack.review.folderSummariesHeader") }),
-      el("h4", { text: t("pack.review.needsReviewHeader", { n: folderNeedsReview.length }) }), folderNeedsReviewBox,
-      el("h4", { text: t("pack.review.autoKeptHeader", { n: folderAutoKept.length }) }), folderAutoKeptBox,
       el("h3", { text: t("pack.review.fileRelations") }),
       el("p", { class: "muted", text: t("pack.review.relationsHelp") }),
       relSection, treeError,
-      el("h3", { text: t("pack.review.needsReviewHeader", { n: review.needs_review.length }) }), needsReviewBox,
-      el("h3", { text: t("pack.review.autoKeptHeader", { n: review.auto_kept.length }) }), autoKeptBox,
+      el("h3", { text: t("pack.review.summariesHeader") }),
+      el("p", { class: "muted", text: t("pack.review.summariesHelp", { n: needsReviewCount }) }),
+      el("div", { class: "toolbar" }, [summaryFilterInput]),
+      summaryTreeBox,
       el("div", { class: "copy-row" }, [submitButton, cancelButton]),
       submitError,
     ]));
