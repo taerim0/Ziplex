@@ -20,10 +20,25 @@ def build_stem_map(file_names) -> dict:
     a README mentioning "Config.cpp" by its exact name resolved as
     external, purely because "Config.h" happened to win the same stem in
     that particular collection order.
+
+    A ".d.mlua" file (MapleStory Worlds' native-API declaration convention
+    -- see extract/code/languages.py's ".mlua" LanguageConfig) additionally
+    gets a second, doubly-stripped alias key: Path.stem only ever strips
+    the single last suffix, so "AIComponent.d.mlua" normally keys only
+    under "AIComponent.d" -- which a real component script's own `extends
+    AIComponent` (a bare, single-segment dependency string, the dominant
+    way an .mlua script names its native API base) would never match. Both
+    that alias and the file's own real "AIComponent.d" stem still map to
+    the same file either way; this only ever *adds* an extra lookup key on
+    top of the normal single-strip behavior every other extension gets,
+    same "additive, not replacing" shape as the header/implementation case
+    above.
     """
     stem_map: dict[str, list[str]] = {}
     for name in file_names:
         stem_map.setdefault(Path(name).stem, []).append(name)
+        if name.endswith(".d.mlua"):
+            stem_map.setdefault(Path(Path(name).stem).stem, []).append(name)
     return stem_map
 
 

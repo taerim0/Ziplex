@@ -109,6 +109,18 @@ def test_build_stem_map_keeps_every_file_sharing_a_stem():
     assert stem_map["main"] == ["main.cpp"]
 
 
+def test_build_stem_map_aliases_d_mlua_declaration_files():
+    # A .d.mlua file's Path.stem is only single-suffix-stripped
+    # ("AIComponent.d"), which would never match a real script's own bare
+    # `extends AIComponent` (extract/code/languages.py's
+    # _mlua_dependency_handler) -- build_stem_map() must also key it under
+    # the doubly-stripped "AIComponent".
+    stem_map = build_stem_map(["AIComponent.d.mlua", "Health.mlua"])
+    assert stem_map["AIComponent.d"] == ["AIComponent.d.mlua"]
+    assert stem_map["AIComponent"] == ["AIComponent.d.mlua"]
+    assert stem_map["Health"] == ["Health.mlua"]
+
+
 def test_resolve_dependency_matches_exact_filename_even_with_a_stem_collision():
     # A text-reference match (text_references.py) or an already-pinned
     # move_file() name is always an exact filename, not a bare stem -- it

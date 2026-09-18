@@ -4,7 +4,7 @@ This file guides AI coding agents (Claude Code, and any tool following the AGENT
 
 Directory-scoped detail lives in nested AGENTS.md files, auto-loaded when working in that subtree (via each directory's own `CLAUDE.md` importing its sibling `AGENTS.md`):
 - `src/ziplex/AGENTS.md` — core pipeline modules directly under `src/ziplex/*.py`: LLM layer, checkpointing, summarization, orchestration (`packager.py`), the pure editing API's callers, relationship enrichment, freshness/confidence/search, MCP query layer, per-user/per-project config, skill-export/MCP distribution channels.
-- `src/ziplex/extract/code/AGENTS.md` — Tree-sitter code compression/extraction, one language per bullet (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby/Bash).
+- `src/ziplex/extract/code/AGENTS.md` — Tree-sitter code compression/extraction, one language per bullet (Python/Java/TypeScript/JavaScript/Lua/Mlua/GDScript/Go/C++/Rust/C#/PHP/Ruby/Bash).
 - `src/ziplex/extract/text/AGENTS.md` — non-Tree-sitter text compressors (json/yaml/markdown/txt/dockerfile).
 - `src/ziplex/file/AGENTS.md` — file collection, security scanning, dependency-graph API.
 - `src/ziplex/gui/AGENTS.md` — local GUI (Flask + pywebview backend, ES-module frontend).

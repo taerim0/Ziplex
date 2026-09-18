@@ -33,6 +33,7 @@ dependencies = [
     "tree-sitter-php",
     "tree-sitter-ruby",
     "tree-sitter-bash",
+    "tree-sitter-mlua",
     "tree-sitter-language-pack",
     "tiktoken",
     "pathspec",

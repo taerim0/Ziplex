@@ -404,6 +404,48 @@ def test_extract_dependencies_ignores_non_require_calls(tmp_path):
     assert extract_dependencies(str(file_path)) == []
 
 
+def test_extract_signatures_from_mlua_file(tmp_path):
+    file_path = tmp_path / "Health.mlua"
+    file_path.write_text(
+        "@Component\n"
+        "script Health extends Component\n"
+        "\tmethod void TakeDamage(number amount)\n"
+        "\t\tself.hp = self.hp - amount\n"
+        "\tend\n"
+        "\tconstructor Health(number maxHp)\n"
+        "\t\tself.hp = maxHp\n"
+        "\tend\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    sigs = extract_signatures(str(file_path))
+    assert "TakeDamage(number amount) -> void" in sigs
+    assert "Health(number maxHp)" in sigs
+
+
+def test_extract_dependencies_from_mlua_file(tmp_path):
+    # There's no import/require statement in .mlua -- a script_declaration's
+    # own `extends Base` clause is the one explicit, resolvable dependency.
+    file_path = tmp_path / "Health.mlua"
+    file_path.write_text(
+        "script Health extends Component\nend\n",
+        encoding="utf-8",
+    )
+
+    assert extract_dependencies(str(file_path)) == ["Component"]
+
+
+def test_extract_dependencies_from_mlua_file_with_no_extends(tmp_path):
+    file_path = tmp_path / "Vector2.mlua"
+    file_path.write_text(
+        "script Vector2\n\tproperty float x\nend\n",
+        encoding="utf-8",
+    )
+
+    assert extract_dependencies(str(file_path)) == []
+
+
 def test_extract_signatures_from_gdscript_file(tmp_path):
     file_path = tmp_path / "player.gd"
     file_path.write_text(

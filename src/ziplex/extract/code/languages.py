@@ -22,6 +22,7 @@ import tree_sitter_c_sharp as tscsharp
 import tree_sitter_php as tsphp
 import tree_sitter_ruby as tsruby
 import tree_sitter_bash as tsbash
+import tree_sitter_mlua as tsmlua
 
 # GDScript has no dedicated tree-sitter-gdscript PyPI package (as of this
 # writing) the way the languages above do -- only a community grammar
@@ -565,6 +566,33 @@ def _gdscript_dependency_handler(node: Node, results: list) -> bool:
         _append_gdscript_path_stems(node, results)
         return True
 
+    return False
+
+
+def _mlua_dependency_handler(node: Node, results: list) -> bool:
+    # MapleStory Worlds' .mlua has no import/require statement at all --
+    # every script shares one project-wide namespace, so the only
+    # explicit, resolvable dependency shape is a script_declaration's own
+    # `extends Base` clause (script_declaration's "base" field, a `type`
+    # node whose own "name" field is the base script's bare identifier).
+    # `extends Node`-style references to a *built-in* engine/runtime type
+    # with no corresponding project file are harmless here the same way
+    # GDScript's own `extends Node` is -- resolve_dependency() just finds
+    # no match and the string resolves as external.
+    #
+    # False, not True: script_declaration wraps a whole file's entire body
+    # (chunk = repeat1(script_declaration)), and every other node inside it
+    # (property/method/etc. bodies) needs the traversal to keep recursing
+    # into it regardless -- there's nothing else dependency-shaped to find
+    # directly on this node itself, but returning True here would stop
+    # traversal from ever reaching a file's own children at all.
+    if node.type != "script_declaration":
+        return False
+    base = node.child_by_field_name("base")
+    if base is not None:
+        name_node = base.child_by_field_name("name")
+        if name_node is not None:
+            results.append(name_node.text.decode())
     return False
 
 
@@ -1169,6 +1197,43 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
         function_types=["function_definition", "constructor_definition"],
         dependency_handler=_gdscript_dependency_handler,
         implicit_names={"constructor_definition": "_init"},
+    ),
+    ".mlua": LanguageConfig(
+        language=Language(tsmlua.language()),
+        # Covers every member kind that's actually a callable (method/
+        # constructor/operator/emitter/handler) plus Lua-inherited named
+        # function forms (`function Tbl.f() end`/`local function f() end`)
+        # method bodies can themselves define -- all expose "name"/
+        # "parameters"/"body" directly, and method_declaration/
+        # operator_declaration additionally expose "return_type" (a
+        # type_list, since a real .d.mlua API can return more than one
+        # value), already covered by extractor.py's generic "return_type"
+        # check with no per-language change needed. constructor_declaration/
+        # emitter_declaration/handler_declaration have no return type at
+        # all, correctly producing no "-> ..." suffix, same as every other
+        # language's constructor.
+        #
+        # Deliberately excludes property_declaration/member_declaration (no
+        # field_handler is configured either) and the anonymous
+        # function_definition (`local f = function() end`) -- the latter
+        # has no "name" field, and its wrapping local_variable_declaration
+        # exposes no single "name" field of its own the way TS/JS's
+        # variable_declarator does (a local_variable_declaration can bind
+        # several names at once via its variable_list), so the existing
+        # parent-fallback in _resolve_signature_name() can't recover one
+        # here -- left undone rather than teaching that fallback a
+        # multi-binding special case, same restraint TS/JS's own bare
+        # single-param arrow gap and PHP's excluded anonymous closures take.
+        function_types=[
+            "method_declaration",
+            "constructor_declaration",
+            "operator_declaration",
+            "emitter_declaration",
+            "handler_declaration",
+            "function_definition_statement",
+            "local_function_definition_statement",
+        ],
+        dependency_handler=_mlua_dependency_handler,
     ),
     ".go": LanguageConfig(
         language=Language(tsgo.language()),
