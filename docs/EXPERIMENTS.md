@@ -23,6 +23,41 @@ already seen this codebase earlier in the conversation (which would make
 "alone" look artificially strong)? This file exists so that context isn't
 lost the way it would be if only a one-line takeaway got written down.
 
+## Known gap: packing cost isn't counted anywhere (entries #2-#5)
+
+Every entry from #2 onward excludes the cost of *producing* the pack
+(`ziplex pack ... --auto --auto-correct`, real Gemini API calls) from
+Condition A's measured cost -- explicit in each entry's own notes ("this
+happened before either subagent was launched and is not counted"). That
+convention is deliberate for measuring "given a pack already exists, is
+querying it worth it," but it silently hides the real total cost of a
+one-off, never-reused pack, which is the actual scenario every entry so
+far has run (a fresh pack, used exactly once, then thrown away with the
+rest of the temp clone).
+
+What's recorded per entry is the *packed artifact's size* (`ziplex`'s own
+"토큰 분석"/token-analysis line, e.g. "GPT-4o: 168,711 → 3,501") -- that's
+original-file-tokens vs. compressed-output-tokens, a measure of how small
+the artifact ended up, **not** how many tokens Gemini's API actually
+billed across the batched summarization calls that produced it (which
+includes every batch's full input -- signatures, dependencies, truncated
+content -- not just the final summary text). `llm.py` doesn't currently
+capture or log Gemini's own `usageMetadata` (prompt/candidates/total
+token counts) anywhere, so that real number was never recorded for any of
+entries #2-#5's packs and can't be reconstructed after the fact without
+re-running the pack.
+
+There's also a unit-mismatch problem waiting even if that number existed:
+packing spends Gemini tokens, querying spends Claude Sonnet tokens, and
+the two aren't priced the same -- a fair "total real cost" comparison
+needs dollar-normalization, not a raw token sum across providers.
+
+Not yet fixed as of this note. The straightforward fix (log Gemini's real
+`usageMetadata` per call, sum it across a pack run, print it alongside the
+existing token-analysis block) is a real, valuable addition to `pack()`
+itself, independent of this experiment log -- tracked as a follow-up, not
+done here.
+
 ## How to add an entry
 
 Copy the template block below into a new `### #N YYYY-MM-DD <short title>`
@@ -45,6 +80,7 @@ vice versa) rather than letting one drift ahead of the other.
 | 2 | 2026-09-16 | main `57a412a` | Ziplex-packed context+CLI vs. Claude Code alone | claude-sonnet-5 (both sides) | scrapy (real external repo, 502 `.py`/696 total files) | Baseline cheaper (63,876 vs. 65,565 tok) and faster (215s vs. 263s); both found the same real bug equally fast, but the Ziplex-assisted fix had a real regression baseline's fix didn't -- caught only by running the target project's own test suite |
 | 3 | 2026-09-18 | main `7b4857b` (`ziplex 0.5.0`) | Ziplex-packed context+CLI vs. Claude Code alone, fixed-question comprehension (not debugging) | claude-sonnet-5 (both sides) | spf13/cobra (real external Go CLI library, 36 `.go`/66 total files) | Accuracy tied (12/12 both, graded against a pre-written answer key). Baseline cheaper (64,926 vs. 84,785 tok, ~23% fewer) despite more tool calls (21 vs. 13); Ziplex-assisted was faster (65.6s vs. 85.3s) |
 | 4 | 2026-09-18 | main `7b4857b` (`ziplex 0.5.0`) | Same design as #3, different project | claude-sonnet-5 (both sides) | gdquest-demos/godot-open-rpg (real external GDScript game, 336 `.gd`/1373 total files, 78 non-addon) | Accuracy tied (12/12 both; both independently caught a real error in the answer key). Direction reversed from #3: Ziplex-assisted cheaper this time (66,692 vs. 70,322 tok, ~5% fewer) but slower (91.0s vs. 48.4s) and more tool calls (18 vs. 12) |
+| 5 | 2026-09-18 | main `7b4857b` (`ziplex 0.5.0`) | Same design as #3/#4, a third project sized between them | claude-sonnet-5 (both sides) | zk-org/zk (real external Go CLI note-taking tool, 127 `.go`/480 total files, no vendored addon) | Accuracy tied (12/12 both, 5th straight tied round). Essentially a wash on cost this time -- Ziplex-assisted marginally cheaper (63,725 vs. 64,852 tok, ~1.7%) and marginally faster (59.0s vs. 63.3s), both far inside the noise band #3/#4 showed |
 
 ## Entries
 
@@ -154,3 +190,26 @@ Same day, same design as entry #3 (fixed 12-question comprehension test, same pr
   - **Reverses #3's direction on both axes (cost and speed) on a different project shape**: #3 (cobra) is a small, clean, single-purpose Go library; #4 (this entry) is a larger, messier real game codebase mixing project-owned code, a large vendored third-party addon (Dialogic, 258 of 336 `.gd` files), and asset-heavy content directories. The most likely explanation, not confirmed: on a project large/messy enough that raw Grep/Glob has to sift through more noise (a bundled addon's own hundreds of files, asset directories with similar names to source directories like root `combat/` vs. `src/combat/`) to find the right files, a pre-computed, already-filtered summary starts paying for itself -- while on a small, clean project grep is already cheap enough that the summary layer is pure overhead. This is a hypothesis derived from n=2, not a confirmed pattern -- a third, even larger/messier project (or a systematic sweep across several sizes) would be needed to actually test it.
   - Both projects (#3 and #4) were run in the same session, same day, immediately after a candid discussion (prompted by the user) that entries #1/#2's "baseline is cheaper" result might undercut Ziplex's core token-reduction pitch -- and specifically after the user pushed back on a proposed "no filesystem access at all" justification (web-chat-paste scenarios) as a weak, shrinking niche given the industry trend toward local agentic tool access. This entry's reversed result on a messier project is a more promising thread than that abandoned one, but is not yet strong enough (n=2) to act as the new pitch.
   - Neither project's packing needed more than one checkpoint/resume cycle, and both used real Gemini calls (not mocked) -- consistent with #2's finding that non-interactive `pack()` checkpoints deterministically rather than silently degrading when an LLM call's response doesn't parse, which is safe but means a real pack run for a comprehension experiment like this should budget for at least one resume.
+
+---
+
+### #5 2026-09-18 — Same design again, a third project sized between #3 and #4
+
+Same day, same design as #3/#4, run on a third real project deliberately picked to sit between #3's size (36 files, no vendored noise) and #4's (78 project-owned + 258 vendored addon files) -- specifically to test the "size/messiness determines which side wins" hypothesis #3/#4 raised, by holding "messiness" roughly constant (another single-purpose CLI tool, no vendored third-party package bundled in) and varying mainly size.
+
+- **Compared**: identical design to #3/#4.
+- **Ziplex version**: main `7b4857b` (`ziplex 0.5.0`), same as #3/#4
+- **Model(s) used**: `claude-sonnet-5` on both sides
+- **Project analyzed**: [zk-org/zk](https://github.com/zk-org/zk) (real, actively-maintained open-source Go plain-text note-taking CLI + LSP server), cloned at commit `1400956bfb591a4872dd6485378bf4b163d5a3f6`. 127 `.go` files (~20,800 lines), 480 total files, no vendored third-party package (unlike #4's Dialogic) -- a layered/hexagonal architecture (`internal/core` domain logic, `internal/adapter/{editor,fs,fzf,handlebars,lsp,markdown,sqlite,term}` for 8 distinct adapters, `internal/cli` for command wiring). Picked from a shortlist the user reviewed (over e.g. `gin-gonic/gin`, rejected for being too famous/high memorization-risk at 89k stars) specifically for the "moderate size, still clean" data point.
+- **Claude Code's prior exposure**: two genuinely fresh `general-purpose` subagents (not forks), isolated plain-directory copies (`zk-a`/`zk-b`, `.git` stripped), same pattern as #3/#4.
+- **Ziplex packing state**: `ziplex pack <zk-a> --auto --auto-correct`. Same rules-extraction checkpoint-and-resume failure as *both* #3 and #4's first attempts (three-for-three now on a real project's first pack attempt -- see notes). Resumed once, completed cleanly. Final pack token analysis: `GPT-4o: 482,473 → 27,909 (94.2% reduction)` / `Claude (approx): 387,511 → 25,448 (93.4% reduction)`.
+- **Metrics measured**: same as #3/#4 -- harness `<usage>` block for cost; a 12-question/24-point answer key written from the real source (main.go, go.mod, internal/core/note.go, every internal/adapter/* subdirectory) before either subagent ran, covering: the CLI parsing library used (kong, not Cobra -- a deliberate "don't assume, verify" trap question), the 8 adapters and what each does, LSP/SQLite/Markdown/templating dependencies, entry-point location, `Note` struct fields, `internal/`'s 4 subdirectories, and the go.mod `replace` directive.
+- **Result**:
+  - Condition A (Ziplex-assisted): 63,725 tok / 12 tool calls / 59.0s -- 24/24
+  - Condition B (Claude Code alone): 64,852 tok / 11 tool calls / 63.3s -- 24/24
+  - **Accuracy tied a fifth consecutive time** (all of #3/#4/#5) -- both sides again correctly reported that this project does NOT use Cobra despite being "yet another Go CLI tool" superficially similar to #3's cobra, i.e. neither pattern-matched from general knowledge without verifying.
+  - **Essentially a wash on cost and speed this time**: token gap ~1.7% (63,725 vs. 64,852), tool-call gap 1 (12 vs. 11), time gap ~7% (59.0s vs. 63.3s) -- all three metrics far closer together than either #3's ~23% gap or #4's ~5%/~88% gaps.
+- **Notes**:
+  - **Refines, doesn't confirm, the #3/#4 size/messiness hypothesis**: moving from #3 (small, clean, 36 files, baseline clearly cheaper) to #5 (medium, clean, 127 files, near-tie) to #4 (medium-small-owned but noisy via a large vendored addon, Ziplex marginally cheaper) suggests pure file-*count* scaling alone doesn't flip the direction -- #5 is ~3.5x #3's size and landed near parity, not closer to #4's result. What #4 had that #5 doesn't is vendored third-party noise (a large addon directory that isn't the "real" project code but still has to be sifted through by raw Grep/Glob) and asset-heavy content directories with names similar to source directories (root `combat/` vs. `src/combat/`) -- the working hypothesis is now specifically about *that* kind of noise, not raw size, but this is n=3 across three different projects with several confounds each (language, domain, exact file layout), not a controlled sweep.
+  - **Third-for-third on the same rules-extraction checkpoint-and-resume failure**: #3, #4, and #5 *all* failed their first `pack --auto --auto-correct` attempt at the "코딩 룰 생성" (rules extraction) step, checkpointed, and completed cleanly on an immediate resume with no other changes. This is no longer plausibly random flakiness given three-for-three -- `MAX_RULES_FILES` (the cap added by entry #2's own `57a412a` fix) is already in place and comfortably covers all three projects' file counts (36/78/127, all under the 80 cap or close), so this isn't the same uncapped-prompt bug. The failure produces no logged detail beyond "❌ rules 코딩 룰 생성 실패" (`checkpoint.py`'s `handle_llm_failure()` path), so the actual cause (a transient Gemini 503, a JSON-parse failure on a malformed response, a rate-limit on the *first* request specifically) is still unknown -- worth a dedicated investigation with better error logging on the next real pack run, flagged but not pursued here to stay focused on the comprehension-QA question this round was actually testing.
+  - **A real, general gap in every pack-based entry so far, raised by the user directly after this round**: none of #2-#5 count the token cost of *producing* the pack in Condition A's total -- see the new "Known gap" section near the top of this file. Worth fixing (real Gemini `usageMetadata` logging in `llm.py`) before running a #6 that's meant to settle the size/messiness question, since a full-cost comparison could look meaningfully different from a query-only one, especially for a project this small (a 20-127-file pack's real Gemini cost is likely a non-trivial fraction of the ~60-90k tokens either condition spent querying, unlike a much larger project where packing cost would be comparatively parseable).
