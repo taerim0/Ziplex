@@ -25,6 +25,18 @@ lost the way it would be if only a one-line takeaway got written down.
 
 ## Known gap: packing cost isn't counted anywhere (entries #2-#5)
 
+**Fixed for future rounds (main `27384c1`)**: `llm.py`'s `usage_tracker`
+now captures every real provider's own billed input/output tokens
+straight off each response (Gemini's `usageMetadata`, OpenAI's/Claude's
+`usage` field); `pack()` resets it once per run and `cli.py`'s `pack`
+subcommand prints the snapshot right after the existing "토큰 분석" block.
+The dollar-normalization problem below is still unaddressed (this only
+reports raw token counts per provider, not a cross-provider $ total), and
+entries #2-#5 below were already run before this existed, so their own
+packing cost is still unrecorded and can't be reconstructed without
+re-running each pack. A #6+ round should capture and report this number
+going forward.
+
 Every entry from #2 onward excludes the cost of *producing* the pack
 (`ziplex pack ... --auto --auto-correct`, real Gemini API calls) from
 Condition A's measured cost -- explicit in each entry's own notes ("this
