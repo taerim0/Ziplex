@@ -593,3 +593,80 @@ def test_get_session_separate_per_thread():
 
     assert sessions["a"] is not sessions["b"]
 
+
+def test_reset_usage_zeroes_out_a_prior_snapshot():
+    llm.usage_tracker.add(100, 20)
+    llm.reset_usage()
+    assert llm.get_usage() == {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+
+def test_gemini_generate_records_real_usage_from_usageMetadata(monkeypatch):
+    llm.reset_usage()
+
+    def fake_post(url, json, timeout=None):
+        return _FakeResponse({
+            "candidates": [{"content": {"parts": [{"text": "{}"}]}}],
+            "usageMetadata": {"promptTokenCount": 42, "candidatesTokenCount": 8, "totalTokenCount": 50},
+        })
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    llm.GeminiProvider(api_key="x").generate("prompt")
+
+    assert llm.get_usage() == {"calls": 1, "input_tokens": 42, "output_tokens": 8, "total_tokens": 50}
+
+
+def test_openai_generate_records_real_usage_from_usage_field(monkeypatch):
+    llm.reset_usage()
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        return _FakeResponse({
+            "choices": [{"message": {"content": "{}"}}],
+            "usage": {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35},
+        })
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    llm.OpenAIProvider(api_key="x").generate("prompt")
+
+    assert llm.get_usage() == {"calls": 1, "input_tokens": 30, "output_tokens": 5, "total_tokens": 35}
+
+
+def test_claude_generate_records_real_usage_from_usage_field(monkeypatch):
+    llm.reset_usage()
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        return _FakeResponse({
+            "content": [{"text": "{}"}],
+            "usage": {"input_tokens": 60, "output_tokens": 12},
+        })
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    llm.ClaudeProvider(api_key="x").generate("prompt")
+
+    assert llm.get_usage() == {"calls": 1, "input_tokens": 60, "output_tokens": 12, "total_tokens": 72}
+
+
+def test_usage_accumulates_across_multiple_calls(monkeypatch):
+    llm.reset_usage()
+
+    def fake_post(url, json, timeout=None):
+        return _FakeResponse({
+            "candidates": [{"content": {"parts": [{"text": "{}"}]}}],
+            "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 1},
+        })
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.GeminiProvider(api_key="x")
+    provider.generate("prompt")
+    provider.generate("prompt")
+
+    assert llm.get_usage() == {"calls": 2, "input_tokens": 20, "output_tokens": 2, "total_tokens": 22}
+
+
+def test_mock_provider_never_records_usage():
+    # MockProvider makes no real HTTP call, so there's no usage to read --
+    # reset_usage()/get_usage() must correctly report all-zero rather than
+    # a fabricated estimate.
+    llm.reset_usage()
+    llm.MockProvider().generate('{"summary": "..."}')
+    assert llm.get_usage() == {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+

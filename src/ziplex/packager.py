@@ -11,7 +11,7 @@ from .extract.code.extractor import extract_all
 from .text_references import find_text_references_for_file, merge_text_references
 from .go_packages import resolve_go_context, expand_dependencies_for_file
 from .tokenizer import analyze_tokens_with_payload
-from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES
+from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES, reset_usage, get_usage
 from .freshness import build_manifest, load_previous_summaries
 from .confidence import estimate_confidence, REVIEW_THRESHOLD
 from .config import collection_kwargs
@@ -952,6 +952,14 @@ def pack(
     # with project.name == "", etc.
     project_name = Path(root_path).resolve().name
     effective_result_dir = Path(result_dir) if result_dir else root / DEFAULT_OUTPUT_SUBDIR
+
+    # Real-usage tracking starts fresh for this run, before any generate()
+    # call anywhere below (rules/prompt/folder-summary calls, and every
+    # summarizer.py thread) can happen -- see llm.usage_tracker's own
+    # docstring for why this exists: analyze_tokens_with_payload() below
+    # only ever measures the *packed artifact's* size, never what the LLM
+    # API itself was actually billed to produce it.
+    reset_usage()
 
     # auto-detect and (if trusted) unpack a leftover checkpoint -- see
     # _resolve_checkpoint()'s own docstring for the full "does this

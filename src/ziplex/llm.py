@@ -103,6 +103,90 @@ def _retry_wait(attempt: int) -> int:
     return min(5 * (attempt + 1), MAX_RETRY_WAIT_SECONDS)
 
 
+class _UsageTracker:
+    """Accumulates real, provider-billed input/output tokens across every
+    generate() call in one pack() run -- separate from tokenizer.py's own
+    analyze_tokens_with_payload(), which only ever measures the *packed
+    artifact's* size (original file text vs. the final `summary` value),
+    never what the LLM API itself was actually billed for producing that
+    summary (every batched prompt's full input -- signatures/dependencies/
+    truncated content -- plus output, not just the short final answer).
+    That gap meant a project's real packing cost was invisible anywhere in
+    Ziplex's own output; a docs/EXPERIMENTS.md comparison round found this
+    directly (three real packs, no way to include "cost of producing the
+    pack" in a total-cost comparison since the number was never captured).
+
+    Thread-safe (a plain lock, not e.g. threading.local()) since
+    summarizer.py's MAX_WORKERS-sized ThreadPoolExecutor calls generate()
+    from multiple threads at once during a single pack() run, all needing
+    to add into the same running total.
+
+    input_tokens/output_tokens follow each real provider's own response
+    shape (Gemini's usageMetadata.promptTokenCount/candidatesTokenCount,
+    OpenAI's usage.prompt_tokens/completion_tokens, Claude's
+    usage.input_tokens/output_tokens) -- MockProvider never calls add() at
+    all (no real response to read usage from), so a mock/--no-llm run
+    correctly reports all-zero usage rather than a fabricated estimate.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.calls = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
+
+    def add(self, input_tokens: int, output_tokens: int) -> None:
+        with self._lock:
+            self.calls += 1
+            self.input_tokens += input_tokens
+            self.output_tokens += output_tokens
+
+    def reset(self) -> None:
+        with self._lock:
+            self.calls = 0
+            self.input_tokens = 0
+            self.output_tokens = 0
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "calls": self.calls,
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "total_tokens": self.input_tokens + self.output_tokens,
+            }
+
+
+# Module-level, not per-provider-instance -- _active_provider() constructs a
+# fresh provider instance on every call (see its own docstring), so a
+# per-instance accumulator would silently reset itself mid-pack the moment a
+# GUI provider switch (or just the normal one-instance-per-call pattern)
+# created a new one. This single tracker outlives any one provider instance
+# for the same reason _provider itself is module-level.
+usage_tracker = _UsageTracker()
+
+
+def reset_usage() -> None:
+    """Call once at the start of a real pack() run, before any generate()
+    calls -- see usage_tracker's own docstring. Idempotent to call again
+    (e.g. a second pack() in the same long-lived GUI process); each call
+    starts a fresh window, so overlapping concurrent packs in one process
+    would double-count into the same window -- not a real scenario today
+    (pack() runs synchronously per request), so not guarded against.
+    """
+    usage_tracker.reset()
+
+
+def get_usage() -> dict:
+    """Snapshot of every generate() call's real, provider-billed token
+    usage since the last reset_usage() -- {"calls", "input_tokens",
+    "output_tokens", "total_tokens"}. All zero under MockProvider/
+    use_llm=False, correctly (no real API usage happened), never a
+    fabricated estimate.
+    """
+    return usage_tracker.snapshot()
+
+
 def _label_prefix(label: str) -> str:
     """Prefixes a retry/error log line with which item the call is actually
     for -- a single file's relative name (analyze_file_summary/
@@ -415,6 +499,15 @@ class GeminiProvider:
                         f"Empty response (finishReason: {finish_reason})",
                         f"응답에 콘텐츠 없음 (finishReason: {finish_reason})",
                     )
+                # promptTokenCount/candidatesTokenCount, not totalTokenCount --
+                # the latter would also fold in thoughtsTokenCount, which
+                # should already be 0 given thinkingBudget: 0 above, but
+                # summing the two named fields directly is correct regardless
+                # of whether that holds for every model reachable through
+                # this floating "-latest"-style alias (see DEFAULT_MODEL's
+                # own comment on why that can change with no code change here).
+                gemini_usage = data.get("usageMetadata", {})
+                usage_tracker.add(gemini_usage.get("promptTokenCount", 0), gemini_usage.get("candidatesTokenCount", 0))
                 return _ok(text)
 
             error_code = data.get("error", {}).get("code", 0)
@@ -479,6 +572,8 @@ class OpenAIProvider:
 
         def interpret(data, response):
             if response.status_code == 200 and "choices" in data:
+                openai_usage = data.get("usage", {})
+                usage_tracker.add(openai_usage.get("prompt_tokens", 0), openai_usage.get("completion_tokens", 0))
                 return _ok(data["choices"][0]["message"]["content"])
 
             # Checked on the HTTP status, not a response body field, unlike
@@ -547,6 +642,8 @@ class ClaudeProvider:
 
         def interpret(data, response):
             if response.status_code == 200 and "content" in data:
+                claude_usage = data.get("usage", {})
+                usage_tracker.add(claude_usage.get("input_tokens", 0), claude_usage.get("output_tokens", 0))
                 return _ok(data["content"][0]["text"])
 
             # 529 is Anthropic's own overloaded_error status, alongside the

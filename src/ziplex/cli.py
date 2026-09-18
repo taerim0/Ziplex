@@ -14,7 +14,7 @@ from .file.textutil import relative_key as _rel_key
 from .text_references import find_text_references_for_file, merge_text_references
 from .go_packages import resolve_go_context, expand_dependencies_for_file
 from .tokenizer import analyze_tokens_with_compression
-from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider
+from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider, get_usage
 from .packager import pack, save_aif
 from .corrector import correct_aif
 from .edits import finalize_aif, set_file_summary, set_folder_summary
@@ -613,6 +613,24 @@ def _cmd_pack(args) -> None:
         print("=" * 50)
         for model, data in aif["tokens"].items():
             print(f"  {_model_label(model, data)}: {data['original']} → {data['compressed']} ({data['saved_pct']}% 절감)")
+
+        # Real, provider-billed usage for every generate() call this run
+        # actually made -- a different number from the "토큰 분석" block
+        # above, which only measures the *packed artifact's* size (original
+        # file text vs. the final summary), never what the LLM API itself
+        # was actually billed to produce it (every batched prompt's full
+        # input, not just the short final answer). All-zero and skipped
+        # under --no-llm/LLM_PROVIDER=mock, correctly -- no real API call
+        # happened, so there's nothing to report.
+        usage = get_usage()
+        if usage["calls"]:
+            print("\n" + "=" * 50)
+            print("📡 LLM 실사용량 (API 과금 기준, 패킹 결과물 크기와는 별개)")
+            print("=" * 50)
+            print(f"  요청 수: {usage['calls']}")
+            print(f"  입력 토큰: {usage['input_tokens']:,}")
+            print(f"  출력 토큰: {usage['output_tokens']:,}")
+            print(f"  합계: {usage['total_tokens']:,}")
 
         if args.max_tokens is not None:
             passed, actual = _check_max_tokens(aif["tokens"], args.max_tokens, args.max_tokens_model)
