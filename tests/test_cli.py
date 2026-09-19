@@ -303,6 +303,42 @@ def test_skill_command_no_collision_warning_when_project_name_is_empty(monkeypat
     assert "✅ Skill 내보내기 완료" in out
 
 
+def test_flatten_command_writes_a_single_file_by_default(monkeypatch, tmp_path, capsys):
+    aif_path = tmp_path / "out.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "proj", "prompt": "does stuff"},
+        "files": {"src/main.py": {"summary": "adds two numbers", "confidence": 1.0}},
+        "relationships": {"src/main.py": {"internal": [], "external": []}},
+    }), encoding="utf-8")
+    (tmp_path / "out.detail.json").write_text(json.dumps({
+        "src/main.py": {"compressed": "def add(a, b):\n    ⋮----\n"},
+    }), encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "flatten", str(aif_path)])
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "✅ 단일 파일 내보내기 완료" in out
+    target = tmp_path / "out.flat.md"
+    assert target.exists()
+    content = target.read_text(encoding="utf-8")
+    assert "adds two numbers" in content
+    assert "def add(a, b):" in content
+
+
+def test_flatten_command_missing_detail_json_fails_gracefully(monkeypatch, tmp_path, capsys):
+    aif_path = tmp_path / "out.json"
+    aif_path.write_text(json.dumps({"project": {"name": "proj"}, "files": {}, "relationships": {}}), encoding="utf-8")
+    # No sibling out.detail.json written.
+
+    monkeypatch.setattr(sys, "argv", ["cli.py", "flatten", str(aif_path)])
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main()
+
+    assert exc_info.value.code == 1
+    assert "읽기 실패" in capsys.readouterr().out
+
+
 def test_version_flag_prints_version_and_exits_zero(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["cli.py", "--version"])
 

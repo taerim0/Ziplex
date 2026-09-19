@@ -26,6 +26,7 @@ from .freshness import check_freshness_scoped, load_pack_scope, scope_from_aif, 
 from .skill_export import (
     export_skill, resolve_skill_target, read_existing_skill_project_name, resolve_skill_display_name,
 )
+from .flat_export import export_flat
 from .config import init_config, CONFIG_FILENAME, collection_kwargs as _collection_kwargs, collect_and_scan as _collect_and_scan
 from . import __version__
 from . import settings as app_settings
@@ -205,6 +206,7 @@ _COMMAND_OVERVIEW = [
     ("detail <name>.detail.json <file>", "Partial read of one file's compressed body"),
     ("freshness <path> <name>.cache.json", "Hash-check aif.json against disk -- no LLM calls"),
     ("skill <name>.json", "Export as a Claude Agent Skill"),
+    ("flatten <name>.json", "Export as one flat Markdown file (summary+code inline, no tool access needed)"),
     ("link / unlink <name>.json <file> <target>", "Add/remove a dependency edge"),
     ("summary <name>.json <file> <text> [--folder]", "Fix a saved file's (or folder's) summary, no re-pack"),
     ("settings [set <key> <value>]", "View/change ~/.ziplex/settings.json"),
@@ -446,6 +448,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="프로젝트 폴더 경로 -- 주면 내보내기 전에 무료 freshness 체크(LLM 호출 없음)를 한 번 하고, "
         "aif.json이 오래됐으면 경고만 하고 계속 내보냅니다 (막지는 않음)",
     )
+
+    fl = sub.add_parser(
+        "flatten",
+        help="aif.json+detail.json을 파일 하나(Markdown, 요약+압축코드 인라인)로 합쳐서 내보내기 -- "
+        "도구/MCP 서버 없이 채팅에 통째로 붙여넣는 용도",
+    )
+    fl.add_argument("aif_path", help="aif.json 경로")
+    fl.add_argument("--output", "-o", default=None, help="출력 파일 경로 (기본값: <name>.flat.md)")
 
     ini = sub.add_parser("init", help="프로젝트에 .ziplex.json 설정 파일 생성 (include/ignore 패턴)")
     ini.add_argument("path", help="프로젝트 폴더 경로")
@@ -857,6 +867,24 @@ def _cmd_skill(args) -> None:
     print("   Claude Code가 자동으로 인식하려면 프로젝트 루트의 .claude/skills/ 아래에 있어야 합니다.")
 
 
+def _cmd_flatten(args) -> None:
+    # export_flat() does its own open()/json.load() on aif_path and its
+    # sibling detail.json (via query_service._detail_path(), the same
+    # shared convention skill_export.py already reuses) -- both wrapped
+    # here in one try/except, same "❌ ... 읽기 실패" shape as _cmd_skill's
+    # own aif_path failure and every other file-loading command in this CLI.
+    # A missing detail.json specifically (aif.json moved away from its
+    # sibling, or a pre-detail.json-era pack) surfaces as the same message
+    # rather than a separate one -- either way there's nothing to export.
+    try:
+        target = export_flat(args.aif_path, args.output)
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"❌ {args.aif_path} (또는 그 형제 detail.json) 읽기 실패: {e}")
+        sys.exit(1)
+    print(f"✅ 단일 파일 내보내기 완료: {target}")
+    print("   도구 접근 없는 채팅(웹 UI 등)에 이 파일 하나만 통째로 붙여넣으면 됩니다.")
+
+
 def _cmd_init(args) -> None:
     _require_dir_or_exit(args.path)
     existed = (Path(args.path) / CONFIG_FILENAME).exists()
@@ -967,6 +995,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], None]] = {
     "detail": _cmd_detail,
     "freshness": _cmd_freshness,
     "skill": _cmd_skill,
+    "flatten": _cmd_flatten,
     "init": _cmd_init,
     "settings": _cmd_settings,
     "checkpoint": _cmd_checkpoint,
