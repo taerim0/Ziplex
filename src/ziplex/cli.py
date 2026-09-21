@@ -21,7 +21,7 @@ from .edits import finalize_aif, set_file_summary, set_folder_summary
 from .file.relationship import (
     build_tree, print_tree as print_dependency_tree, add_relationship, remove_relationship, CycleError,
 )
-from .aif_io import save_relationships_edit
+from .aif_io import save_relationships_edit, write_aif
 from .search import search_files, read_detail_range
 from .freshness import check_freshness_scoped, load_pack_scope, scope_from_aif, cache_path_for_aif, aif_path_for_cache
 from .skill_export import (
@@ -969,8 +969,7 @@ def _cmd_summary(args) -> None:
 
     set_fn(aif, args.file, args.summary)
 
-    with open(args.aif_path, "w", encoding="utf-8") as f:
-        json.dump(aif, f, ensure_ascii=False, indent=2)
+    write_aif(args.aif_path, aif)
 
     print(f"✅ {args.file} summary 수정됨")
 

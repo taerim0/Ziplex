@@ -109,7 +109,10 @@ export async function renderFiles() {
         el("span", { text: "📁 " }),
         el("span", { class: "tree-name tree-name-fixed", text: displayName }),
         editor.displayEl,
-        editor.editBtn,
+        // Only a folder with a saved summary can be edited: a pure container
+        // (no files of its own) or a one-file folder has no aif.folders entry,
+        // so /api/folders/summary would 404 on save.
+        ...(folders[path] ? [editor.editBtn] : []),
         editor.editRow,
         editor.errorEl,
       ]);

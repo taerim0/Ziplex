@@ -11,7 +11,7 @@ from .extract.code.extractor import extract_all
 from .text_references import find_text_references_for_file, merge_text_references
 from .go_packages import resolve_go_context, expand_dependencies_for_file
 from .tokenizer import analyze_tokens_with_payload
-from .aif_io import detach_weak_edges, WEAK_KEY
+from .aif_io import detach_weak_edges, write_aif, WEAK_KEY
 from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES, reset_usage, get_usage
 from .freshness import build_manifest, load_previous_summaries
 from .confidence import estimate_confidence, REVIEW_THRESHOLD
@@ -101,7 +101,8 @@ FORMAT_NOTES: dict[str, str] = {
         "screen, not by hand. Each file's `confidence` (0.0-1.0) is a "
         f"heuristic: a score below {REVIEW_THRESHOLD} means the summary's "
         "wording didn't overlap much with the file's own extracted signatures, "
-        "worth double-checking before trusting it. detail.json's compressed "
+        "worth double-checking before trusting it. A file with no `confidence` "
+        "key scored 1.0 (the key is omitted to save tokens). detail.json's compressed "
         "body uses '⋮----' to mark a function body Ziplex elided to save "
         "tokens -- everything else (signatures, imports, decorators) is left "
         "untouched. project.security_scan records files Ziplex's scanner "
@@ -122,7 +123,8 @@ FORMAT_NOTES: dict[str, str] = {
         f"화면을 통해 수정하세요. 각 파일의 `confidence`(0.0-1.0)는 휴리스틱 "
         f"점수입니다: {REVIEW_THRESHOLD} 미만이면 summary의 표현이 그 파일의 "
         "실제 시그니처와 많이 겹치지 않았다는 뜻이니 신뢰하기 전에 다시 확인하는 "
-        "것이 좋습니다. detail.json의 compressed 본문에서 '⋮----'는 Ziplex가 "
+        "것이 좋습니다. `confidence` 키가 없는 파일은 1.0점입니다(토큰 절감을 위해 "
+        "키를 생략함). detail.json의 compressed 본문에서 '⋮----'는 Ziplex가 "
         "토큰 절감을 위해 생략한 함수 본문을 표시합니다 -- 그 외(시그니처, "
         "import, 데코레이터)는 그대로 남아 있습니다. project.security_scan은 "
         "수집 단계에서 Ziplex의 보안 스캐너가 민감할 수 있다고 표시한 파일을 "
@@ -709,6 +711,9 @@ def _assemble_aif(
                 "file_count": folder_file_counts.get(folder, 0),
             }
             for folder, summary in folders.items()
+            # A one-file folder's summary just restates that file's own (6 of
+            # Ziplex's 24 folders, ~2% of aif.json) -- nothing to roll up.
+            if folder_file_counts.get(folder, 0) != 1
         },
         "tokens": {
             model: {
@@ -1337,6 +1342,11 @@ def save_aif(aif: dict, output_path: str | None = None, progress_lang: str = "ko
     detail = {}
     for name, data in aif["files"].items():
         lean_files[name] = {k: v for k, v in data.items() if k != "compressed"}
+        # A missing `confidence` means 1.0 (every reader defaults to that, and
+        # FORMAT_NOTES tells a cold reader so) -- ~100 of Ziplex's own 142
+        # files scored exactly 1.0, so omitting it there is free.
+        if lean_files[name].get("confidence") == 1.0:
+            del lean_files[name]["confidence"]
         detail[name] = {"compressed": data.get("compressed", "")}
 
     lean_aif = {k: v for k, v in aif.items() if k != "_manifest"}
@@ -1349,8 +1359,7 @@ def save_aif(aif: dict, output_path: str | None = None, progress_lang: str = "ko
         if name in detail:
             detail[name][WEAK_KEY] = refs
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(lean_aif, f, ensure_ascii=False, indent=2)
+    write_aif(str(output_path), lean_aif)
     print(pick(f"\n✅ AIF.json saved: {output_path}", f"\n✅ AIF.json 저장됨: {output_path}"))
 
     detail_path = output_path.with_name(f"{output_path.stem}.detail.json")

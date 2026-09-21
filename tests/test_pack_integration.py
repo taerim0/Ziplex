@@ -530,7 +530,9 @@ def test_pack_attaches_folder_summaries(tmp_path, monkeypatch):
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "extra.py", "def extra():\n    pass\n")
     _write(project / "src" / "helper.py", "def helper():\n    pass\n")
+    _write(project / "src" / "helper2.py", "def helper2():\n    pass\n")
 
     aif = packager.pack(str(project), auto=True, interactive=False)
 
@@ -542,10 +544,9 @@ def test_pack_attaches_folder_summaries(tmp_path, monkeypatch):
     # independently verified signal -- present regardless of value.
     assert isinstance(aif["folders"]["."]["confidence"], float)
     assert isinstance(aif["folders"]["src"]["confidence"], float)
-    # How many files that one summary sentence is standing in for -- both
-    # folders here have exactly one file each.
-    assert aif["folders"]["."]["file_count"] == 1
-    assert aif["folders"]["src"]["file_count"] == 1
+    # How many files that one summary sentence is standing in for.
+    assert aif["folders"]["."]["file_count"] == 2
+    assert aif["folders"]["src"]["file_count"] == 2
 
     # survives finalize_aif() the same way tech_stack does -- not a
     # per-file field it prunes
@@ -563,10 +564,51 @@ def test_pack_use_llm_false_generates_structural_folder_summaries(tmp_path, monk
 
     project = tmp_path / "project"
     _write(project / "src" / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "src" / "util.py", "def sub(a, b):\n    return a - b\n")
 
     aif = packager.pack(str(project), auto=True, interactive=False, use_llm=False)
 
-    assert "Contains 1 file(s): main.py" in aif["folders"]["src"]["summary"]
+    assert "Contains 2 file(s): main.py, util.py" in aif["folders"]["src"]["summary"]
+
+
+def test_pack_omits_the_summary_of_a_one_file_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "solo" / "only.py", "def only():\n    pass\n")
+    _write(project / "pair" / "a.py", "def a():\n    pass\n")
+    _write(project / "pair" / "b.py", "def b():\n    pass\n")
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+
+    # a one-file folder's summary would only restate that file's own
+    assert "solo" not in aif["folders"]
+    assert aif["folders"]["pair"]["file_count"] == 2
+    assert "solo/only.py" in aif["files"]  # the file itself is still fully described
+
+
+def test_saved_aif_omits_confidence_when_it_is_1_0_and_readers_default_it(tmp_path, monkeypatch):
+    import json
+    from ziplex import query_service
+
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "notes.md", "# Notes\n\nplain text, no signatures to check\n")
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    out = tmp_path / "out" / "p.json"
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+    assert aif["files"]["notes.md"]["confidence"] == 1.0  # in memory it is always present
+    packager.save_aif(aif, output_path=str(out), progress_lang="en")
+
+    saved = json.loads(out.read_text(encoding="utf-8"))
+    assert "confidence" not in saved["files"]["notes.md"]  # 1.0 is implied
+    assert saved["files"]["main.py"]["confidence"] < 0.34  # a real score is kept
+    # every reader treats a missing confidence as 1.0
+    assert query_service.list_files(str(out))["notes.md"]["confidence"] == 1.0
 
 
 def test_pack_captures_a_text_file_reference_to_a_code_file(tmp_path, monkeypatch):

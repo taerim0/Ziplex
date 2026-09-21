@@ -162,3 +162,51 @@ def test_a_pre_slim_aif_json_still_loads_and_queries(tmp_path):
 
     assert query_service.get_dependents(str(out), "a.py", include_text_refs=False) == ["b.py"]
     assert query_service.get_dependents(str(out), "a.py") == ["README.md", "b.py"]
+
+
+# --- on-disk layout -------------------------------------------------------
+
+def test_dumps_aif_is_plain_json_that_roundtrips_exactly():
+    from ziplex.aif_io import dumps_aif
+
+    aif = {
+        "project": {"name": "demo", "prompt": "한국어 ok", "scope": {"include": [], "ignore": []}},
+        "rules": ["r1", "r2", "r3"],
+        "files": {"a.py": {"summary": "s", "confidence": 0.2}, "b.py": {"summary": "t"}},
+        "relationships": {},
+        "folders": {},
+        "tokens": {"GPT-4o": {"original": 1, "compressed": 1}},
+        "language": "ko",
+    }
+
+    assert json.loads(dumps_aif(aif)) == aif
+
+
+def test_dumps_aif_puts_each_file_and_rule_on_its_own_line():
+    from ziplex.aif_io import dumps_aif
+
+    aif = {"rules": ["r1", "r2"], "files": {"a.py": {"summary": "x"}, "b.py": {"summary": "y"}}}
+    lines = dumps_aif(aif).splitlines()
+
+    # a change to one file/rule touches exactly one line -- what keeps git
+    # diffs and merges per-entry instead of whole-file
+    assert sum('"a.py"' in line for line in lines) == 1
+    assert sum('"b.py"' in line for line in lines) == 1
+    assert sum('"r1"' in line for line in lines) == 1
+
+
+def test_dumps_aif_is_much_smaller_than_indent_2():
+    from ziplex.aif_io import dumps_aif
+
+    aif = {"files": {f"f{i}.py": {"summary": "does a thing", "confidence": 0.5} for i in range(50)}}
+
+    assert len(dumps_aif(aif)) < len(json.dumps(aif, indent=2)) * 0.8
+
+
+def test_every_writer_of_a_saved_aif_uses_the_same_layout(tmp_path):
+    out = _save(tmp_path)
+    layout_after_save = out.read_text(encoding="utf-8")
+
+    save_relationships_edit(str(out), lambda rel: rel)  # a no-op edit must not reflow the file
+
+    assert out.read_text(encoding="utf-8") == layout_after_save

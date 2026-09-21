@@ -75,7 +75,7 @@ from pathlib import Path
 
 from .. import packager
 from .. import settings as app_settings
-from ..aif_io import save_relationships_edit
+from ..aif_io import save_relationships_edit, write_aif
 from ..config import collect_and_scan
 from ..confidence import triage
 from ..edits import (
@@ -768,8 +768,7 @@ def _edit_saved_aif(aif_path: str, edit) -> dict:
 
         aif = edit(aif)
 
-        with open(aif_path, "w", encoding="utf-8") as f:
-            json.dump(aif, f, ensure_ascii=False, indent=2)
+        write_aif(aif_path, aif)
 
         return aif
 

@@ -589,8 +589,9 @@ def test_review_triages_folders_by_confidence(tmp_path, monkeypatch):
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "other.py", "def sub(a, b):\n    return a - b\n")
 
-    job_id = pack_service.start_pack_job(str(project), selected_files=["main.py"])
+    job_id = pack_service.start_pack_job(str(project), selected_files=["main.py", "other.py"])
     _wait(job_id)
 
     review = pack_service.get_review(job_id)
@@ -606,7 +607,7 @@ def test_review_triages_folders_by_confidence(tmp_path, monkeypatch):
     # _generate_folders() but used to be dropped in the review shape --
     # the one moment a reviewer most needs to know how many files a single
     # low-confidence sentence stands in for.
-    assert review["folders_needs_review"][0]["file_count"] == 1
+    assert review["folders_needs_review"][0]["file_count"] == 2
     assert review["folders_auto_kept"] == []
 
 
@@ -616,9 +617,10 @@ def test_submit_review_applies_folder_summary_edits(tmp_path, monkeypatch):
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "other.py", "def sub(a, b):\n    return a - b\n")
     output_path = tmp_path / "out" / "project.json"
 
-    job_id = pack_service.start_pack_job(str(project), str(output_path), selected_files=["main.py"])
+    job_id = pack_service.start_pack_job(str(project), str(output_path), selected_files=["main.py", "other.py"])
     _wait(job_id)
 
     pack_service.submit_review(job_id, folder_summaries={".": "Custom folder summary."})
