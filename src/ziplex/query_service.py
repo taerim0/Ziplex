@@ -27,6 +27,7 @@ from .search import search_files, read_detail_range
 from .freshness import check_freshness_scoped, load_pack_scope, cache_path_for_aif
 from .config import collect_and_scan
 from .confidence import project_confidence_summary
+from .aif_io import attach_weak_edges
 
 
 def _load_json(path: str) -> dict:
@@ -68,6 +69,21 @@ def _load_json(path: str) -> dict:
             e.doc,
             e.pos,
         ) from e
+
+
+def _load_aif_with_weak_edges(aif_path: str) -> dict:
+    """_load_json(aif_path), plus `relationships` expanded back to its full
+    in-memory shape (prose-mention edges restored from detail.json's
+    `text_refs`) -- see aif_io.py. Every function below that reads the graph
+    goes through this rather than `_load_json()` directly, or it would only
+    see the certain edges and silently ignore `include_text_refs`.
+    """
+    aif = _load_json(aif_path)
+    try:
+        detail = _load_json(str(_detail_path(aif_path)))
+    except (OSError, json.JSONDecodeError):
+        detail = None
+    return attach_weak_edges(aif, detail)
 
 
 def _detail_path(aif_path: str) -> Path:
@@ -321,7 +337,7 @@ def get_relationships(aif_path: str, files: list[str] | None = None) -> dict:
     graph it can already see the keys of (typically via list_files()), not
     looking one up blind the way get_detail() does.
     """
-    aif = _load_json(aif_path)
+    aif = _load_aif_with_weak_edges(aif_path)
     relationships = aif.get("relationships", {})
     if files is None:
         return relationships
@@ -344,7 +360,7 @@ def get_dependents(aif_path: str, file: str, include_text_refs: bool = True) -> 
     ext_resource path) -- see file/relationship.py's `get_dependents()` and
     text_references.py for what counts as which.
     """
-    aif = _load_json(aif_path)
+    aif = _load_aif_with_weak_edges(aif_path)
     relationships = aif.get("relationships", {})
     file = _require_known_file(relationships, file, aif_path)
     return _get_dependents(relationships, file, include_text_refs=include_text_refs)
@@ -360,7 +376,7 @@ def get_blast_radius(aif_path: str, file: str, include_text_refs: bool = True) -
 
     include_text_refs is get_dependents()'s own param -- see its docstring.
     """
-    aif = _load_json(aif_path)
+    aif = _load_aif_with_weak_edges(aif_path)
     relationships = aif.get("relationships", {})
     file = _require_known_file(relationships, file, aif_path)
     return _get_blast_radius(relationships, file, include_text_refs=include_text_refs)

@@ -716,15 +716,15 @@ def test_api_relationships(client, tmp_path):
     aif_path = _write_sample_aif(tmp_path)
     res = client.get("/api/relationships", query_string={"aif_path": aif_path})
     assert res.get_json() == {
-        "a.py": {"internal": [], "external": []},
-        "b.py": {"internal": ["a.py"], "external": []},
+        "a.py": {"internal": [], "external": [], "internal_text_refs": []},
+        "b.py": {"internal": ["a.py"], "external": [], "internal_text_refs": []},
     }
 
 
 def test_api_relationships_scopes_by_files(client, tmp_path):
     aif_path = _write_sample_aif(tmp_path)
     res = client.get("/api/relationships", query_string={"aif_path": aif_path, "files": ["b.py"]})
-    assert res.get_json() == {"b.py": {"internal": ["a.py"], "external": []}}
+    assert res.get_json() == {"b.py": {"internal": ["a.py"], "external": [], "internal_text_refs": []}}
 
 
 def test_api_relationships_link(client, tmp_path):

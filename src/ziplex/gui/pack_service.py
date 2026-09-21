@@ -75,6 +75,7 @@ from pathlib import Path
 
 from .. import packager
 from .. import settings as app_settings
+from ..aif_io import save_relationships_edit
 from ..config import collect_and_scan
 from ..confidence import triage
 from ..edits import (
@@ -779,11 +780,11 @@ def _edit_saved_relationships(aif_path: str, edit) -> dict:
     `edit(relationships) -> relationships` does the actual
     add_relationship()/remove_relationship() call.
     """
-    def edit_whole_aif(aif: dict) -> dict:
-        aif["relationships"] = edit(aif.get("relationships", {}))
-        return aif
-
-    return _edit_saved_aif(aif_path, edit_whole_aif)["relationships"]
+    # aif_io owns the relationships read-modify-write (full shape in, certain
+    # edges -> aif.json / prose-mention edges -> detail.json out); this only
+    # adds the per-path lock _edit_saved_aif() would have provided.
+    with _lock_for_path(aif_path):
+        return save_relationships_edit(aif_path, edit)
 
 
 def link_saved_relationship(aif_path: str, file_name: str, target: str) -> dict:

@@ -11,6 +11,7 @@ from .extract.code.extractor import extract_all
 from .text_references import find_text_references_for_file, merge_text_references
 from .go_packages import resolve_go_context, expand_dependencies_for_file
 from .tokenizer import analyze_tokens_with_payload
+from .aif_io import detach_weak_edges, WEAK_KEY
 from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES, reset_usage, get_usage
 from .freshness import build_manifest, load_previous_summaries
 from .confidence import estimate_confidence, REVIEW_THRESHOLD
@@ -107,7 +108,12 @@ FORMAT_NOTES: dict[str, str] = {
         "flagged as possibly sensitive during collection -- a non-zero "
         "`included_anyway` means a human deliberately shipped a flagged "
         "file's real, unredacted content anyway, worth calling out to "
-        "whoever's reading this rather than passing over silently."
+        "whoever's reading this rather than passing over silently. "
+        "`relationships` lists only certain edges (real imports and structural "
+        "references); where a file merely mentions another's filename in prose, "
+        "that weaker link is kept out of this file and stored as `text_refs` on "
+        "the mentioning file's entry in detail.json -- so a file with no "
+        "dependents here can still be named in a README or config."
     ),
     "ko": (
         "이 파일(및 형제 파일 <name>.detail.json)은 Ziplex "
@@ -122,7 +128,11 @@ FORMAT_NOTES: dict[str, str] = {
         "수집 단계에서 Ziplex의 보안 스캐너가 민감할 수 있다고 표시한 파일을 "
         "기록합니다 -- `included_anyway`가 0보다 크면 사람이 그 파일의 실제 "
         "원문을(수정 없이) 포함시키기로 결정했다는 뜻이니, 조용히 넘기지 말고 "
-        "이 내용을 읽는 사람에게 짚어주는 것이 좋습니다."
+        "이 내용을 읽는 사람에게 짚어주는 것이 좋습니다. "
+        "`relationships`에는 확실한 엣지(실제 import와 구조적 참조)만 담깁니다. "
+        "다른 파일의 이름이 문서에 언급만 된 약한 연결은 이 파일에서 빼서 "
+        "detail.json의 해당(언급한) 파일 항목에 `text_refs`로 저장합니다 -- "
+        "그래서 여기서 의존자가 없는 파일도 README나 설정에서는 언급되고 있을 수 있습니다."
     ),
 }
 
@@ -1331,6 +1341,13 @@ def save_aif(aif: dict, output_path: str | None = None, progress_lang: str = "ko
 
     lean_aif = {k: v for k, v in aif.items() if k != "_manifest"}
     lean_aif["files"] = lean_files
+
+    # Certain edges stay in aif.json; prose-mention edges go to detail.json's
+    # per-file `text_refs` -- see aif_io.py's docstring.
+    lean_aif["relationships"], weak_edges = detach_weak_edges(aif.get("relationships", {}))
+    for name, refs in weak_edges.items():
+        if name in detail:
+            detail[name][WEAK_KEY] = refs
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(lean_aif, f, ensure_ascii=False, indent=2)

@@ -172,8 +172,8 @@ def test_get_relationships_via_call_tool(tmp_path):
     assert result.is_error is False
     data = _json_result(result)
     assert data == {
-        "a.py": {"internal": [], "external": []},
-        "b.py": {"internal": ["a.py"], "external": []},
+        "a.py": {"internal": [], "external": [], "internal_text_refs": []},
+        "b.py": {"internal": ["a.py"], "external": [], "internal_text_refs": []},
     }
 
 
@@ -182,7 +182,7 @@ def test_get_relationships_files_param_scopes_the_result_via_call_tool(tmp_path)
     result = _call("get_relationships", {"aif_path": aif_path, "files": ["a.py"]})
 
     assert result.is_error is False
-    assert _json_result(result) == {"a.py": {"internal": [], "external": []}}
+    assert _json_result(result) == {"a.py": {"internal": [], "external": [], "internal_text_refs": []}}
 
 
 def test_list_files_confidence_below_param_via_call_tool(tmp_path):

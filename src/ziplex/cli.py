@@ -21,6 +21,7 @@ from .edits import finalize_aif, set_file_summary, set_folder_summary
 from .file.relationship import (
     build_tree, print_tree as print_dependency_tree, add_relationship, remove_relationship, CycleError,
 )
+from .aif_io import save_relationships_edit
 from .search import search_files, read_detail_range
 from .freshness import check_freshness_scoped, load_pack_scope, scope_from_aif, cache_path_for_aif, aif_path_for_cache
 from .skill_export import (
@@ -305,21 +306,21 @@ def _edit_saved_relationship(aif_path: str, file_name: str, target: str, edit_fn
     the fuller reasoning; the GUI's relationship editor is still the
     better tool for anything past a couple of quick edge fixes).
     """
-    aif = _load_json_or_exit(aif_path)
-
-    relationships = aif.get("relationships")
-    if relationships is None:
+    if "relationships" not in _load_json_or_exit(aif_path):
         print(f"❌ {aif_path}에 relationships가 없습니다 -- pack이 완료된 aif.json인지 확인하세요")
         sys.exit(1)
 
-    try:
+    def edit(relationships: dict) -> dict:
         edit_fn(relationships, file_name, target)
+        return relationships
+
+    try:
+        # aif_io owns the read-modify-write: prose-mention edges live in
+        # detail.json now, and rewriting only aif.json would drop them.
+        save_relationships_edit(aif_path, edit)
     except (ValueError, CycleError) as e:
         print(f"⚠️  {e}")
         sys.exit(1)
-
-    with open(aif_path, "w", encoding="utf-8") as f:
-        json.dump(aif, f, ensure_ascii=False, indent=2)
 
     print(f"✅ {file_name} → {target} {verb}")
 

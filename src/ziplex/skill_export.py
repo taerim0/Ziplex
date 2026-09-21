@@ -24,6 +24,7 @@ import json
 import re
 from pathlib import Path
 
+from .aif_io import attach_weak_edges
 from .query_service import _detail_path
 from .confidence import project_confidence_summary
 
@@ -332,6 +333,10 @@ def export_skill(aif_path: str, output_dir: str | None = None, aif: dict | None 
             detail = json.load(f)
     except (OSError, json.JSONDecodeError):
         detail = {}
+
+    # Restore prose-mention edges from detail.json's `text_refs` so
+    # references/relationships.md renders the same graph it always has.
+    aif = attach_weak_edges(aif, detail)
 
     target = resolve_skill_target(aif, output_dir)
 

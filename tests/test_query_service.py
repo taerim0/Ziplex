@@ -275,7 +275,7 @@ def test_get_relationships_scopes_to_the_given_files(tmp_path):
 
     result = query_service.get_relationships(aif_path, files=["src/b.py"])
 
-    assert result == {"src/b.py": {"internal": ["src/a.py"], "external": []}}
+    assert result == {"src/b.py": {"internal": ["src/a.py"], "external": [], "internal_text_refs": []}}
 
 
 def test_get_relationships_silently_skips_a_name_not_in_the_graph(tmp_path):
@@ -283,7 +283,7 @@ def test_get_relationships_silently_skips_a_name_not_in_the_graph(tmp_path):
 
     result = query_service.get_relationships(aif_path, files=["src/b.py", "nope.py"])
 
-    assert result == {"src/b.py": {"internal": ["src/a.py"], "external": []}}
+    assert result == {"src/b.py": {"internal": ["src/a.py"], "external": [], "internal_text_refs": []}}
 
 
 def test_get_relationships_default_is_the_whole_graph(tmp_path):

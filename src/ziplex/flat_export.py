@@ -31,6 +31,7 @@ directly testable without touching a filesystem.
 """
 from pathlib import Path
 
+from .aif_io import attach_weak_edges
 from .query_service import _detail_path
 from .confidence import project_confidence_summary
 
@@ -166,7 +167,7 @@ def export_flat(aif_path: str, output_path: str | None = None) -> str:
     with open(detail_path, "r", encoding="utf-8") as f:
         detail = json.load(f)
 
-    markdown = generate_flat_markdown(aif, detail)
+    markdown = generate_flat_markdown(attach_weak_edges(aif, detail), detail)
 
     if output_path is None:
         p = Path(aif_path)

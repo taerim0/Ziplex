@@ -180,6 +180,13 @@ def _contains_token(content: str, token: str, strict_path_boundary: bool = False
     bare filename match, where any directory prefix is a normal, expected
     way to reference it.
     """
+    # Cheap pre-filter: every pattern below requires the literal token, so if
+    # it isn't a substring at all no regex can match. Skips compiling and
+    # running a lookbehind-heavy pattern over the whole content for the
+    # (vast majority of) candidates that simply aren't mentioned -- profiled
+    # at ~7s of a ~11s non-LLM pack of Ziplex's own repo.
+    if token not in content:
+        return False
     escaped = re.escape(token)
     if strict_path_boundary:
         # Third alternative: one or more "./"/"../" segments, themselves
