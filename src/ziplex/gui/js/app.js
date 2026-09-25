@@ -224,7 +224,10 @@ export function createSummaryEditor({
   rows = "3",
   onSave,
   stopPropagation = false,
-  buildEditRow,
+  // Defaulted, not required: pack.js's review-screen file rows omitted it,
+  // and the resulting TypeError kept the whole pre-save review form from
+  // rendering on every pack since 0cbbde4.
+  buildEditRow = (textarea, saveBtn, cancelBtn) => el("span", {}, [textarea, saveBtn, cancelBtn]),
 }) {
   const displayEl = el(displayTag, { class: displayClass });
   const errorEl = el("p", { class: "error hidden" });

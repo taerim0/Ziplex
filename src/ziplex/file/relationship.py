@@ -1,3 +1,4 @@
+import posixpath
 from pathlib import Path
 
 from .textutil import normalize_path
@@ -163,6 +164,34 @@ def _pick_candidate(candidates: list[str], source_ext: str | None = None) -> str
     return candidates[0]
 
 
+# Extensions a relative import may omit, tried in order: TS/JS module
+# resolution (`import x from './utils/helpers'`), which is where extension-
+# less relative paths come from in practice.
+_RELATIVE_IMPORT_EXTENSIONS = (".ts", ".tsx", ".d.ts", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte")
+# TS's ESM convention writes the *output* extension (`./helpers.js`) for a
+# source file that's really helpers.ts -- tried when the literal name misses.
+_JS_TO_TS = {".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",)}
+
+
+def _resolve_relative_path(dep: str, source_name: str, all_names: set) -> str | None:
+    """A "./x" or "../x" dependency resolved against the importing file's
+    own folder, the way TS/JS (and C/C++ quoted includes, PHP require)
+    actually mean it. Before this, "./utils/helpers" fell through to the
+    dotted-module heuristic, which split it on "." into "/utils/helpers",
+    matched no stem, and marked every relative TS/JS import external --
+    leaving TS/JS projects with almost no internal edges at all."""
+    base = posixpath.dirname(source_name.replace("\\", "/"))
+    target = posixpath.normpath(posixpath.join(base, dep))
+    if target.startswith("../"):
+        return None  # points outside the packed project
+    stem, ext = posixpath.splitext(target)
+    candidates = [target]
+    candidates += [stem + alt for alt in _JS_TO_TS.get(ext, ())]
+    candidates += [target + e for e in _RELATIVE_IMPORT_EXTENSIONS]
+    candidates += [f"{target}/index{e}" for e in _RELATIVE_IMPORT_EXTENSIONS]
+    return next((c for c in candidates if c in all_names), None)
+
+
 def resolve_dependency(
     dep: str, stem_map: dict, all_names: set | None = None, source_name: str | None = None
 ) -> str | None:
@@ -221,8 +250,15 @@ def resolve_dependency(
     bare-stem match (the second and third checks) needs _pick_candidate()
     to disambiguate multiple same-stem files.
     """
-    if dep in (all_names if all_names is not None else _flatten_stem_map(stem_map)):
+    if all_names is None:
+        all_names = _flatten_stem_map(stem_map)
+    if dep in all_names:
         return dep
+    if source_name and dep.startswith(("./", "../")):
+        # Path-relative, not a dotted module name -- never fall back to the
+        # stem heuristic below, which would re-split it on "." (see
+        # _resolve_relative_path()).
+        return _resolve_relative_path(dep, source_name, all_names)
     candidates = stem_map.get(dep)
     if not candidates:
         dep_segments = [s for s in dep.split(".") if s]

@@ -1344,3 +1344,27 @@ def test_extract_all_handles_an_unreadable_binary_file_with_a_code_extension(tmp
     assert extract_all(str(file_path)) == {
         "signatures": [], "dependencies": [], "api": [], "compressed": "",
     }
+
+
+def test_extract_dependencies_covers_every_static_ts_js_module_reference(tmp_path):
+    # Only `import ... from` was recognized: CommonJS projects got an empty
+    # graph and barrel files of re-exports appeared to depend on nothing.
+    file_path = tmp_path / "deps.ts"
+    file_path.write_text(
+        "const a = require('./a');\n"
+        "export { y } from './y';\n"
+        "export * from './z';\n"
+        "import fs = require('./fs');\n"
+        "const m = await import('./m');\n"
+        "import w from './w';\n"
+        "export function f() { return 1; }\n"
+        "const t = require(`./${x}`);\n",
+        encoding="utf-8",
+    )
+    assert extract_dependencies(str(file_path)) == ["./a", "./y", "./z", "./fs", "./m", "./w"]
+
+
+def test_extract_dependencies_keeps_aliased_python_imports(tmp_path):
+    file_path = tmp_path / "mod.py"
+    file_path.write_text("import a.b\nimport mypkg.utils as u\nimport numpy as np, pandas\nimport json as j\n", encoding="utf-8")
+    assert extract_dependencies(str(file_path)) == ["a.b", "mypkg.utils", "numpy", "pandas"]

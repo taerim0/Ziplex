@@ -31,7 +31,12 @@ MODEL_MAX_TOKENS = {
 
 def count_tokens(text: str, encoding_name: str) -> int:
     enc = tiktoken.get_encoding(encoding_name)
-    return len(enc.encode(text))
+    # disallowed_special=(): count special-token text like "<|endoftext|>"
+    # as ordinary text. tiktoken raises ValueError on it by default, and
+    # pack() counts tokens only after every LLM call is paid for -- a source
+    # file merely mentioning that string (tokenizer code, LLM docs) crashed
+    # the pack and lost all of it before anything was saved.
+    return len(enc.encode(text, disallowed_special=()))
 
 
 def is_approx_model(model: str) -> bool:

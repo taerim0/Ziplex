@@ -20,6 +20,15 @@ DEFAULT_IGNORE = [
     "*.log",
     "*.lock",
     ".env",
+    # .env.local/.env.production/... carry the same real secrets .env does
+    # and used to be collected (and scan as safe more often than not); the
+    # conventional committed templates stay in, since they document which
+    # settings exist and hold placeholders, not values.
+    ".env.*",
+    "!.env.example",
+    "!.env.sample",
+    "!.env.template",
+    "!.env.dist",
     "venv/",
     ".venv/",
 

@@ -391,6 +391,7 @@ export async function renderPackJob(jobId) {
         displayClass: "muted tree-desc",
         editBtnClass: "secondary tree-edit-btn",
         rows: "2",
+        buildEditRow: (textarea, saveBtn, cancelBtn) => el("span", { class: "tree-folder-edit" }, [textarea, saveBtn, cancelBtn]),
         onSave: async (newSummary) => { info.summary = newSummary; },
       });
       const row = el("div", { class: `tree-row${level === "low" ? " tree-flagged" : ""}` }, [

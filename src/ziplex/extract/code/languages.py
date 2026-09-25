@@ -304,7 +304,16 @@ def _py_dependency_handler(node: Node, results: list) -> bool:
     if node.type == "import_statement":
         for child in node.children:
             if child.type == "dotted_name":
-                _append_if_not_stdlib(child.text.decode(), results)
+                name_node = child
+            elif child.type == "aliased_import":
+                # `import numpy as np` / `import mypkg.utils as u` -- only
+                # bare dotted names were read, so every aliased import was
+                # silently missing from the dependency graph.
+                name_node = child.child_by_field_name("name")
+            else:
+                continue
+            if name_node is not None:
+                _append_if_not_stdlib(name_node.text.decode(), results)
         return True
 
     return False
@@ -430,12 +439,51 @@ def _java_field_handler(node: Node, results: list) -> None:
             results.append(f"{name.text.decode()} = {_normalize_field_value_text(value)}")
 
 
+def _ts_module_string(node: Node | None) -> str | None:
+    """A plain quoted module specifier's text, or None -- a template string
+    or a computed expression can't name a file statically."""
+    if node is None or node.type != "string":
+        return None
+    return node.text.decode().strip("'\"")
+
+
 def _ts_dependency_handler(node: Node, results: list) -> bool:
+    """Every static way TS/JS names another module. Only `import ... from`
+    was recognized before, so a CommonJS codebase (`require()`, still the
+    dominant style in .js) got an empty graph, and a barrel index.ts made
+    only of re-exports appeared to depend on nothing."""
     if node.type == "import_statement":
-        source = node.child_by_field_name("source")
+        source = _ts_module_string(node.child_by_field_name("source"))
+        if source is None:
+            # `import fs = require('./fs')` -- the path sits one level down.
+            clause = next((c for c in node.named_children if c.type == "import_require_clause"), None)
+            source = _ts_module_string(clause.child_by_field_name("source")) if clause else None
         if source:
-            results.append(source.text.decode().strip("'\""))
+            results.append(source)
         return True
+
+    if node.type == "export_statement":
+        # `export { y } from './y'` / `export * from './z'`; a plain
+        # `export function f()` has no source and keeps recursing.
+        source = _ts_module_string(node.child_by_field_name("source"))
+        if source:
+            results.append(source)
+            return True
+        return False
+
+    if node.type == "call_expression":
+        # `require('./a')` and dynamic `import('./m')` (the grammar's callee
+        # for the latter is a bare `import` node).
+        callee = node.child_by_field_name("function")
+        is_require = callee is not None and callee.type == "identifier" and callee.text == b"require"
+        is_dynamic_import = callee is not None and callee.type == "import"
+        args = node.child_by_field_name("arguments")
+        if (is_require or is_dynamic_import) and args is not None and args.named_child_count >= 1:
+            source = _ts_module_string(args.named_children[0])
+            if source:
+                results.append(source)
+                return True
+        return False
 
     return False
 

@@ -551,3 +551,28 @@ def test_get_blast_radius_includes_self_when_part_of_a_cycle():
     }
 
     assert get_blast_radius(relationships, "a.py") == ["a.py", "b.py"]
+
+
+def test_build_tree_resolves_ts_js_relative_imports_against_the_importing_file():
+    # "./utils/helpers" was split on "." into "/utils/helpers", matched no
+    # stem, and every relative TS/JS import came out external.
+    files = {
+        "src/main.ts": {"dependencies": ["./utils/helpers", "../lib/x", "./components", "react"]},
+        "src/utils/helpers.ts": {"dependencies": []},
+        "lib/x.js": {"dependencies": []},
+        "src/components/index.tsx": {"dependencies": []},
+    }
+    tree = build_tree(files)
+    assert sorted(tree["src/main.ts"]["internal"]) == ["lib/x.js", "src/components/index.tsx", "src/utils/helpers.ts"]
+    assert tree["src/main.ts"]["external"] == ["react"]
+
+
+def test_resolve_dependency_maps_a_ts_esm_js_specifier_to_its_ts_source():
+    stem_map = build_stem_map(["src/a.ts", "src/b.ts"])
+    assert resolve_dependency("./b.js", stem_map, source_name="src/a.ts") == "src/b.ts"
+
+
+def test_resolve_dependency_never_resolves_a_relative_path_by_bare_stem():
+    # "./helpers" from src/a.ts must not land on an unrelated other/helpers.ts.
+    stem_map = build_stem_map(["src/a.ts", "other/helpers.ts"])
+    assert resolve_dependency("./helpers", stem_map, source_name="src/a.ts") is None

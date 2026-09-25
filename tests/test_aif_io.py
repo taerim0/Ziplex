@@ -210,3 +210,25 @@ def test_every_writer_of_a_saved_aif_uses_the_same_layout(tmp_path):
     save_relationships_edit(str(out), lambda rel: rel)  # a no-op edit must not reflow the file
 
     assert out.read_text(encoding="utf-8") == layout_after_save
+
+
+def test_save_relationships_edit_refuses_to_run_on_an_unreadable_detail_json(tmp_path):
+    # A truncated/locked detail.json used to be treated as absent: the weak
+    # edges were written inline into aif.json, and expand_relationships()
+    # then ignored detail.json's text_refs forever -- every prose-mention
+    # edge permanently lost over a transient read error.
+    import pytest
+
+    out = _save(tmp_path)
+    detail_path = tmp_path / "demo.detail.json"
+    good_detail = detail_path.read_text(encoding="utf-8")
+    detail_path.write_text(good_detail[: len(good_detail) // 2], encoding="utf-8")
+    before = out.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        save_relationships_edit(str(out), lambda rels: rels)
+    assert out.read_text(encoding="utf-8") == before  # nothing written
+
+    detail_path.write_text(good_detail, encoding="utf-8")
+    rels = query_service.get_relationships(str(out))
+    assert rels["README.md"]["internal_text_refs"] == ["a.py"]

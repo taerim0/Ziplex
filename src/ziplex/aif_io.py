@@ -150,6 +150,21 @@ def read_detail_or_none(aif_path: str) -> dict | None:
         return None
 
 
+def _read_detail_for_write(aif_path: str) -> dict | None:
+    """None only when detail.json genuinely doesn't exist. Any other read
+    failure (a half-written or truncated file, a Windows sharing lock while
+    another process rewrites it) raises: save_relationships_edit() used to
+    treat that the same as "absent", write the weak edges inline into
+    aif.json, and from then on expand_relationships() ignored detail.json's
+    `text_refs` for good -- permanently dropping every prose-mention edge
+    over a transient read error."""
+    try:
+        with open(detail_path_for(aif_path), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
+
 def load_aif_full(aif_path: str) -> dict:
     """aif.json with its relationships expanded to the in-memory shape.
     Raises the same OSError/json.JSONDecodeError a bare open()/json.load()
@@ -172,7 +187,7 @@ def save_relationships_edit(aif_path: str, edit) -> dict:
     """
     with open(aif_path, "r", encoding="utf-8") as f:
         aif = json.load(f)
-    detail = read_detail_or_none(aif_path)
+    detail = _read_detail_for_write(aif_path)
 
     full = attach_weak_edges(aif, detail)
     relationships = edit(full.get("relationships", {}))

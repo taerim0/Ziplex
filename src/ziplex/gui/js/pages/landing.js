@@ -62,6 +62,12 @@ export function renderPackHome() {
 
   let selectableCheckboxes = [];
   let dangerousCheckboxes = [];
+  // The path the checkbox lists above were loaded (and security-scanned)
+  // for. The pack button used to read the path field at click time but
+  // send these lists, so editing the path (or picking another folder)
+  // after loading packed project B with project A's file names -- a file
+  // B's scan would have flagged could go in without its warning ever shown.
+  let loadedPath = null;
 
   loadFilesButton.addEventListener("click", async () => {
     const project_path = packProjInput.value.trim();
@@ -84,6 +90,7 @@ export function renderPackHome() {
       // explicit path that would pin the project to whatever the default
       // just happened to be right now.
       if (data.default_output_path) packOutInput.placeholder = data.default_output_path;
+      loadedPath = project_path;
       selectableCheckboxes = [];
       dangerousCheckboxes = [];
       fileListBox.innerHTML = "";
@@ -264,6 +271,13 @@ export function renderPackHome() {
 
   packButton.addEventListener("click", async () => {
     const project_path = packProjInput.value.trim();
+    if (project_path !== loadedPath) {
+      packError.textContent = t("pack.form.pathChanged");
+      packError.classList.remove("hidden");
+      packButton.classList.add("hidden");
+      fileListBox.classList.add("hidden");
+      return;
+    }
     // Naming a dangerous file here is this screen's equivalent of the
     // CLI's review_dangerous_files() prompt -- packager.pack()'s
     // `preselected` handling trusts either list equally (see its own

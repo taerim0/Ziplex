@@ -415,3 +415,31 @@ def test_function_with_no_body_content_is_left_alone():
     code = "def noop(): pass\n"
     result = compress_code(code, ".py")
     assert "def noop(): pass" in result
+
+
+def test_compress_code_line_numbers_survive_non_newline_line_breaks():
+    # splitlines() also splits on \x0c / U+2028, shifting every later line:
+    # b()'s signature was deleted and its body kept.
+    out = compress_code("def a(x):\n    return x\n\x0c\ndef b(p):\n    return p\n", ".py")
+    assert "def b(p):" in out
+    assert "return p" not in out
+
+    out = compress_code("const s = 'a\u2028b';\nfunction f(q) {\n  return q;\n}\n", ".ts")
+    assert "function f(q) {" in out
+    assert "return q" not in out
+
+
+def test_compress_code_keeps_a_multi_line_signature_whole():
+    out = compress_code("class A {\n  int add(int a,\n          int b) {\n    return a + b;\n  }\n}\n", ".java")
+    assert "int b) {" in out
+    assert "return a + b" not in out
+
+
+def test_compress_code_keeps_allman_braces_balanced():
+    out = compress_code("class A\n{\n    int Add(int a, int b)\n    {\n        return a + b;\n    }\n}\n", ".cs")
+    assert out.count("{") == out.count("}")
+    assert "return a + b" not in out
+
+
+def test_compress_code_still_strips_crlf_line_endings():
+    assert compress_code("def a(x):\r\n    return x\r\n", ".py") == f"def a(x):\n{MARKER}"

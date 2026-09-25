@@ -21,10 +21,43 @@ from .media import classify_media_file
 # .env-style assignment (API_KEY=sk-live-abc123, no quotes) keeps matching.
 _VALUE_FRAGMENT = r'("[^"]*"|\'[^\']*\'|[A-Za-z0-9_.\-/:+]+)'
 _SENSITIVE_KEYWORDS = [
-    "AWS_SECRET", "API_KEY", "PASSWORD", "SECRET_KEY",
-    "PRIVATE_KEY", "ACCESS_TOKEN", "DATABASE_URL",
+    "AWS_SECRET", "API_KEY", "APIKEY", "PASSWORD", "SECRET_KEY", "CLIENT_SECRET",
+    "PRIVATE_KEY", "ACCESS_TOKEN", "AUTH_TOKEN", "API_TOKEN", "DATABASE_URL",
 ]
-SENSITIVE_PATTERNS = [rf'{keyword}\s*=\s*{_VALUE_FRAGMENT}' for keyword in _SENSITIVE_KEYWORDS]
+# `KEY = value` and also `KEY: value` / `"KEY": value` (JSON, YAML, TOML
+# inline tables) -- "=" alone missed every JSON/YAML config file. Group 1
+# is the separator, group 2 the value; see _scan_with_pattern() for why
+# the separator matters.
+SENSITIVE_PATTERNS = [
+    rf'{keyword}["\']?\s*([=:])\s*{_VALUE_FRAGMENT}' for keyword in _SENSITIVE_KEYWORDS
+]
+
+# Secrets recognizable by their own shape, whatever they're assigned to --
+# a PEM key has no `KEY=` line at all, and a token under an unlisted name
+# (GITHUB_TOKEN, a bare CLI arg) never matched a keyword.
+_SECRET_SHAPES = [
+    ("PEM private key", re.compile(r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----")),
+    ("GitHub token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})")),
+    ("AWS access key id", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("Slack token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}")),
+    ("Google API key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    ("Stripe live key", re.compile(r"\b[sr]k_live_[0-9A-Za-z]{16,}")),
+]
+
+# Files whose every assignment is a literal value (no code, so no
+# `api_key = api_key`-style variable references to filter out) -- the
+# self-reference heuristic and the conservative unquoted charset both only
+# exist to keep *code* and *prose* from false-positiving.
+_ENV_VALUE_FRAGMENT = r'("[^"]*"|\'[^\']*\'|\S+)'
+
+
+def _is_env_file(file_path: str) -> bool:
+    name = file_path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name == ".env" or name.startswith(".env.") or name.endswith(".env")
+
+
+def _is_yaml_file(file_path: str) -> bool:
+    return file_path.lower().endswith((".yaml", ".yml"))
 
 # Values these patterns must not flag on their own, case-insensitively --
 # a real placeholder/reference rather than an actual secret, not a
@@ -47,7 +80,7 @@ def _normalize_for_self_reference(value: str) -> str:
     return _NON_WORD_RE.sub("", value.lower())
 
 
-def _looks_like_a_real_secret(raw_value: str, keyword: str) -> bool:
+def _looks_like_a_real_secret(raw_value: str, keyword: str, literal_context: bool = False) -> bool:
     """False for the two false-positive shapes found dogfooding Ziplex on
     its own repo -- a doc's placeholder ellipsis (`GEMINI_API_KEY=...`,
     telling a *reader* to put their own key there, not a leaked one) and an
@@ -87,10 +120,18 @@ def _looks_like_a_real_secret(raw_value: str, keyword: str) -> bool:
         # secret-scanning itself (e.g. GeminiProvider(api_key="x") in a
         # model-resolution test, or GEMINI_API_KEY=x in a doctor.py fixture).
         return False
-    if quoted:
+    if any(c.isspace() for c in value) and "PASSWORD" not in keyword.upper():
+        # A key/token/URL never contains whitespace; a quoted sentence
+        # under a key-named field is UI/help text ("gemini_api_key": "not
+        # set -- uses GEMINI_API_KEY"), common once ":" (JSON/dict) matches.
+        return False
+    if quoted or literal_context:
         # A quoted value ("abc123", "api_key") is unambiguously a string
         # literal already, syntactically -- the self-reference check below
-        # is for the unquoted case only.
+        # is for the unquoted case only. So is every value in a .env-style
+        # file (literal_context): there, PASSWORD=MyPassword!2024 is a real
+        # password that merely contains its own field name, not a code
+        # reference to a variable.
         return True
     return _normalize_for_self_reference(keyword) not in _normalize_for_self_reference(value)
 
@@ -157,7 +198,12 @@ def _scan_with_secretlint(file_path: str) -> dict | bool | None:
             return False
 
         first = messages[0]
-        line = first.get("range", {}).get("start", {}).get("line")
+        # secretlint's real output puts the line under loc.start.line;
+        # `range` is a [start, end] character-offset list, and reading it as
+        # a dict raised an uncaught AttributeError the moment secretlint
+        # actually reported something, aborting the whole scan.
+        loc = first.get("loc")
+        line = loc.get("start", {}).get("line") if isinstance(loc, dict) else None
         # first["message"] is secretlint's own output -- always English,
         # out of this project's control -- so the pick() below only ever
         # actually localizes the *fallback* half (no message present at
@@ -171,7 +217,7 @@ def _scan_with_secretlint(file_path: str) -> dict | bool | None:
             "line": line,
             "matched_text": _line_at(file_path, line),
         }
-    except (json.JSONDecodeError, KeyError, IndexError, TypeError, OSError):
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError, OSError):
         return None  # secretlint failed -> fallback
 
 
@@ -180,15 +226,35 @@ def _scan_with_pattern(file_path: str) -> dict | None:
     if content is None:
         return None
 
+    env_file = _is_env_file(file_path)
+    yaml_file = _is_yaml_file(file_path)
+    patterns = SENSITIVE_PATTERNS
+    if env_file:
+        # Every value is a literal here, so take the whole unquoted token
+        # (the conservative charset would cut PASSWORD=Pa$$w0rd! short).
+        patterns = [rf'{keyword}["\']?\s*([=:])\s*{_ENV_VALUE_FRAGMENT}' for keyword in _SENSITIVE_KEYWORDS]
+
     # Line-outer, pattern-inner -- the first offending *line* in top-to-
     # bottom file order wins, regardless of which pattern happens to sit
     # earlier in SENSITIVE_PATTERNS. A human reading "why was this flagged"
     # expects the earliest suspicious line in the file, not whichever
     # pattern this list happened to check first across the whole file.
     for lineno, line in enumerate(content.splitlines(), 1):
-        for keyword, pattern in zip(_SENSITIVE_KEYWORDS, SENSITIVE_PATTERNS):
+        for label, shape in _SECRET_SHAPES:
+            if shape.search(line):
+                reason = pick(f"Looks like a {label}", f"{label} 형식으로 보임")
+                return {"reason": reason, "line": lineno, "matched_text": line}
+        for keyword, pattern in zip(_SENSITIVE_KEYWORDS, patterns):
             match = re.search(pattern, line, re.IGNORECASE)
-            if match and _looks_like_a_real_secret(match.group(1), keyword):
+            if not match:
+                continue
+            separator, value = match.group(1), match.group(2)
+            if separator == ":" and value[:1] not in ("'", '"') and not (yaml_file or env_file):
+                # An unquoted value after ":" outside YAML/.env is a type
+                # annotation (`password: str`), a dict entry referencing a
+                # variable (`{"api_key": api_key}`), or prose -- not a literal.
+                continue
+            if _looks_like_a_real_secret(value, keyword, literal_context=env_file):
                 reason = pick(f"Pattern match: {pattern}", f"패턴 일치: {pattern}")
                 return {"reason": reason, "line": lineno, "matched_text": line}
     return None

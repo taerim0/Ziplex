@@ -246,3 +246,67 @@ def test_scan_file_trusts_a_clean_secretlint_result_without_falling_back(tmp_pat
     _write(path, 'API_KEY = "abc123"\n')
 
     assert scan_file(str(path)) is None
+
+
+def test_scan_file_flags_secrets_the_keyword_equals_pattern_missed(tmp_path):
+    # All four scanned as safe before -- the regex fallback is the only
+    # scanner that ever runs on Windows (see _scan_with_secretlint()).
+    cases = {
+        "id_rsa": "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA1234\n-----END RSA PRIVATE KEY-----\n",
+        "config.json": '{\n  "api_key": "sk-live-9f8e7d6c5b4a"\n}\n',
+        "app.yaml": "db:\n  password: hunter2secret\n",
+        "ci.sh": "export GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n",
+        "aws.py": 'KEY_ID = "AKIAIOSFODNN7EXAMPLE"\n',
+    }
+    for name, content in cases.items():
+        path = tmp_path / name
+        _write(path, content)
+        assert scan_file(str(path)) is not None, name
+
+
+def test_scan_file_flags_an_env_password_containing_its_own_field_name(tmp_path):
+    # The self-reference filter (for `api_key = api_key` in code) used to
+    # drop this real .env password because it contains the word "password".
+    path = tmp_path / ".env.local"
+    _write(path, "PASSWORD=MyPassword!2024\n")
+    result = scan_file(str(path))
+    assert result is not None and result["line"] == 1
+
+
+def test_scan_file_ignores_colon_forms_that_are_not_literals(tmp_path):
+    # ":" matching (JSON/YAML) must not flag a type annotation, a dict
+    # entry referencing a variable, or a quoted help sentence.
+    path = tmp_path / "code.py"
+    _write(path, (
+        "def login(password: str, api_key: str) -> None:\n"
+        "    body = {'api_key': api_key}\n"
+        "    hints = {\"gemini_api_key\": \"not set -- uses GEMINI_API_KEY from .env\"}\n"
+    ))
+    assert scan_file(str(path)) is None
+
+
+def test_scan_file_ignores_an_env_template_placeholder(tmp_path):
+    path = tmp_path / ".env.example"
+    _write(path, "API_KEY=your_key_here\nPASSWORD=\n")
+    assert scan_file(str(path)) is None
+
+
+def test_scan_with_secretlint_reads_its_real_output_shape(tmp_path, monkeypatch):
+    # Real secretlint JSON: `range` is a [start, end] offset list and the
+    # line is under loc.start.line -- reading `range` as a dict used to
+    # raise an uncaught AttributeError the moment it reported anything.
+    from ziplex.file import scanner
+
+    path = tmp_path / "creds.txt"
+    _write(path, "first\nAWS key here\n")
+    output = [{"filePath": str(path), "messages": [{
+        "message": "found AWS Access Key ID", "range": [6, 18],
+        "loc": {"start": {"line": 2, "column": 0}, "end": {"line": 2, "column": 12}},
+    }]}]
+
+    class _Result:
+        stdout = __import__("json").dumps(output)
+
+    monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: _Result())
+    result = scanner.scan_file(str(path))
+    assert result == {"reason": "found AWS Access Key ID", "line": 2, "matched_text": "AWS key here"}

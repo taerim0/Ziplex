@@ -109,3 +109,10 @@ def test_analyze_tokens_with_compression_covers_claude_and_gemini_too(tmp_path):
 
     for model in MODEL_ENCODINGS:
         assert results[model]["approx"] is False
+
+
+def test_count_tokens_treats_special_token_text_as_ordinary_text():
+    # tiktoken raises ValueError on "<|endoftext|>" by default -- after every
+    # LLM call of a pack was already paid for.
+    assert count_tokens("before <|endoftext|> after", "o200k_base") > 0
+    assert count_tokens("before <|endoftext|> after", "cl100k_base") > 0

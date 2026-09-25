@@ -106,3 +106,12 @@ def test_no_include_patterns_keeps_default_behavior(tmp_path):
 
     collected = {Path(f).relative_to(tmp_path).as_posix() for f in collect_files(str(tmp_path), include=[])}
     assert collected == {"a.py"}
+
+
+def test_skips_env_variants_but_keeps_env_templates(tmp_path):
+    for name in (".env", ".env.local", ".env.production", ".env.example", ".env.sample", "main.py"):
+        _write(tmp_path / name, "X=1\n")
+
+    collected = sorted(Path(p).name for p in collect_files(str(tmp_path)))
+
+    assert collected == [".env.example", ".env.sample", "main.py"]

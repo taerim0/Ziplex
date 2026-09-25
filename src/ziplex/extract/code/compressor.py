@@ -98,7 +98,13 @@ def compress_from_tree(code: str, ext: str, tree) -> str:
     config = get_language_config(ext)
     function_types = config.function_types if config else []
 
-    lines = code.splitlines()
+    # Split on "\n" only, the one line break Tree-sitter's row numbers count.
+    # splitlines() also breaks on \x0c, \x0b, U+2028/U+2029, ..., so a single
+    # form feed or a JS string containing U+2028 shifted every later line and
+    # this deleted signatures while keeping the bodies they belonged to.
+    lines = [line[:-1] if line.endswith("\r") else line for line in code.split("\n")]
+    if code.endswith("\n"):
+        lines.pop()  # same trailing-newline handling splitlines() had
 
     # collect the line ranges covered by function bodies
     body_ranges = []
@@ -132,12 +138,20 @@ def _collect_bodies(node, ranges: list, function_types: list):
             start = body.start_point[0]
             end   = body.end_point[0]
 
-            # In brace languages (JS/TS/Java) the opening '{' sits on the same line
-            # as the signature, so blanking the body's own start line would erase
-            # the signature too. Only skip that line if the body actually starts on
-            # the same line as the function node itself. Python's body (an indented
-            # block) already starts on the next line, so this never triggers there.
-            if start == node.start_point[0]:
+            # In brace languages the line holding the opening '{' always
+            # stays: it can carry the end of the signature (`int b) {` after a
+            # multi-line parameter list) or be the '{' alone (Allman style,
+            # C#/C++), and dropping it either truncated the signature or left
+            # a '}' with no matching '{'. Keyed on the '{' token itself, not
+            # on "same line as the function node", which missed both cases.
+            first_child = body.children[0] if body.children else None
+            if first_child is not None and first_child.type == "{":
+                start = first_child.start_point[0] + 1
+            elif start == node.start_point[0]:
+                # Brace-less one-liner (`def f(): return 1`) -- the body
+                # shares the signature's line. Python's usual body (an
+                # indented block) starts on the next line, so this never
+                # triggers there.
                 start += 1
 
             # Likewise, keep a line that's just the closing '}'. Brace-less
