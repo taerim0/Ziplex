@@ -13,9 +13,9 @@ from .file.media import classify_media_file
 from .file.textutil import relative_key as _rel_key
 from .text_references import find_text_references_for_file, merge_text_references
 from .go_packages import resolve_go_context, expand_dependencies_for_file
-from .tokenizer import analyze_tokens_with_compression
+from .tokenizer import analyze_tokens_with_compression, count_tokens_for_model
 from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider, get_usage
-from .packager import pack, save_aif
+from .packager import pack, save_aif, resolve_output_path
 from .corrector import correct_aif
 from .edits import finalize_aif, set_file_summary, set_folder_summary
 from .file.relationship import (
@@ -649,7 +649,16 @@ def _cmd_pack(args) -> None:
             print(f"  합계: {usage['total_tokens']:,}")
 
         if args.max_tokens is not None:
-            passed, actual = _check_max_tokens(aif["tokens"], args.max_tokens, args.max_tokens_model)
+            # Measured on the saved aif.json itself -- what an AI actually
+            # reads. aif["tokens"]'s "compressed" figure counts per-file
+            # summaries only (no relationships, rules, AI guide, folders,
+            # format notes), so an over-budget aif.json could pass.
+            saved_text = resolve_output_path(aif, args.output, project_path=args.path).read_text(encoding="utf-8")
+            guard_tokens = {
+                model: {**data, "compressed": count_tokens_for_model(saved_text, model)}
+                for model, data in aif["tokens"].items()
+            }
+            passed, actual = _check_max_tokens(guard_tokens, args.max_tokens, args.max_tokens_model)
             if actual is None:
                 print(f"\n⚠️  --max-tokens-model '{args.max_tokens_model}'은 알 수 없는 모델입니다"
                       f" (사용 가능: {', '.join(aif['tokens'].keys())})")

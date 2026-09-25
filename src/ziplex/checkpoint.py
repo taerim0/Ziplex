@@ -20,10 +20,27 @@ from .file.textutil import relative_key as _rel_key
 from .paths import REPO_ROOT
 from .progress_i18n import pick
 
-CHECKPOINT_DIR = REPO_ROOT / "checkpoint"
+# Per-user, next to settings.json -- always writable. The old location,
+# REPO_ROOT / "checkpoint", sits under the *install* directory: for a
+# system-wide install (sudo pip, Python under C:\Program Files) mkdir()
+# raised PermissionError inside handle_llm_failure(), so the "checkpoint
+# and exit" path crashed the pack instead of saving anything -- the same
+# install-location problem packager.RESULT_DIR already had fixed.
+def default_checkpoint_dir() -> Path:
+    return Path.home() / ".ziplex" / "checkpoints"
 
 
-def _checkpoint_path(root_path: str) -> Path:
+CHECKPOINT_DIR = default_checkpoint_dir()
+# Still read (resume/list/clean) so an in-flight checkpoint written before
+# the move isn't stranded; never written to.
+LEGACY_CHECKPOINT_DIR = REPO_ROOT / "checkpoint"
+
+
+def _checkpoint_dirs() -> list[Path]:
+    return [CHECKPOINT_DIR] if LEGACY_CHECKPOINT_DIR == CHECKPOINT_DIR else [CHECKPOINT_DIR, LEGACY_CHECKPOINT_DIR]
+
+
+def _checkpoint_path(root_path: str, base_dir: Path | None = None) -> Path:
     """checkpoint/<basename>-<hash>.json -- the hash suffix (first 8 hex
     chars of sha256 of the resolved absolute path) keeps this filename
     collision-proof across two different projects that happen to share a
@@ -58,11 +75,11 @@ def _checkpoint_path(root_path: str) -> Path:
     # "pack from inside the project's own folder" case. The hash alone is
     # what actually keeps this collision-proof (see docstring above); the
     # name is just a human-readable prefix, but it should still be one.
-    return CHECKPOINT_DIR / f"{resolved_path.name}-{digest}.json"
+    return (base_dir or CHECKPOINT_DIR) / f"{resolved_path.name}-{digest}.json"
 
 
 def save_checkpoint(root_path: str, data: dict) -> None:
-    CHECKPOINT_DIR.mkdir(exist_ok=True)
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     path = _checkpoint_path(root_path)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -70,8 +87,8 @@ def save_checkpoint(root_path: str, data: dict) -> None:
 
 
 def load_checkpoint(root_path: str) -> dict | None:
-    path = _checkpoint_path(root_path)
-    if not path.exists():
+    path = next((p for p in (_checkpoint_path(root_path, d) for d in _checkpoint_dirs()) if p.exists()), None)
+    if path is None:
         return None
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -88,9 +105,10 @@ def load_checkpoint(root_path: str) -> dict | None:
 
 
 def delete_checkpoint(root_path: str) -> None:
-    path = _checkpoint_path(root_path)
-    if path.exists():
-        path.unlink()
+    for base_dir in _checkpoint_dirs():
+        path = _checkpoint_path(root_path, base_dir)
+        if path.exists():
+            path.unlink()
 
 
 def list_checkpoints() -> list[dict]:
@@ -112,10 +130,8 @@ def list_checkpoints() -> list[dict]:
     same way `ziplex checkpoint clean --all` needs to be able to remove
     one.
     """
-    if not CHECKPOINT_DIR.is_dir():
-        return []
     results = []
-    for path in sorted(CHECKPOINT_DIR.glob("*.json")):
+    for path in sorted(p for d in _checkpoint_dirs() if d.is_dir() for p in d.glob("*.json")):
         try:
             stat = path.stat()
         except OSError:
@@ -151,10 +167,8 @@ def clear_all_checkpoints() -> int:
     raise over an absent target" spirit delete_checkpoint() itself already
     follows for a single missing file.
     """
-    if not CHECKPOINT_DIR.is_dir():
-        return 0
     removed = 0
-    for path in CHECKPOINT_DIR.glob("*.json"):
+    for path in [p for d in _checkpoint_dirs() if d.is_dir() for p in d.glob("*.json")]:
         try:
             path.unlink()
             removed += 1

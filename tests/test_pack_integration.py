@@ -1878,3 +1878,22 @@ def test_pack_reuses_summaries_after_the_project_was_renamed_during_review(tmp_p
     packager.pack(str(project), auto=True, interactive=False)
 
     assert provider.calls == 3
+
+
+def test_stop_and_save_does_not_restamp_a_stale_language_ai_guide(tmp_path, monkeypatch):
+    # Resuming a "ko" checkpoint under lang="en", then stop-and-save, used
+    # to re-save the Korean guide stamped "en" -- trusted on the next resume.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    checkpoint.save_checkpoint(
+        str(project),
+        {"project": {"name": "project", "prompt": "한국어 가이드", "language": "ko"}, "rules": ["규칙"], "files_data": {}},
+    )
+
+    packager.pack(str(project), auto=True, interactive=False, lang="en", check_cancelled=lambda: "save")
+
+    saved = json.loads(checkpoint._checkpoint_path(str(project)).read_text(encoding="utf-8"))
+    assert saved["project"]["language"] == "en"
+    assert saved["project"]["prompt"] == ""

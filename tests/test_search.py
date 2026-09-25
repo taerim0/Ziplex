@@ -96,3 +96,14 @@ def test_read_detail_range_open_ended_bounds():
 def test_read_detail_range_clamps_out_of_range_bounds():
     text = "line1\nline2"
     assert read_detail_range(text, start_line=0, end_line=100) == text
+
+
+def test_read_detail_range_treats_zero_and_negative_end_as_real_bounds():
+    # end_line=0 used to return the whole body; -1 sliced off the last line.
+    from ziplex.search import read_detail_range
+
+    body = "a\nb\nc"
+    assert read_detail_range(body, None, 0) == ""
+    assert read_detail_range(body, None, -1) == ""
+    assert read_detail_range(body, 2, None) == "b\nc"
+    assert read_detail_range(body, None, None) == body

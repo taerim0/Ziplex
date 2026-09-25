@@ -57,7 +57,7 @@ ziplex signatures|dependencies|api|compress|debug <single_file>
 ziplex --version                                                   # print installed version and exit (also ziplex-gui/ziplex-mcp --version)
 ziplex settings                                                    # print ~/.ziplex/settings.json -- CLI counterpart of the GUI Options page
 ziplex settings set <key> <value>                                  # e.g. `ziplex settings set llm_provider openai` -- key must be one of settings.EDITABLE_FIELDS
-ziplex checkpoint                                                  # list leftover checkpoint/*.json files (project name, pending file count, size, saved-at)
+ziplex checkpoint                                                  # list leftover checkpoints in ~/.ziplex/checkpoints (+ legacy <repo>/checkpoint): project name, pending file count, size, saved-at
 ziplex checkpoint clean <project_path>                             # delete just that project's checkpoint
 ziplex checkpoint clean --all                                      # delete every checkpoint
 ziplex doctor [project_path]                                       # environment check -- Python version, active LLM provider/model/API key, secretlint, leftover checkpoints (no LLM call); project_path adds .env/git-repo checks

@@ -420,3 +420,14 @@ def test_get_detail_accepts_a_windows_style_path(tmp_path):
     (tmp_path / "p.detail.json").write_text(json.dumps({"src/a.py": {"compressed": "def a(): ..."}}), encoding="utf-8")
 
     assert query_service.get_detail(str(aif), "src" + chr(92) + "a.py") == "def a(): ..."
+
+
+def test_list_files_accepts_a_leading_dot_slash_folder(tmp_path):
+    import json
+    from ziplex import query_service
+
+    aif = tmp_path / "p.json"
+    aif.write_text(json.dumps({"project": {"name": "p"}, "files": {"src/a.py": {"summary": "s"}, "b.py": {"summary": "t"}}}), encoding="utf-8")
+
+    assert list(query_service.list_files(str(aif), folder="./src")) == ["src/a.py"]
+    assert list(query_service.list_files(str(aif), folder="./")) == ["b.py"]

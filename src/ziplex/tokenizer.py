@@ -59,6 +59,12 @@ def _count_for_model(text: str, model: str) -> int:
     return len(text) // APPROX_CHARS_PER_TOKEN
 
 
+def count_tokens_for_model(text: str, model: str) -> int:
+    """Public form of _count_for_model() -- cli.py's `--max-tokens` guard
+    measures the saved aif.json itself with it."""
+    return _count_for_model(text, model)
+
+
 def analyze_tokens(file_paths: list[str]) -> tuple:
     combined = ""
     for file_path in file_paths:

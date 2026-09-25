@@ -1411,3 +1411,19 @@ def test_extract_dependencies_reads_every_static_php_require_form(tmp_path):
         encoding="utf-8",
     )
     assert extract_dependencies(str(file_path)) == ["config", "db", "x", "y"]
+
+
+def test_extract_api_skips_http_client_calls_that_look_like_express_routes(tmp_path):
+    # axios.get("/api/users") in frontend code used to be listed as the
+    # project's own API.
+    file_path = tmp_path / "api.js"
+    file_path.write_text(
+        'app.get("/users", (req, res) => res.json([]));\n'
+        'router.post("/login", auth, handler);\n'
+        'axios.get("/api/users");\n'
+        'http.post("/login", body);\n'
+        'this.http.get("/x", opts);\n'
+        'api.get("/health");\n',
+        encoding="utf-8",
+    )
+    assert extract_api(str(file_path)) == ["GET /users", "POST /login"]

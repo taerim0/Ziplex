@@ -164,6 +164,14 @@ def _route_methods(args: Node) -> list[str]:
 
 _HTTP_METHOD_CALLS = {"get": "GET", "post": "POST", "put": "PUT", "delete": "DELETE", "patch": "PATCH"}
 
+# Receivers of `.get("/path", ...)`-shaped calls that are HTTP *clients*,
+# not servers registering routes (compared lowercased, last dotted segment,
+# so `this.http`/`$http` both reduce to a name here).
+_HTTP_CLIENT_NAMES = frozenset({
+    "axios", "http", "https", "$http", "httpclient", "client", "apiclient",
+    "request", "got", "ky", "superagent", "fetcher", "instance",
+})
+
 
 def _js_api_handler(node: Node, results: list) -> bool:
     """Express-style route detection: an `app.get("/path", ...)`-shaped
@@ -203,6 +211,14 @@ def _js_api_handler(node: Node, results: list) -> bool:
     if method is None:
         return False
 
+    # A frontend HTTP *client* call (`axios.get("/api/users")`,
+    # `http.post("/login", body)`) has the same shape as a route
+    # registration and used to be listed as the project's own API.
+    receiver = func.child_by_field_name("object")
+    receiver_name = receiver.text.decode().split(".")[-1].lower() if receiver is not None else ""
+    if receiver_name in _HTTP_CLIENT_NAMES:
+        return False
+
     args = node.child_by_field_name("arguments")
     if args is not None:
         # The first *argument*, not just the first string anywhere in the
@@ -210,6 +226,10 @@ def _js_api_handler(node: Node, results: list) -> bool:
         # a later one happens to be (and happens to start with "/") would
         # otherwise grab that unrelated string as the "path".
         non_syntax = [c for c in args.children if c.type not in ("(", ")", ",")]
+        if len(non_syntax) < 2:
+            # A route registration always passes at least one handler after
+            # the path; a lone-path call is a client request (`fetch`-style).
+            return False
         first_arg = non_syntax[0] if non_syntax else None
         if first_arg is not None and first_arg.type == "string":
             for n in _walk_all(first_arg):

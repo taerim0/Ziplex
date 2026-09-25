@@ -228,7 +228,12 @@ def list_files(
     project size the way an arbitrary regex match count has one.
     """
     if folder is not None:
-        folder = _normalize_path_arg(folder).rstrip("/") or "."
+        folder = _normalize_path_arg(folder).rstrip("/")
+        # A leading "./" (`./src/ziplex`) silently matched nothing -- and an
+        # unknown folder returns {} by design, indistinguishable from empty.
+        while folder.startswith("./"):
+            folder = folder[2:]
+        folder = folder or "."
     aif = _load_json(aif_path)
     result = {}
     for name, data in aif.get("files", {}).items():

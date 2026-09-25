@@ -1,5 +1,5 @@
 """Single source of truth for where this package sits relative to a real
-dev checkout's repo root. checkpoint.py's CHECKPOINT_DIR, packager.py's
+dev checkout's repo root. checkpoint.py's LEGACY_CHECKPOINT_DIR, packager.py's
 (now legacy-fallback-only) RESULT_DIR, and doctor.py's _PYPROJECT_PATH each
 need "three levels up from this file" (src/ziplex/<module>.py -> src/ziplex
 -> src -> repo root) and used to compute it independently -- a future

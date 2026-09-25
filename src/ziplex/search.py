@@ -101,6 +101,9 @@ def read_detail_range(compressed: str, start_line: int | None = None, end_line: 
     body is large and only a specific region is actually relevant.
     """
     lines = compressed.splitlines()
-    start = max(0, (start_line - 1) if start_line else 0)
-    end = min(len(lines), end_line if end_line else len(lines))
+    # `is None`, not truthiness: end_line=0 used to mean "to the end" (the
+    # whole body) and a negative one fell through to Python's negative
+    # slicing -- both reachable through MCP get_detail(start_line, end_line).
+    start = 0 if start_line is None else max(0, start_line - 1)
+    end = len(lines) if end_line is None else max(0, min(len(lines), end_line))
     return "\n".join(lines[start:end])

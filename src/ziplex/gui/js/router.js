@@ -109,14 +109,14 @@ document.addEventListener("click", (e) => {
 // since the page underneath is still whatever `lastHash` was already
 // rendering) rather than deciding first.
 //
-// That revert uses history.replaceState(), not a plain `location.hash =`
-// assignment -- a real gap code review caught: reassigning location.hash
-// pushes a *new* history entry, so declining a Back press left the
-// session-history stack shaped differently than if the press had never
-// happened (a duplicate/truncated entry around the current page, so a
-// later Back press could land somewhere unexpected). replaceState() swaps
-// the URL back in place instead, and -- unlike a `location.hash =`
-// assignment -- fires no `hashchange` of its own, so there's no re-entrant
+// That revert uses history.pushState(). With history [X, B, A] and A
+// current, Back moves the cursor to B before this runs: pushState(A)
+// truncates the old forward A and pushes A again -- [X, B, A], exactly as
+// if Back had never been pressed. replaceState() (the previous version)
+// overwrote B itself, giving [X, A, A] and losing the previous page for
+// good; a plain `location.hash =` assignment would fire a re-entrant
+// hashchange. pushState() -- like replaceState(), unlike a
+// `location.hash =` assignment -- fires no `hashchange` of its own, so there's no re-entrant
 // "settling" call to guard against the way an earlier version of this
 // function needed (and got wrong once already: it called route()
 // unconditionally on that re-entry, which for the pack-job route means
@@ -141,7 +141,13 @@ function guardedRoute() {
     route();
     return;
   }
-  history.replaceState(null, "", lastHash);
+  // pushState, not replaceState: by the time hashchange fires, Back has
+  // already moved the history cursor onto the *previous* entry, so
+  // replacing it overwrote that entry with this page's URL and the
+  // previous page was gone from history for good. Pushing this page back
+  // on top keeps the previous entry intact underneath (a later Back still
+  // reaches it) and fires no hashchange of its own.
+  history.pushState(null, "", lastHash);
   confirmLeaveActivePackJob().then((proceed) => {
     if (proceed) location.hash = newHash;
   });

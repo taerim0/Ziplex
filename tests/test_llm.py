@@ -719,3 +719,13 @@ def test_gemini_retries_a_transient_500_instead_of_giving_up(monkeypatch):
     monkeypatch.setattr(llm.requests, "post", lambda *a, **k: responses.pop(0))
 
     assert llm.GeminiProvider(api_key="x").generate("prompt") == '{"summary": "ok"}'
+
+
+def test_an_unknown_llm_provider_env_value_is_ignored_not_fatal(monkeypatch, tmp_path):
+    # PROVIDERS[os.getenv(...)] at import time raised KeyError on e.g.
+    # "anthropic", crashing every command including --version.
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    assert llm._env_provider_name() is None
+    monkeypatch.setenv("LLM_PROVIDER", " Mock ")
+    assert llm._env_provider_name() == "mock"

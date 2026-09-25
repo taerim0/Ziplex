@@ -58,7 +58,10 @@ def compress_yaml(text: str) -> str:
     fallback contract as compress_json()'s on invalid JSON.
     """
     try:
-        docs = list(_yaml.load_all(text))
+        # An empty or comment-only document in a multi-document stream
+        # loads as None and used to be re-emitted as a `null\n...` document
+        # that wasn't in the source -- nothing in it to keep, so skip it.
+        docs = [doc for doc in _yaml.load_all(text) if doc is not None]
     except YAMLError:
         return text
 

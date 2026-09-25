@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import sys
 import threading
 import time
 from typing import Protocol
@@ -751,7 +752,22 @@ PROVIDERS: dict[str, type[LLMProvider]] = {
 # references below avoid for each provider's DEFAULT_MODEL/DEFAULT_BASE_URL).
 DEFAULT_PROVIDER_NAME = "gemini"
 
-_provider: LLMProvider = PROVIDERS[os.getenv("LLM_PROVIDER", DEFAULT_PROVIDER_NAME)]()
+def _env_provider_name(warn: bool = False) -> str | None:
+    """LLM_PROVIDER, normalized (case/whitespace), or None if unset or not a
+    known provider. An unknown value (`Gemini`, `anthropic`, an empty
+    `LLM_PROVIDER=`) used to raise KeyError right here at import time,
+    crashing every command -- `ziplex doctor` and `--version` included."""
+    raw = (os.getenv("LLM_PROVIDER") or "").strip().lower()
+    if not raw:
+        return None
+    if raw not in PROVIDERS:
+        if warn:
+            print(f"Warning: LLM_PROVIDER={raw!r} is not one of {sorted(PROVIDERS)} -- ignoring it", file=sys.stderr)
+        return None
+    return raw
+
+
+_provider: LLMProvider = PROVIDERS[_env_provider_name(warn=True) or DEFAULT_PROVIDER_NAME]()
 
 
 def _active_provider() -> LLMProvider:
@@ -778,7 +794,7 @@ def _active_provider() -> LLMProvider:
     ...`) otherwise silently hit the real, billed API for anyone who had
     ever picked a provider in the GUI.
     """
-    if os.getenv("LLM_PROVIDER"):
+    if _env_provider_name() is not None:
         return _provider
     name = app_settings.resolve_llm_provider_name()
     if name and name in PROVIDERS:

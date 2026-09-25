@@ -298,3 +298,29 @@ def test_clear_all_checkpoints_survives_a_file_deleted_between_glob_and_unlink(t
 
     assert removed == 1  # only proj2's file counted -- proj1's raised, but is still gone
     assert checkpoint.list_checkpoints() == []
+
+
+def test_checkpoints_default_to_the_user_folder_not_the_install_dir():
+    # REPO_ROOT/"checkpoint" is under the install location -- unwritable
+    # for a system-wide install, which crashed checkpoint-and-exit.
+    from pathlib import Path
+    from ziplex import checkpoint as ckpt
+
+    assert ckpt.default_checkpoint_dir() == Path.home() / ".ziplex" / "checkpoints"
+    assert ckpt.default_checkpoint_dir() != ckpt.LEGACY_CHECKPOINT_DIR
+
+
+def test_a_checkpoint_left_in_the_legacy_folder_is_still_resumed_listed_and_cleaned(tmp_path, monkeypatch):
+    import json
+    from ziplex import checkpoint as ckpt
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    legacy = ckpt._checkpoint_path(str(project), ckpt.LEGACY_CHECKPOINT_DIR)
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(json.dumps({"project": {"name": "proj"}, "files_data": {"a.py": {}}}), encoding="utf-8")
+
+    assert ckpt.load_checkpoint(str(project))["project"]["name"] == "proj"
+    assert [c["project_name"] for c in ckpt.list_checkpoints()] == ["proj"]
+    ckpt.delete_checkpoint(str(project))
+    assert not legacy.exists()

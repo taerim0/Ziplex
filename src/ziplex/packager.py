@@ -341,6 +341,12 @@ def _resolve_checkpoint(
         ))
 
     carried_rules = restored_rules if (restored_rules_computed and use_llm and lang_matches) else None
+    # Dropped here, at the source, like carried_rules above: the GUI's
+    # stop-and-save (_maybe_stop) re-checkpoints whatever restored_prompt
+    # holds, stamped with the *current* lang -- a stale-language guide used
+    # to be saved that way and then trusted as matching on the next resume.
+    if not lang_matches:
+        restored_prompt = ""
     return restored_prompt, restored_files_data, lang_matches, carried_rules
 
 
@@ -1334,7 +1340,8 @@ def save_aif(aif: dict, output_path: str | None = None, progress_lang: str = "ko
     <project_path>/DEFAULT_OUTPUT_SUBDIR/<project name>.json if output_path
     isn't given but project_path is (see resolve_output_path()) -- a
     project-relative default, deliberately *not* anchored to Ziplex's own
-    install location the way checkpoint.CHECKPOINT_DIR still is (see
+    install location (checkpoint.CHECKPOINT_DIR moved off it too, to
+    ~/.ziplex/checkpoints -- see
     RESULT_DIR's own comment for why that used to be this function's
     fallback too, and why it was a real bug for a real, non-editable
     install). project_path is optional only for a caller that genuinely

@@ -21,10 +21,30 @@ _FENCE_RE = re.compile(r"^\s*(```|~~~)")
 _HEADING_RE = re.compile(r"^\s*#{1,6}\s")
 
 # Code-block language tag (```python etc.) -> the extension extract/code knows.
-# Kept in sync with languages.py's LANGUAGE_CONFIGS keys (.py/.java/.ts/.js) — if a
-# language is added there, add its alias(es) here too so its code blocks get
-# structural compression.
+# Kept in sync with languages.py's LANGUAGE_CONFIGS keys -- if a language is
+# added there, add its alias(es) here too so its code blocks get structural
+# compression (tests/extract/text asserts every LANGUAGE_CONFIGS extension
+# has at least one alias here).
 _FENCE_LANG_TO_EXT = {
+    "go": ".go",
+    "golang": ".go",
+    "rust": ".rs",
+    "rs": ".rs",
+    "cpp": ".cpp",
+    "c++": ".cpp",
+    "cc": ".cpp",
+    "cxx": ".cpp",
+    "csharp": ".cs",
+    "cs": ".cs",
+    "c#": ".cs",
+    "php": ".php",
+    "ruby": ".rb",
+    "rb": ".rb",
+    "bash": ".sh",
+    "sh": ".sh",
+    "shell": ".sh",
+    "zsh": ".sh",
+    "mlua": ".mlua",
     "python": ".py",
     "py": ".py",
     "java": ".java",

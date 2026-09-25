@@ -258,3 +258,24 @@ def test_dockerfile_invalid_input_returned_unchanged():
     # the file -- same "don't guess, don't corrupt" contract every other
     # text compressor here already has.
     assert compress_dockerfile("") == ""
+
+
+def test_markdown_fence_aliases_cover_every_code_language():
+    # The alias map was never extended past py/java/ts/js/lua/gd, so Go,
+    # Rust, C++, C#, PHP, Ruby, Bash and mlua code blocks got no
+    # structural compression.
+    from ziplex.extract.code.languages import LANGUAGE_CONFIGS
+    from ziplex.extract.text.markdown import _FENCE_LANG_TO_EXT
+
+    covered = set(_FENCE_LANG_TO_EXT.values())
+    cpp_family = {".cpp", ".cc", ".cxx"}
+    shell_family = {".sh", ".bash"}
+    for ext in LANGUAGE_CONFIGS:
+        family = cpp_family if ext in cpp_family else shell_family if ext in shell_family else {ext}
+        assert covered & family, ext
+
+
+def test_yaml_skips_an_empty_document_instead_of_emitting_null():
+    from ziplex.extract.text.yaml import compress_yaml
+
+    assert compress_yaml("a: 1\n---\n# only a comment\n") == "a: 1\n"
