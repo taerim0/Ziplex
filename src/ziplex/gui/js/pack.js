@@ -435,7 +435,12 @@ export async function renderPackJob(jobId) {
         el("span", { text: "📁 " }),
         el("span", { class: "tree-name tree-name-fixed", text: displayName }),
         el("span", { class: `confidence ${level}`, text: info.confidence.toFixed(2) }),
-        editor.displayEl, editor.editBtn, editor.editRow, editor.errorEl,
+        editor.displayEl,
+        // Same guard as pages/files.js: a pure container or one-file folder
+        // has no aif.folders entry, so submit_review() would silently drop
+        // an edit made here.
+        ...(folderInfo[path] ? [editor.editBtn] : []),
+        editor.editRow, editor.errorEl,
       ]);
       return el("details", { class: "tree-node", open: "" }, [
         label,

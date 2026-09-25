@@ -1157,6 +1157,8 @@ def test_pack_result_dir_overrides_result_dir_for_cache_lookup(tmp_path, monkeyp
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    # second file: a one-file folder gets no LLM folder-summary call at all
+    _write(project / "util.py", "def sub(a, b):\n    return a - b\n")
 
     aif1 = packager.pack(str(project), auto=True, interactive=False, result_dir=custom_dir)
     packager.save_aif(aif1, output_path=str(custom_dir / "project.json"))
@@ -1190,6 +1192,8 @@ def test_pack_lang_change_forces_full_resummarization_not_cross_language_reuse(t
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    # second file: a one-file folder gets no LLM folder-summary call at all
+    _write(project / "util.py", "def sub(a, b):\n    return a - b\n")
 
     aif1 = packager.pack(str(project), auto=True, interactive=False, result_dir=result_dir, lang="en")
     packager.save_aif(aif1, output_path=str(result_dir / "project.json"))
@@ -1306,6 +1310,8 @@ def test_pack_use_cache_false_resummarizes_everything(tmp_path, monkeypatch):
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    # second file: a one-file folder gets no LLM folder-summary call at all
+    _write(project / "util.py", "def sub(a, b):\n    return a - b\n")
 
     packager.save_aif(packager.pack(str(project), auto=True, interactive=False), project_path=str(project))
 
@@ -1721,3 +1727,154 @@ def test_pack_check_cancelled_save_preserves_rules_restored_from_a_prior_checkpo
     saved = json.loads(checkpoint._checkpoint_path(str(project)).read_text(encoding="utf-8"))
     assert saved["rules"] == ["Rule A"]
     assert saved["project"]["prompt"] == "restored prompt"
+
+
+def _checkpoint_with_main_py(project, summary, content_hash=None):
+    entry = {
+        "signatures": ["def add(a, b)"], "dependencies": [], "api": [],
+        "compressed": "def add(a, b): ...", "summary": summary,
+    }
+    if content_hash is not None:
+        entry["content_hash"] = content_hash
+    checkpoint.save_checkpoint(
+        str(project),
+        {"project": {"name": "project", "prompt": "", "language": "en"}, "files_data": {"main.py": entry}},
+    )
+
+
+def test_pack_resume_reanalyzes_a_file_changed_since_the_checkpoint(tmp_path, monkeypatch):
+    # Restoring it would ship the old summary while cache.json records
+    # today's hash -- freshness would then call it up to date forever.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _checkpoint_with_main_py(project, "old summary from before the edit", content_hash="hash-of-old-content")
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+
+    assert aif["files"]["main.py"]["summary"] == "Mock summary for local testing."
+
+
+def test_pack_resume_restores_a_file_unchanged_since_the_checkpoint(tmp_path, monkeypatch):
+    from ziplex.freshness import hash_file
+
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _checkpoint_with_main_py(project, "restored summary", content_hash=hash_file(str(project / "main.py")))
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+
+    assert aif["files"]["main.py"]["summary"] == "restored summary"
+
+
+def test_pack_checkpoint_carries_each_files_content_hash(tmp_path, monkeypatch):
+    from ziplex.freshness import hash_file
+
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    # "save" on the check after the per-file loop, so main.py is analyzed first
+    calls = {"n": 0}
+
+    def _cancel_after_first_file():
+        calls["n"] += 1
+        return "save" if calls["n"] > 1 else None
+
+    packager.pack(str(project), auto=True, interactive=False, check_cancelled=_cancel_after_first_file)
+
+    saved = json.loads(checkpoint._checkpoint_path(str(project)).read_text(encoding="utf-8"))
+    assert saved["files_data"]["main.py"]["content_hash"] == hash_file(str(project / "main.py"))
+
+
+def test_pack_resume_retries_a_failure_placeholder_instead_of_keeping_it(tmp_path, monkeypatch):
+    # e.g. every summary failed on an out-of-quota key, the run checkpointed,
+    # the user fixed the key and resumed -- the placeholder is unfinished work.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _checkpoint_with_main_py(project, summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"])
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+
+    assert aif["files"]["main.py"]["summary"] == "Mock summary for local testing."
+
+
+def test_pack_with_llm_replaces_a_previous_no_llm_packs_structural_summaries(tmp_path, monkeypatch):
+    # `pack --no-llm` first (no API key yet), then a real LLM pack: unchanged
+    # files used to keep "Defines: add" forever unless --no-cache was passed.
+    provider = _CountingMockProvider()
+    monkeypatch.setattr(llm, "_provider", provider)
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "util.py", "def sub(a, b):\n    return a - b\n")
+
+    structural = packager.pack(str(project), auto=True, interactive=False, use_llm=False)
+    packager.save_aif(structural, project_path=str(project))
+    assert structural["files"]["main.py"]["summary"].startswith("Defines: ")
+    assert provider.calls == 0
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+
+    assert aif["files"]["main.py"]["summary"] == "Mock summary for local testing."
+    assert aif["files"]["util.py"]["summary"] == "Mock summary for local testing."
+
+
+def test_pack_no_llm_still_reuses_its_own_structural_summaries(tmp_path, monkeypatch):
+    # The replacement above is LLM-runs-only: a repeat --no-llm pack keeps them.
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    first = packager.pack(str(project), auto=True, interactive=False, use_llm=False)
+    packager.save_aif(first, project_path=str(project))
+
+    second = packager.pack(str(project), auto=True, interactive=False, use_llm=False)
+
+    assert second["files"]["main.py"]["summary"] == first["files"]["main.py"]["summary"]
+
+
+def test_pack_reuses_summaries_from_an_output_file_not_named_after_the_project_folder(tmp_path, monkeypatch):
+    # e.g. `ziplex pack proj -o out/custom.json` twice -- the lookup used to
+    # only ever try out/<folder name>.json and re-bill every file.
+    provider = _CountingMockProvider()
+    monkeypatch.setattr(llm, "_provider", provider)
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    out = tmp_path / "out"
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "util.py", "def sub(a, b):\n    return a - b\n")
+
+    packager.save_aif(
+        packager.pack(str(project), auto=True, interactive=False, result_dir=out),
+        output_path=str(out / "custom.json"),
+    )
+    provider.calls = 0
+    packager.pack(str(project), auto=True, interactive=False, result_dir=out)
+
+    assert provider.calls == 3  # rules + prompt + folders; both summaries reused
+
+
+def test_pack_reuses_summaries_after_the_project_was_renamed_during_review(tmp_path, monkeypatch):
+    # save_aif() names the file after project.name, which review can change.
+    provider = _CountingMockProvider()
+    monkeypatch.setattr(llm, "_provider", provider)
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "util.py", "def sub(a, b):\n    return a - b\n")
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+    aif["project"]["name"] = "Renamed Project"
+    packager.save_aif(aif, project_path=str(project))
+    assert (project / packager.DEFAULT_OUTPUT_SUBDIR / "Renamed Project.json").exists()
+
+    provider.calls = 0
+    packager.pack(str(project), auto=True, interactive=False)
+
+    assert provider.calls == 3

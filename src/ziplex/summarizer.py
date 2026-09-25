@@ -85,23 +85,71 @@ def request_summary(file_path: str, data: dict, lang: str = "en") -> str:
         response = analyze_text_summary(file_path, data.get("compressed", ""), lang=lang)
 
     try:
-        return json.loads(response).get("summary", "")
+        data = json.loads(response)
     except json.JSONDecodeError:
         return ""
+    # A non-object JSON response (e.g. a bare list) would otherwise raise
+    # AttributeError on .get() inside generate_summaries()'s thread pool.
+    return _summary_text(data) if isinstance(data, dict) else ""
 
 
 def chunked(items: list, size: int) -> list[list]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
-def request_batch_summaries(batch: list[tuple[str, dict]], lang: str = "en") -> dict[str, str]:
+def _normalize_key(name: str) -> str:
+    """How a batch response's file key is compared against the name we
+    sent: models sometimes echo a key back with a leading "./", Windows
+    separators, or stray whitespace, which previously counted as a miss
+    and cost a separate per-file request."""
+    key = name.strip().replace("\\", "/")
+    while key.startswith("./"):
+        key = key[2:]
+    return key
+
+
+def _summary_text(value) -> str:
+    """A summary value as a plain string -- a model occasionally nests it
+    as {"summary": "..."} instead of the bare string the prompt asked for."""
+    if isinstance(value, dict):
+        value = value.get("summary", "")
+    return value if isinstance(value, str) else ""
+
+
+def _parse_batch_response(response: str) -> dict[str, str]:
+    """{normalized file key: summary} from an analyze_batch_summaries()
+    response, accepting the shapes models actually return besides the
+    requested {"summaries": {file: text}}: a list of {"file", "summary"}
+    objects, or the file map without the "summaries" wrapper. Anything
+    unparseable is {} -- never an exception, since this runs inside
+    generate_summaries()'s thread pool, where one would abort the pack."""
+    try:
+        data = json.loads(response)
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(data, dict):
+        data = data.get("summaries", data)
+    if isinstance(data, list):
+        data = {
+            item.get("file", ""): item.get("summary", "")
+            for item in data if isinstance(item, dict)
+        }
+    if not isinstance(data, dict):
+        return {}
+    parsed = {}
+    for key, value in data.items():
+        text = _summary_text(value)
+        if isinstance(key, str) and text:
+            parsed[_normalize_key(key)] = text
+    return parsed
+
+
+def request_batch_summaries(batch: list[tuple[str, dict]], lang: str = "en", _rebatch: bool = True) -> dict[str, str]:
     """batch: [(relative name, data), ...]. Tries one LLM call covering the
-    whole batch; any name the response doesn't cover (missing entirely, or
-    the model didn't echo the exact key) falls back to request_summary()
-    individually -- so a partially wrong/incomplete batch response only
-    costs what it actually failed on, not the whole batch, and a fully
-    garbled response degrades to the old one-call-per-file behavior instead
-    of losing every file in it.
+    whole batch. Names the response doesn't cover (missing entirely, or an
+    unmatched key) get one more batched call of just those names, and only
+    what's *still* missing falls back to request_summary() per file -- so a
+    garbled response costs one extra request, not one per file in it.
     """
     items = [
         {
@@ -113,14 +161,30 @@ def request_batch_summaries(batch: list[tuple[str, dict]], lang: str = "en") -> 
         for name, data in batch
     ]
     response = analyze_batch_summaries(items, lang=lang)
-    try:
-        summaries = json.loads(response).get("summaries", {})
-    except json.JSONDecodeError:
-        summaries = {}
+    # llm._retry_loop()'s "gave up" sentinel (retries exhausted, rate limit,
+    # non-retryable API error) -- re-batching would just repeat that same
+    # failing call, so only an unusable-but-real response gets a re-batch.
+    provider_gave_up = response.strip() == "{}"
+    summaries = _parse_batch_response(response)
 
     result = {}
+    missed = []
     for name, data in batch:
-        result[name] = summaries.get(name) or request_summary(name, data, lang=lang)
+        summary = summaries.get(_normalize_key(name))
+        if summary:
+            result[name] = summary
+        else:
+            missed.append((name, data))
+
+    if missed and _rebatch and len(missed) > 1 and not provider_gave_up:
+        print(pick(
+            f"  ⚠️  batch response missed {len(missed)}/{len(batch)} files -- retrying them as one batch",
+            f"  ⚠️  배치 응답에서 {len(missed)}/{len(batch)}개 파일 누락 -- 한 배치로 재요청",
+        ))
+        result.update(request_batch_summaries(missed, lang=lang, _rebatch=False))
+    else:
+        for name, data in missed:
+            result[name] = request_summary(name, data, lang=lang)
     return result
 
 
@@ -202,6 +266,20 @@ _STRUCTURAL_LABELS: dict[str, dict[str, str]] = {
         "none": "감지된 시그니처/의존성 없음 (구조 정보 전용 모드, LLM 요약 없음).",
     },
 }
+
+
+def is_structural_summary(summary: str) -> bool:
+    """True if `summary` has _structural_summary()'s shape, in any supported
+    language -- a --no-llm pack's output. pack() uses this to keep a later
+    LLM pack from reusing those lines as if they were real summaries
+    (freshness.load_previous_summaries() only knows a file is unchanged,
+    not how its previous summary was made)."""
+    for labels in _STRUCTURAL_LABELS.values():
+        if summary == labels["none"]:
+            return True
+        if summary.startswith((f"{labels['defines']}: ", f"{labels['references']}: ")):
+            return True
+    return False
 
 
 def _structural_summary(data: dict, lang: str = "en") -> str:

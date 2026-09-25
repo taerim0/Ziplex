@@ -593,6 +593,11 @@ def _cmd_pack(args) -> None:
         include=_split_patterns(args.include),
         ignore=_split_patterns(args.ignore),
         lang=args.lang,
+        # Where `-o` will save, so a repeat run with the same `-o` finds the
+        # previous pack there and reuses unchanged summaries instead of
+        # re-summarizing every file (pack() otherwise only looks in
+        # <project>/.ziplex/).
+        result_dir=Path(args.output).parent if args.output else None,
     )
     if aif:
         if args.auto_correct:

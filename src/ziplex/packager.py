@@ -1024,6 +1024,20 @@ def pack(
             for name in failed_previously:
                 del previous_summaries[name]
 
+        # A previous --no-llm pack's structural lines ("Defines: a, b") are
+        # a stand-in for a missing summary, not one -- an LLM run (e.g.
+        # right after adding an API key) must replace them, not keep them
+        # forever for every unchanged file.
+        if use_llm:
+            structural = [n for n, s in previous_summaries.items() if summarizer.is_structural_summary(s)]
+            for name in structural:
+                del previous_summaries[name]
+            if structural:
+                print(pick(
+                    f"  📐 {len(structural)} of them were --no-llm structural summaries -- regenerating with the LLM",
+                    f"  📐 그중 {len(structural)}개는 --no-llm 구조 요약 -- LLM으로 다시 생성",
+                ))
+
     # 4. Tree-sitter analysis
     print(pick("\n🔍 Analyzing code structure...", "\n🔍 코드 구조 분석 중..."))
     files_data = {}
@@ -1073,10 +1087,26 @@ def pack(
             [] if media_kind else find_text_references_for_file(file_path, name, all_names)
         )
 
-        # restore from checkpoint
-        if name in restored_files_data:
+        # restore from checkpoint -- unless the file changed since that
+        # checkpoint was written: restoring it would ship the old summary/
+        # body while `_manifest` (cache.json) records today's hash, so
+        # freshness would report it as up to date forever. A checkpoint
+        # written before content_hash existed has no hash to compare and
+        # is trusted as before.
+        restored_hash = restored_files_data.get(name, {}).get("content_hash")
+        if name in restored_files_data and restored_hash not in (None, current_manifest.get(name)):
+            print(pick(
+                f"  🔄 {name} (changed since checkpoint, re-analyzing)",
+                f"  🔄 {name} (체크포인트 이후 변경됨, 다시 분석)",
+            ))
+        elif name in restored_files_data:
             print(pick(f"  ✅ {name} (restored from checkpoint)", f"  ✅ {name} (체크포인트에서 복원)"))
             files_data[file_path] = dict(restored_files_data[name])
+            if summarizer.is_summary_failed_placeholder(files_data[file_path].get("summary", "")):
+                # A failure placeholder is unfinished work, not a result --
+                # left in place, `pending` below would skip it and a resume
+                # after e.g. fixing an out-of-quota key would never retry it.
+                files_data[file_path]["summary"] = ""
             if not lang_matches and files_data[file_path].get("summary"):
                 # A summary already captured in a stale-language checkpoint
                 # is exactly as wrong here as one reused across a language
@@ -1117,6 +1147,7 @@ def pack(
                 "api": [],
                 "compressed": "",
                 "summary": reused_summary or media_summary(file_path, media_kind),
+                "content_hash": current_manifest.get(name),
             }
             if reused_summary:
                 print(pick(f"  ♻️  {name} (unchanged, reusing previous summary)", f"  ♻️  {name} (변경 없음, 이전 요약 재사용)"))
@@ -1142,7 +1173,11 @@ def pack(
             "dependencies": deps,
             "api": apis,
             "compressed": compressed,
-            "summary": reused_summary
+            "summary": reused_summary,
+            # Carried into any checkpoint (build_snapshot() stores entries
+            # whole) so a resume can tell this file changed since -- see the
+            # restore branch above. Never copied into aif.json itself.
+            "content_hash": current_manifest.get(name),
         }
 
         if sigs or deps:

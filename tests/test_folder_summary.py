@@ -57,9 +57,39 @@ def test_generate_folder_summaries_uses_the_llm_response_when_complete(monkeypat
         folder_summary, "analyze_folder_summaries",
         lambda folders, lang="en": json.dumps({"src": "Core application logic."}),
     )
-    files_data = {"src/a.py": {"summary": "does a"}}
+    files_data = {"src/a.py": {"summary": "does a"}, "src/b.py": {"summary": "does b"}}
 
     assert folder_summary.generate_folder_summaries(files_data) == {"src": "Core application logic."}
+
+
+def test_generate_folder_summaries_never_sends_a_one_file_folder_to_the_llm(monkeypatch):
+    # packager._assemble_aif() drops one-file folders, so describing them
+    # was paid output thrown away -- they get the free structural sentence.
+    sent = []
+
+    def _analyze(folders, lang="en"):
+        sent.append(set(folders))
+        return json.dumps({"src": "Core application logic."})
+
+    monkeypatch.setattr(folder_summary, "analyze_folder_summaries", _analyze)
+    files_data = {
+        "src/a.py": {"summary": "does a"}, "src/b.py": {"summary": "does b"},
+        "docs/guide.md": {"summary": "A guide."},
+    }
+
+    result = folder_summary.generate_folder_summaries(files_data)
+    assert sent == [{"src"}]
+    assert result == {"src": "Core application logic.", "docs": "Contains 1 file(s): guide.md"}
+
+
+def test_generate_folder_summaries_makes_no_llm_call_when_every_folder_has_one_file(monkeypatch):
+    # Counted, not raised: generate_folder_summaries()'s broad except would
+    # swallow an AssertionError raised from inside the fake.
+    calls = []
+    monkeypatch.setattr(folder_summary, "analyze_folder_summaries", lambda *a, **k: calls.append(a) or "{}")
+    result = folder_summary.generate_folder_summaries({"src/a.py": {"summary": "does a"}})
+    assert calls == []
+    assert result == {"src": "Contains 1 file(s): a.py"}
 
 
 def test_generate_folder_summaries_falls_back_structurally_on_a_missing_key(monkeypatch):
@@ -69,11 +99,14 @@ def test_generate_folder_summaries_falls_back_structurally_on_a_missing_key(monk
         folder_summary, "analyze_folder_summaries",
         lambda folders, lang="en": json.dumps({"src": "Core application logic."}),
     )
-    files_data = {"src/a.py": {"summary": "does a"}, "docs/guide.md": {"summary": "A guide."}}
+    files_data = {
+        "src/a.py": {"summary": "does a"}, "src/b.py": {"summary": "does b"},
+        "docs/guide.md": {"summary": "A guide."}, "docs/faq.md": {"summary": "FAQ."},
+    }
 
     result = folder_summary.generate_folder_summaries(files_data)
     assert result["src"] == "Core application logic."
-    assert result["docs"] == "Contains 1 file(s): guide.md"
+    assert result["docs"] == "Contains 2 file(s): guide.md, faq.md"
 
 
 def test_generate_folder_summaries_falls_back_structurally_on_invalid_json(monkeypatch):

@@ -162,8 +162,15 @@ def generate_folder_summaries(files_data: dict, lang: str = "en") -> dict[str, s
     if not folder_files:
         return {}
 
+    # packager._assemble_aif() drops one-file folders (their summary would
+    # just restate the file's own), so paying the LLM to describe them was
+    # pure waste -- they still get the free structural sentence below.
+    to_describe = {folder: entries for folder, entries in folder_files.items() if len(entries) > 1}
+    if not to_describe:
+        return {folder: _structural_folder_summary(entries, lang) for folder, entries in folder_files.items()}
+
     try:
-        response = analyze_folder_summaries(folder_files, lang=lang)
+        response = analyze_folder_summaries(to_describe, lang=lang)
         folder_summaries = json.loads(response)
         if not isinstance(folder_summaries, dict):
             folder_summaries = {}

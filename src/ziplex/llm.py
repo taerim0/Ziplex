@@ -479,7 +479,17 @@ class GeminiProvider:
                 # confirm this field is harmlessly ignored elsewhere
                 # rather than rejected; revisit if a future model
                 # actually errors on it.
-                "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}},
+                # responseMimeType: every prompt here asks for "JSON only",
+                # but asking alone doesn't guarantee it -- a prose-wrapped
+                # or otherwise unparseable batch response made
+                # summarizer.py fall back to one request per file. Real
+                # packs (docs/EXPERIMENTS.md #6/#7) averaged ~117 output
+                # tokens per request, i.e. single-file-sized responses,
+                # far below what a working 8-file batch produces.
+                "generationConfig": {
+                    "thinkingConfig": {"thinkingBudget": 0},
+                    "responseMimeType": "application/json",
+                },
             }, timeout=REQUEST_TIMEOUT)
 
         def interpret(data, response):
@@ -741,7 +751,15 @@ def _active_provider() -> LLMProvider:
     resolves config strings, no network -- and each provider's generate()
     still re-resolves its own key fresh underneath regardless, so this adds
     no new staleness of its own.
+
+    An explicitly set LLM_PROVIDER env var wins over the stored choice,
+    though: it's a deliberate per-process override, and AGENTS.md's
+    documented network-free smoke test (`LLM_PROVIDER=mock ziplex pack
+    ...`) otherwise silently hit the real, billed API for anyone who had
+    ever picked a provider in the GUI.
     """
+    if os.getenv("LLM_PROVIDER"):
+        return _provider
     name = app_settings.resolve_llm_provider_name()
     if name and name in PROVIDERS:
         return PROVIDERS[name]()

@@ -333,10 +333,46 @@ def load_previous_summaries(
     # at all, which used to make this look up result/.json instead of the
     # real result/<project name>.json, silently missing every cache hit.
     name = Path(root_path).resolve().name
-    aif_path = result_dir / f"{name}.json"
-    cache_path = result_dir / f"{name}.cache.json"
+    if current_manifest is None:
+        # Hashed once here, not once per candidate below.
+        current_manifest = build_manifest(selected, root_path)
+
+    # The conventional <project folder name>.json first; if that misses,
+    # every other pack saved in the same folder. The conventional name
+    # alone used to miss (and re-bill every file) whenever the saved name
+    # differed: a CLI `-o out.json`, a project renamed during review
+    # (save_aif() names the file after project.name), or a GUI output
+    # path with its own file name. The overlap check in
+    # _reusable_summaries() keeps another project's pack in a shared
+    # output folder from matching.
+    preferred = _reusable_summaries(
+        result_dir / f"{name}.json", result_dir / f"{name}.cache.json",
+        selected, root_path, lang, current_manifest,
+    )
+    if preferred is not None:
+        return preferred[1]
+
+    best = None
+    for cache_path in sorted(result_dir.glob("*.cache.json")):
+        aif_path = cache_path.with_name(cache_path.name[: -len(".cache.json")] + ".json")
+        if aif_path.name == f"{name}.json":
+            continue
+        candidate = _reusable_summaries(aif_path, cache_path, selected, root_path, lang, current_manifest)
+        if candidate is not None and (best is None or candidate[0] > best[0]):
+            best = candidate
+    return best[1] if best else {}
+
+
+def _reusable_summaries(
+    aif_path: Path, cache_path: Path, selected: list[str], root_path: str, lang: str,
+    current_manifest: dict[str, str],
+) -> tuple[float, dict[str, str]] | None:
+    """(overlap ratio, {relative key: summary} for unchanged files) from one
+    previously saved aif.json/cache.json pair, or None if that pair is
+    missing, unreadable, in another language, or doesn't look like this
+    project at all -- see load_previous_summaries()'s docstring."""
     if not aif_path.exists() or not cache_path.exists():
-        return {}
+        return None
 
     try:
         with open(aif_path, "r", encoding="utf-8") as f:
@@ -344,10 +380,12 @@ def load_previous_summaries(
         with open(cache_path, "r", encoding="utf-8") as f:
             previous_manifest = json.load(f)
     except (json.JSONDecodeError, OSError):
-        return {}
+        return None
+    if not isinstance(previous_aif, dict) or not isinstance(previous_manifest, dict):
+        return None
 
     if previous_aif.get("project", {}).get("language", "en") != lang:
-        return {}
+        return None
     previous_files = previous_aif.get("files", {})
 
     report = check_freshness(selected, root_path, previous_manifest, current_manifest=current_manifest)
@@ -359,10 +397,11 @@ def load_previous_summaries(
     # lot since last pack", but "this probably isn't the same project".
     total_current = len(report.changed) + len(report.unchanged) + len(report.added)
     recognized = len(report.changed) + len(report.unchanged)
-    if total_current and recognized / total_current < _MIN_OVERLAP_RATIO:
-        return {}
+    ratio = recognized / total_current if total_current else 1.0
+    if ratio < _MIN_OVERLAP_RATIO:
+        return None
 
-    return {
+    return ratio, {
         rel: previous_files[rel]["summary"]
         for rel in report.unchanged
         if rel in previous_files and previous_files[rel].get("summary")

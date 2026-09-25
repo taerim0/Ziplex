@@ -103,6 +103,30 @@ def test_generate_disables_gemini_thinking_by_default(monkeypatch):
     provider.generate("prompt")
 
     assert captured["json"]["generationConfig"]["thinkingConfig"]["thinkingBudget"] == 0
+    # JSON mode too: an unparseable batch response used to cost one extra
+    # request per file in it (see summarizer.request_batch_summaries()).
+    assert captured["json"]["generationConfig"]["responseMimeType"] == "application/json"
+
+
+def test_active_provider_explicit_env_var_wins_over_stored_settings_choice(monkeypatch, tmp_path):
+    # `LLM_PROVIDER=mock ziplex pack ...` is documented as network-free; a
+    # provider stored via the GUI Options page used to override it and
+    # silently send real, billed requests.
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    app_settings.save_settings({"output_dir": "", "project_output_dirs": {}, "llm_provider": "gemini"})
+    mock = llm.MockProvider()
+    monkeypatch.setattr(llm, "_provider", mock)
+    monkeypatch.setenv("LLM_PROVIDER", "mock")
+
+    assert llm._active_provider() is mock
+
+
+def test_active_provider_stored_settings_choice_applies_when_env_var_unset(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
+    app_settings.save_settings({"output_dir": "", "project_output_dirs": {}, "llm_provider": "claude"})
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+
+    assert isinstance(llm._active_provider(), llm.ClaudeProvider)
 
 
 def test_generate_retries_past_a_transport_level_exception(monkeypatch):
