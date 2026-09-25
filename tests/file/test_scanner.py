@@ -324,3 +324,25 @@ def test_scan_files_runs_secretlint_from_the_project_root(tmp_path, monkeypatch)
 
     scan_files([str(path)], root=str(tmp_path))
     assert seen == [str(tmp_path)]
+
+
+def test_scan_file_ignores_shapes_found_in_a_real_ts_repo(tmp_path):
+    # False positives the ":"/shape rules produced on honojs/hono.
+    cases = {
+        "pnpm-lock.yaml": "  '@inquirer/password': 5.2.2(@types/node@24.13.6)\n",
+        "auth.ts": "/**\n * app.use(basicAuth({\n *     password: 'ahotproject',\n * }))\n */\n",
+        # raw string: the source line holds a literal backslash-n, not a newline
+        "jwt.test.ts": r"const pem = `-----BEGIN PRIVATE KEY-----\n${encodeBase64(exported)}\n-----END PRIVATE KEY-----`" + "\n",
+        "basic.test.ts": "expect(res).toEqual({ username: 'username', password: 'password' })\n",
+    }
+    for name, content in cases.items():
+        path = tmp_path / name
+        _write(path, content)
+        assert scan_file(str(path)) is None, name
+
+
+def test_scan_file_still_flags_a_pem_key_embedded_in_a_string(tmp_path):
+    path = tmp_path / "keys.ts"
+    # raw string: an escaped "\n" inside a JS string literal, then real base64
+    _write(path, r'const k = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA1234abcd";' + "\n")
+    assert scan_file(str(path)) is not None

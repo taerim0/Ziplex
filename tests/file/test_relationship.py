@@ -585,3 +585,10 @@ def test_resolve_dependency_does_not_match_a_dotted_external_to_a_root_level_fil
     assert resolve_dependency("os.path", stem_map, source_name="a.py") is None
     assert resolve_dependency("pkg.utils", stem_map, source_name="a.py") == "pkg/utils.py"
     assert resolve_dependency("yaml", stem_map, source_name="a.py") == "yaml.py"
+
+
+def test_resolve_dependency_resolves_a_bare_dot_to_the_folders_index():
+    # `import { x } from '.'` in src/helper/cookie/index.test.ts
+    stem_map = build_stem_map(["src/helper/cookie/index.ts", "src/helper/cookie/index.test.ts", "src/helper/index.ts"])
+    assert resolve_dependency(".", stem_map, source_name="src/helper/cookie/index.test.ts") == "src/helper/cookie/index.ts"
+    assert resolve_dependency("..", stem_map, source_name="src/helper/cookie/index.test.ts") == "src/helper/index.ts"

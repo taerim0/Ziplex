@@ -261,7 +261,9 @@ def resolve_dependency(
         all_names = _flatten_stem_map(stem_map)
     if dep in all_names:
         return dep
-    if source_name and dep.startswith(("./", "../")):
+    # Bare "." / ".." too (`import { x } from '.'` -> this folder's index.ts),
+    # common in TS test files next to their module -- found packing hono.
+    if source_name and (dep.startswith(("./", "../")) or dep in (".", "..")):
         # Path-relative, not a dotted module name -- never fall back to the
         # stem heuristic below, which would re-split it on "." (see
         # _resolve_relative_path()).

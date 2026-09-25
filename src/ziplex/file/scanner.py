@@ -29,14 +29,19 @@ _SENSITIVE_KEYWORDS = [
 # is the separator, group 2 the value; see _scan_with_pattern() for why
 # the separator matters.
 SENSITIVE_PATTERNS = [
-    rf'{keyword}["\']?\s*([=:])\s*{_VALUE_FRAGMENT}' for keyword in _SENSITIVE_KEYWORDS
+    # (?<![/@]): not part of a package name ('@inquirer/password': 5.2.2 in
+    # a pnpm lockfile) -- a real field name is never preceded by / or @.
+    rf'(?<![/@]){keyword}["\']?\s*([=:])\s*{_VALUE_FRAGMENT}' for keyword in _SENSITIVE_KEYWORDS
 ]
 
 # Secrets recognizable by their own shape, whatever they're assigned to --
 # a PEM key has no `KEY=` line at all, and a token under an unlisted name
 # (GITHUB_TOKEN, a bare CLI arg) never matched a keyword.
 _SECRET_SHAPES = [
-    ("PEM private key", re.compile(r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----")),
+    # The header alone at end of line (a .pem file), or followed by an
+    # escaped/real newline and actual base64 (a key embedded in a string) --
+    # not code *assembling* a PEM around a variable (`...-----\n${encode(k)}`).
+    ("PEM private key", re.compile(r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----(?:\s*$|(?:\\n|\n)[A-Za-z0-9+/]{16})")),
     ("GitHub token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})")),
     ("AWS access key id", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("Slack token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}")),
@@ -67,6 +72,9 @@ def _is_yaml_file(file_path: str) -> bool:
 _PLACEHOLDER_VALUES = {
     "...", "…", "todo", "tbd", "n/a", "none", "null", "xxx", "changeme",
     "change_me", "your_key_here", "your_api_key_here", "placeholder", "example",
+    # A field's own generic name as its value (`password: 'password'`) is a
+    # test/doc placeholder, not a credential.
+    "password", "secret", "apikey", "api_key", "token",
 }
 
 _NON_WORD_RE = re.compile(r"[^a-z0-9]+")
@@ -257,6 +265,10 @@ def _scan_with_pattern(file_path: str) -> dict | None:
                 # An unquoted value after ":" outside YAML/.env is a type
                 # annotation (`password: str`), a dict entry referencing a
                 # variable (`{"api_key": api_key}`), or prose -- not a literal.
+                continue
+            if separator == ":" and not (yaml_file or env_file) and line.lstrip().startswith(("*", "//", "#", "<!--")):
+                # A `key: 'value'` inside a code comment is a documentation
+                # example (a JSDoc usage block), not configuration.
                 continue
             if _looks_like_a_real_secret(value, keyword, literal_context=env_file):
                 reason = pick(f"Pattern match: {pattern}", f"패턴 일치: {pattern}")
