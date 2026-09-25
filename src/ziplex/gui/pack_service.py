@@ -67,6 +67,7 @@ GUI session.
 """
 
 import contextlib
+import copy
 import json
 import os
 import threading
@@ -93,6 +94,12 @@ from ..file.relationship import remove_dependency as _remove_dependency
 from ..file.relationship import remove_relationship as _remove_relationship
 from ..file.textutil import relative_key as _rel_key
 from ..progress_i18n import set_current as _set_progress_lang
+
+
+class SaveFailedError(Exception):
+    """submit_review()'s finalize-and-save failed; the job is back in
+    "reviewing" with its edits intact, so the same call can be retried."""
+
 
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()  # guards _jobs itself (insert/lookup) only -- see module docstring
@@ -921,14 +928,21 @@ def submit_review(
 
     try:
         with _lock_for_path(str(result_path)), _capture_for_job(job):
-            aif = finalize_aif(aif)
-            packager.save_aif(aif, output_path, progress_lang=job["progress_lang"], project_path=job["project_path"])
+            # A copy: finalize_aif() prunes `dependencies` in place, so a
+            # retry after a failed save would otherwise rebuild an empty
+            # relationship graph from the already-pruned original.
+            finalized = finalize_aif(copy.deepcopy(aif))
+            packager.save_aif(finalized, output_path, progress_lang=job["progress_lang"], project_path=job["project_path"])
     except Exception as e:
+        # Back to "reviewing" with the edited aif intact, not "error" with it
+        # discarded: pack() already deleted its checkpoint on success, so
+        # dropping it here threw away every paid LLM summary and every human
+        # edit over what's often a fixable save problem (a file held open
+        # by another program, a full disk). The review screen keeps its
+        # form and re-enables "save" on a failed finalize.
         with job["lock"]:
-            job["state"] = "error"
-            job["error"] = str(e)
-            job["aif"] = None
-        raise
+            job["state"] = "reviewing"
+        raise SaveFailedError(str(e)) from e
 
     result = {"aif_path": str(result_path), "project_path": job["project_path"]}
     with job["lock"]:

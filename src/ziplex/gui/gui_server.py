@@ -80,6 +80,7 @@ from .. import __version__
 from ..file.relationship import CycleError
 from ..llm import LANGUAGE_NAMES
 from ..progress_i18n import normalize as _normalize_progress_lang
+from ..progress_i18n import pick
 from ..progress_i18n import set_current as _set_progress_lang
 
 # static_folder="." -- not "gui" -- since index.html/the js/ module tree/
@@ -380,6 +381,13 @@ def api_pack_finalize():
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 404
+    except pack_service.SaveFailedError as e:
+        # The job is still reviewable -- the review screen shows this and
+        # re-enables its save button, so the edits aren't lost.
+        return jsonify({"error": pick(
+            f"Save failed: {e} -- your review is kept; fix the cause and save again.",
+            f"저장 실패: {e} -- 검토 내용은 유지됩니다. 원인을 해결한 뒤 다시 저장하세요.",
+        )}), 500
     return jsonify(result)
 
 

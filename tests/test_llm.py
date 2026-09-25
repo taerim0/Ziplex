@@ -694,3 +694,28 @@ def test_mock_provider_never_records_usage():
     llm.MockProvider().generate('{"summary": "..."}')
     assert llm.get_usage() == {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
+
+
+def test_generate_returns_empty_json_on_an_unexpected_response_shape_instead_of_raising(monkeypatch):
+    # Used to raise out of generate() -- through summarizer.py's thread pool
+    # -- aborting the pack with no checkpoint and losing paid summaries.
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    cases = [
+        (llm.OpenAIProvider(api_key="x"), {"choices": [{"message": {"content": None}}]}),
+        (llm.OpenAIProvider(api_key="x"), {"choices": []}),
+        (llm.ClaudeProvider(api_key="x"), {"content": []}),
+    ]
+    for provider, payload in cases:
+        monkeypatch.setattr(llm.requests, "post", lambda *a, _p=payload, **k: _FakeResponse(_p))
+        assert provider.generate("prompt", retry=2) == "{}"
+
+
+def test_gemini_retries_a_transient_500_instead_of_giving_up(monkeypatch):
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    responses = [
+        _FakeResponse({"error": {"code": 500, "message": "internal"}}, status_code=500),
+        _FakeResponse({"candidates": [{"content": {"parts": [{"text": '{"summary": "ok"}'}]}}]}),
+    ]
+    monkeypatch.setattr(llm.requests, "post", lambda *a, **k: responses.pop(0))
+
+    assert llm.GeminiProvider(api_key="x").generate("prompt") == '{"summary": "ok"}'

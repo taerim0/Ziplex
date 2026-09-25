@@ -1249,3 +1249,42 @@ def test_request_cancel_discard_stops_a_running_job_without_a_checkpoint(tmp_pat
     assert status["state"] == "error"
     assert "저장하지 않음" in status["error"]
     assert not checkpoint._checkpoint_path(str(project)).exists()
+
+
+def test_submit_review_keeps_the_job_reviewable_when_the_save_fails(tmp_path, monkeypatch):
+    # pack() already deleted its checkpoint, so discarding the aif on a
+    # failed save threw away every paid summary and every human edit.
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+
+    project = tmp_path / "project"
+    _write(project / "main.py", "import util\n\ndef add(a, b):\n    return a + b\n")
+    _write(project / "util.py", "def sub(a, b):\n    return a - b\n")
+    output_path = tmp_path / "out" / "project.json"
+
+    job_id = pack_service.start_pack_job(str(project), str(output_path), selected_files=["main.py", "util.py"])
+    _wait(job_id)
+
+    real_save = packager.save_aif
+    attempts = {"n": 0}
+
+    def _flaky_save(*args, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise PermissionError("file is open in another program")
+        return real_save(*args, **kwargs)
+
+    monkeypatch.setattr(packager, "save_aif", _flaky_save)
+
+    with pytest.raises(pack_service.SaveFailedError):
+        pack_service.submit_review(job_id, summaries={"main.py": "Human-written summary."})
+    assert pack_service.get_job_status(job_id)["state"] == "reviewing"
+
+    # Retrying the same call succeeds, with the edit and a real relationship
+    # graph -- finalize_aif() pruning the original in place would have left
+    # an empty one on the retry.
+    pack_service.submit_review(job_id, summaries={"main.py": "Human-written summary."})
+    saved = json.loads(output_path.read_text(encoding="utf-8"))
+    assert saved["files"]["main.py"]["summary"] == "Human-written summary."
+    assert saved["relationships"]["main.py"]["internal"] == ["util.py"]
+    assert pack_service.get_job_status(job_id)["state"] == "done"

@@ -290,9 +290,22 @@ def _retry_loop(make_request, interpret, retry: int, prefix: str) -> str:
             time.sleep(wait)
             continue
 
-        result = interpret(data, response)
-        if result.status == "ok":
-            return _clean_json(result.text)
+        try:
+            result = interpret(data, response)
+            if result.status == "ok":
+                return _clean_json(result.text)
+        except (KeyError, IndexError, TypeError, AttributeError) as e:
+            # A well-formed but unexpected body shape -- an OpenAI-compatible
+            # server's `message.content: null`, Claude's empty `content`
+            # list -- used to raise straight out of generate(), through
+            # summarizer.py's thread pool, aborting the whole pack with no
+            # checkpoint and losing every summary already paid for in it.
+            # Not retried: the same request tends to get the same shape back.
+            print(pick(
+                f"  ❌ {prefix}Unexpected response shape ({e.__class__.__name__})",
+                f"  ❌ {prefix}예상 밖의 응답 형식 ({e.__class__.__name__})",
+            ))
+            break
         if result.status == "retry":
             wait = _retry_wait(attempt)
             print(pick(
@@ -332,6 +345,10 @@ _IDENTIFIER_FIDELITY_NOTE = (
     "name, keep it exactly as written in the source (do not translate or "
     "transliterate it)."
 )
+
+
+# HTTP/API error codes worth retrying: rate limit plus transient server errors.
+_RETRYABLE_STATUS = (429, 500, 502, 503, 504)
 
 
 def _clean_json(text: str) -> str:
@@ -522,7 +539,10 @@ class GeminiProvider:
 
             error_code = data.get("error", {}).get("code", 0)
             error_msg = data.get("error", {}).get("message", "unknown")
-            if error_code in (503, 429):
+            # Same transient set OpenAIProvider/ClaudeProvider retry on -- a
+            # 500/502/504 used to be treated as permanent here, returning
+            # "{}" at once and triggering summarizer.py's per-file fallback.
+            if error_code in _RETRYABLE_STATUS or response.status_code in _RETRYABLE_STATUS:
                 return _retry_result()
             return _stop(f"API error: {error_msg}", f"API 에러: {error_msg}")
 
@@ -591,7 +611,7 @@ class OpenAIProvider:
             # commonly carries a string error.type ("rate_limit_exceeded"),
             # not a numeric code, so the status line is the reliable signal
             # across every backend this class might be pointed at.
-            if response.status_code in (429, 500, 502, 503, 504):
+            if response.status_code in _RETRYABLE_STATUS:
                 return _retry_result()
 
             # `data` is already confirmed a dict by _retry_loop() before
@@ -658,7 +678,7 @@ class ClaudeProvider:
 
             # 529 is Anthropic's own overloaded_error status, alongside the
             # usual 429/5xx set every other provider here also retries on.
-            if response.status_code in (429, 500, 502, 503, 504, 529):
+            if response.status_code in (*_RETRYABLE_STATUS, 529):
                 return _retry_result()
 
             error_msg = data.get("error", {}).get("message", "unknown")
