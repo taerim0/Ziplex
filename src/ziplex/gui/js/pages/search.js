@@ -16,6 +16,14 @@ export function renderSearch() {
   async function run() {
     const pattern = patternInput.value.trim();
     if (!pattern) return;
+    if (!getProject()) {
+      // Search reads the project's real files, so a project opened without
+      // its folder can't be searched -- /api/search used to answer with a
+      // bare HTML 400 shown as "request failed (400)".
+      results.innerHTML = "";
+      results.appendChild(el("div", { class: "error", text: t("search.needsProject") }));
+      return;
+    }
     results.innerHTML = t("search.searching");
     try {
       const matches = await api("/api/search", {
@@ -37,9 +45,12 @@ export function renderSearch() {
           el("div", { class: "match-line", text: m.text }),
           ...m.context_after.map(l => el("div", { class: "ctx-line", text: l })),
         ];
+        // No ?start/end: m.line numbers the *original* file, but the detail
+        // view slices the *compressed* body (function bodies stripped), so
+        // that range showed unrelated lines or nothing. The matched line and
+        // its context are already right here in the result card.
         const loc = el("div", { class: "loc", text: `${m.file}:${m.line}`, onclick: () => {
-          const start = Math.max(1, m.line - 5), end = m.line + 5;
-          location.hash = `#/files/${encodeURIComponent(m.file)}?start=${start}&end=${end}`;
+          location.hash = `#/files/${encodeURIComponent(m.file)}`;
         } });
         results.appendChild(el("div", { class: "search-result" }, [loc, el("pre", {}, lines)]));
       }

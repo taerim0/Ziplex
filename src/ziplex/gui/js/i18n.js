@@ -240,6 +240,7 @@ const I18N = {
     "search.patternPlaceholder": "정규식 패턴 (예: TODO|FIXME)",
     "search.searching": "검색 중...",
     "search.noResults": "검색 결과 없음",
+    "search.needsProject": "검색하려면 프로젝트 폴더가 필요합니다 -- 프로젝트 확인 화면에서 폴더 경로와 함께 다시 열어 주세요",
     "search.button": "검색",
   },
   en: {
@@ -428,6 +429,7 @@ const I18N = {
     "search.patternPlaceholder": "Regex pattern (e.g. TODO|FIXME)",
     "search.searching": "Searching...",
     "search.noResults": "No results",
+    "search.needsProject": "Search needs the project folder -- reopen this project with its folder path on the Open Project screen",
     "search.button": "Search",
   },
 };

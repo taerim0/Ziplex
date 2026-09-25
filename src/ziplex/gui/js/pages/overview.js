@@ -1,14 +1,16 @@
 // The sidebar's Overview section -- see app.js's header comment for the
 // overall module split.
 
-import { app, nav, el, api, getAif, getProject, setStale, showError, showLoading, copyButton, startStaleWatch } from "../app.js";
+import { app, nav, el, api, getAif, getProject, setStale, showError, showLoading, copyButton, startStaleWatch, navigationToken, isCurrentNavigation } from "../app.js";
 import { t } from "../i18n.js";
 
 export async function renderOverview() {
   nav.classList.remove("hidden");
   showLoading();
+  const navToken = navigationToken();
   try {
     const data = await api("/api/overview", { aif_path: getAif(), project_path: getProject() });
+    if (!isCurrentNavigation(navToken)) return;
     setStale(data._stale);
     startStaleWatch(getProject(), getAif());
     const rulesList = el("ul", {}, (data.rules || []).map(r => el("li", { text: r })));
@@ -55,5 +57,5 @@ export async function renderOverview() {
       ]),
       el("div", { class: "copy-row" }, copyButton(summaryText)),
     ]));
-  } catch (e) { showError(e); }
+  } catch (e) { if (isCurrentNavigation(navToken)) showError(e); }
 }

@@ -152,7 +152,7 @@ def _line_at(file_path: str, line: int | None) -> str | None:
     return lines[line - 1] if 1 <= line <= len(lines) else None
 
 
-def _scan_with_secretlint(file_path: str) -> dict | bool | None:
+def _scan_with_secretlint(file_path: str, cwd: str | None = None) -> dict | bool | None:
     """False if secretlint ran and found nothing; a reason dict (see
     scan_file()) if it found something; None if secretlint itself couldn't
     run at all -- not installed, no .secretlintrc config in scope (it
@@ -185,6 +185,10 @@ def _scan_with_secretlint(file_path: str) -> dict | bool | None:
             ["secretlint", "--format", "json", file_path],
             capture_output=True,
             text=True,
+            # secretlint reads .secretlintrc from its working directory --
+            # the scanned project's root, not wherever ziplex was launched
+            # (which ignored the project's own config and used a stray one).
+            cwd=cwd,
         )
         # secretlint's JSON formatter emits a list with one entry per file
         # scanned (always exactly one here, since this is called per file),
@@ -260,7 +264,7 @@ def _scan_with_pattern(file_path: str) -> dict | None:
     return None
 
 
-def scan_file(file_path: str) -> dict | None:
+def scan_file(file_path: str, root: str | None = None) -> dict | None:
     """None if the file looks safe. Otherwise a dict describing *why* it
     was flagged -- {"reason": ..., "line": 1-based line number or None,
     "matched_text": that line's own text or None} -- enough for a human to
@@ -278,7 +282,7 @@ def scan_file(file_path: str) -> dict | None:
     if classify_media_file(file_path) is not None:
         return None
 
-    result = _scan_with_secretlint(file_path)
+    result = _scan_with_secretlint(file_path, cwd=root)
 
     # 2. pattern-based fallback if secretlint failed to run at all
     if result is None:
@@ -287,7 +291,7 @@ def scan_file(file_path: str) -> dict | None:
     return result or None  # False (secretlint ran, found nothing) -> None
 
 
-def scan_files(file_paths: list[str]) -> dict:
+def scan_files(file_paths: list[str], root: str | None = None) -> dict:
     """{"safe": [path, ...], "dangerous": [{"file": path, "reason": ...,
     "line": ..., "matched_text": ...}, ...]} -- "dangerous" carries the
     same reason detail scan_file() returns, keyed under "file" alongside
@@ -297,7 +301,7 @@ def scan_files(file_paths: list[str]) -> dict:
     """
     results = {"safe": [], "dangerous": []}
     for file_path in file_paths:
-        reason = scan_file(file_path)
+        reason = scan_file(file_path, root=root)
         if reason:
             results["dangerous"].append({"file": file_path, **reason})
         else:

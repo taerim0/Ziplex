@@ -1368,3 +1368,46 @@ def test_extract_dependencies_keeps_aliased_python_imports(tmp_path):
     file_path = tmp_path / "mod.py"
     file_path.write_text("import a.b\nimport mypkg.utils as u\nimport numpy as np, pandas\nimport json as j\n", encoding="utf-8")
     assert extract_dependencies(str(file_path)) == ["a.b", "mypkg.utils", "numpy", "pandas"]
+
+
+def test_extract_signatures_keeps_cpp_pointer_and_reference_returns(tmp_path):
+    # The function_declarator sits inside pointer/reference declarators;
+    # stopping at the first layer dropped these signatures entirely.
+    file_path = tmp_path / "a.cpp"
+    file_path.write_text(
+        "int* f() { return 0; }\n"
+        "const std::string& Foo::get() const { return s; }\n"
+        "int** g(int b) { return 0; }\n",
+        encoding="utf-8",
+    )
+    assert extract_signatures(str(file_path)) == ["f() -> int*", "Foo::get() -> std::string&", "g(int b) -> int**"]
+
+
+def test_extract_signatures_renders_ts_return_types_without_the_colon(tmp_path):
+    file_path = tmp_path / "a.ts"
+    file_path.write_text("function add(a: number, b: number): number { return a + b; }\n", encoding="utf-8")
+    assert extract_signatures(str(file_path)) == ["add(a: number, b: number) -> number"]
+
+
+def test_extract_api_reads_flask_routes_structurally(tmp_path):
+    file_path = tmp_path / "routes.py"
+    file_path.write_text(
+        '@app.route("/users", methods=["GET", "POST"])\ndef users(): pass\n\n'
+        '@app.route("/health")\ndef health(): pass\n\n'
+        '@login_required\n@bp.get("/me")\ndef me(): pass\n\n'
+        '@mock.patch("pkg.mod.func")\ndef test_x(m): pass\n\n'
+        '@cache.get("key")\ndef notroute(): pass\n\n'
+        '@decorate\nclass Views:\n    @app.delete("/items/<id>")\n    def remove(self): pass\n',
+        encoding="utf-8",
+    )
+    assert extract_api(str(file_path)) == ["GET /users", "POST /users", "GET /health", "GET /me", "DELETE /items/<id>"]
+
+
+def test_extract_dependencies_reads_every_static_php_require_form(tmp_path):
+    file_path = tmp_path / "a.php"
+    file_path.write_text(
+        "<?php\nrequire_once(\"config.php\");\nrequire_once \"db.php\";\nrequire 'x.php';\n"
+        "include __DIR__ . \"/y.php\";\ninclude \"$dir/z.php\";\n",
+        encoding="utf-8",
+    )
+    assert extract_dependencies(str(file_path)) == ["config", "db", "x", "y"]

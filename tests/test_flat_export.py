@@ -105,3 +105,12 @@ def test_export_flat_custom_output_path(tmp_path):
 
     assert target == str(custom)
     assert custom.exists()
+
+
+def test_fence_outgrows_any_backtick_run_in_the_body():
+    # A Markdown body's own ``` blocks closed the fixed ``` wrapper early.
+    from ziplex.flat_export import _fence_for
+
+    assert _fence_for("plain code") == "```"
+    assert _fence_for("# Doc\n```py\nx = 1\n```\n") == "````"
+    assert _fence_for("````` five") == "``````"

@@ -576,3 +576,12 @@ def test_resolve_dependency_never_resolves_a_relative_path_by_bare_stem():
     # "./helpers" from src/a.ts must not land on an unrelated other/helpers.ts.
     stem_map = build_stem_map(["src/a.ts", "other/helpers.ts"])
     assert resolve_dependency("./helpers", stem_map, source_name="src/a.ts") is None
+
+
+def test_resolve_dependency_does_not_match_a_dotted_external_to_a_root_level_file():
+    # `ruamel.yaml` aligned its last segment with a root-level yaml.py.
+    stem_map = build_stem_map(["yaml.py", "path.py", "pkg/utils.py"])
+    assert resolve_dependency("ruamel.yaml", stem_map, source_name="a.py") is None
+    assert resolve_dependency("os.path", stem_map, source_name="a.py") is None
+    assert resolve_dependency("pkg.utils", stem_map, source_name="a.py") == "pkg/utils.py"
+    assert resolve_dependency("yaml", stem_map, source_name="a.py") == "yaml.py"

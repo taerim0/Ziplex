@@ -548,7 +548,7 @@ def _cmd_debug(args) -> None:
 def _cmd_collect(args) -> None:
     _require_dir_or_exit(args.path)
     files = collect_files(args.path, **_collection_kwargs(args.path))
-    scan_result = scan_files(files)
+    scan_result = scan_files(files, root=args.path)
 
     print(f"\n📁 수집된 파일: {len(files)}개")
     print_file_tree(files, args.path)

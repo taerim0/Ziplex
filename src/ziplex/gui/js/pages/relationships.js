@@ -13,7 +13,7 @@
 // second look" doesn't stop being true just because packing already
 // finished.
 
-import { app, nav, el, api, apiPost, getAif, showError, showLoading, confidenceLevel } from "../app.js";
+import { app, nav, el, api, apiPost, getAif, showError, showLoading, confidenceLevel, navigationToken, isCurrentNavigation } from "../app.js";
 import { t } from "../i18n.js";
 import { renderDependencyTreeOverview, renderRelationshipEditor } from "../graph.js";
 
@@ -21,11 +21,13 @@ export async function renderRelationships() {
   nav.classList.remove("hidden");
   showLoading();
   const aifPath = getAif();
+  const navToken = navigationToken();
   try {
     const [relationships, files] = await Promise.all([
       api("/api/relationships", { aif_path: aifPath }),
       api("/api/files", { aif_path: aifPath }),
     ]);
+    if (!isCurrentNavigation(navToken)) return;
     delete files._stale;
     const allFileNames = Object.keys(relationships).sort();
     const flaggedFileNames = allFileNames.filter(
@@ -83,5 +85,5 @@ export async function renderRelationships() {
       el("p", { class: "muted", text: t("relationships.help") }),
       section, editError,
     ]));
-  } catch (e) { showError(e); }
+  } catch (e) { if (isCurrentNavigation(navToken)) showError(e); }
 }

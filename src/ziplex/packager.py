@@ -359,7 +359,7 @@ def _select_files(
 
     # 2. Security scan
     print(pick("🔒 Security scanning...", "🔒 보안 스캔 중..."))
-    scan_result = scan_files(files)
+    scan_result = scan_files(files, root=root_path)
     safe_files = scan_result["safe"]
     dangerous = scan_result["dangerous"]
     included_anyway = []

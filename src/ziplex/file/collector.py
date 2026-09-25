@@ -106,21 +106,41 @@ def collect_files(root_path: str, include: list[str] | None = None, ignore: list
     spec = pathspec.PathSpec.from_lines("gitignore", ignore_patterns)
     include_spec = pathspec.PathSpec.from_lines("gitignore", include) if include else None
 
+    # (folder relative to root, its own .gitignore's spec) for every
+    # .gitignore below the root -- git applies each one to paths under its
+    # own folder, relative to that folder. Only the root one used to be
+    # read, so a file listed in svc/.gitignore was still collected.
+    nested_specs: list[tuple[str, pathspec.PathSpec]] = []
+
+    def is_ignored(relative_posix: str) -> bool:
+        if spec.match_file(relative_posix):
+            return True
+        for folder, folder_spec in nested_specs:
+            if relative_posix.startswith(folder + "/") and folder_spec.match_file(relative_posix[len(folder) + 1:]):
+                return True
+        return False
+
     collected = []
     for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = Path(dirpath).relative_to(root).as_posix()
+        if rel_dir != "." and ".gitignore" in filenames:
+            nested_content = read_text(str(Path(dirpath) / ".gitignore"))
+            if nested_content is not None:
+                lines = [l.strip() for l in nested_content.splitlines() if l.strip() and not l.startswith("#")]
+                if lines:
+                    nested_specs.append((rel_dir, pathspec.PathSpec.from_lines("gitignore", lines)))
+
         # skip walking into excluded directories entirely
         dirnames[:] = [
             d for d in dirnames
-            if not spec.match_file(
-                (Path(dirpath).relative_to(root) / d).as_posix() + "/"
-            )
+            if not is_ignored((Path(dirpath).relative_to(root) / d).as_posix() + "/")
         ]
 
         for filename in filenames:
             file_path = Path(dirpath) / filename
             relative = file_path.relative_to(root)
             relative_posix = relative.as_posix()
-            if spec.match_file(relative_posix):
+            if is_ignored(relative_posix):
                 continue
             if include_spec is not None and not include_spec.match_file(relative_posix):
                 continue

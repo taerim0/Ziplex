@@ -5,17 +5,19 @@
 // a flat file list) after a reported usability gap: a human browsing the
 // GUI to understand a project had no sense of directory structure at all.
 
-import { app, nav, el, api, apiPost, getAif, getProject, setStale, showError, showLoading, confidenceLevel, copyButton, startStaleWatch, buildPathTree, createSummaryEditor } from "../app.js";
+import { app, nav, el, api, apiPost, getAif, getProject, setStale, showError, showLoading, confidenceLevel, copyButton, startStaleWatch, buildPathTree, createSummaryEditor, navigationToken, isCurrentNavigation } from "../app.js";
 import { t } from "../i18n.js";
 
 export async function renderFiles() {
   nav.classList.remove("hidden");
   showLoading();
+  const navToken = navigationToken();
   try {
     const [files, folders] = await Promise.all([
       api("/api/files", { aif_path: getAif(), project_path: getProject() }),
       api("/api/folders", { aif_path: getAif() }),
     ]);
+    if (!isCurrentNavigation(navToken)) return;
     setStale(files._stale);
     startStaleWatch(getProject(), getAif());
     delete files._stale;
@@ -143,7 +145,7 @@ export async function renderFiles() {
     app.innerHTML = "";
     app.appendChild(el("div", { class: "toolbar" }, [filterInput, summaryToggleBtn]));
     app.appendChild(treeBox);
-  } catch (e) { showError(e); }
+  } catch (e) { if (isCurrentNavigation(navToken)) showError(e); }
 }
 
 async function fetchRelationships(name, includeTextRefs) {
@@ -157,6 +159,7 @@ async function fetchRelationships(name, includeTextRefs) {
 export async function renderFileDetail(name, params) {
   nav.classList.remove("hidden");
   showLoading();
+  const navToken = navigationToken();
   try {
     let includeTextRefs = true;
     const [files, { dependents, blastRadius }, detail] = await Promise.all([
@@ -164,6 +167,7 @@ export async function renderFileDetail(name, params) {
       fetchRelationships(name, includeTextRefs),
       api("/api/detail", { aif_path: getAif(), file: name, start_line: params.get("start"), end_line: params.get("end") }),
     ]);
+    if (!isCurrentNavigation(navToken)) return;
     const info = files[name] || {};
 
     function fileList(names) {
@@ -240,5 +244,5 @@ export async function renderFileDetail(name, params) {
       el("pre", { text: detail.compressed || t("fileDetail.noContent") }),
       el("div", { class: "copy-row" }, copyButton(fullText, t("fileDetail.copyAll"))),
     ]));
-  } catch (e) { showError(e); }
+  } catch (e) { if (isCurrentNavigation(navToken)) showError(e); }
 }

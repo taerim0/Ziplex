@@ -61,7 +61,7 @@ def test_scan_files_splits_safe_and_dangerous_with_reasons(tmp_path):
 def test_scan_file_falls_back_to_pattern_when_secretlint_is_unavailable(tmp_path, monkeypatch):
     from ziplex.file import scanner
 
-    monkeypatch.setattr(scanner, "_scan_with_secretlint", lambda path: None)
+    monkeypatch.setattr(scanner, "_scan_with_secretlint", lambda path, cwd=None: None)
     path = tmp_path / "secret.env"
     _write(path, 'API_KEY = "abc123"\n')
 
@@ -90,7 +90,7 @@ def test_scan_file_treats_a_recognized_media_asset_as_always_safe(tmp_path, monk
     # if called at all, not just by asserting the final "safe" result
     from ziplex.file import scanner
 
-    def _boom(path):
+    def _boom(path, cwd=None):
         raise AssertionError("scan_file must not scan a recognized media asset")
 
     monkeypatch.setattr(scanner, "_scan_with_secretlint", _boom)
@@ -241,7 +241,7 @@ def test_scan_file_trusts_a_clean_secretlint_result_without_falling_back(tmp_pat
     # specifically to prove the False/None distinction is respected.
     from ziplex.file import scanner
 
-    monkeypatch.setattr(scanner, "_scan_with_secretlint", lambda path: False)
+    monkeypatch.setattr(scanner, "_scan_with_secretlint", lambda path, cwd=None: False)
     path = tmp_path / "secret.env"
     _write(path, 'API_KEY = "abc123"\n')
 
@@ -310,3 +310,17 @@ def test_scan_with_secretlint_reads_its_real_output_shape(tmp_path, monkeypatch)
     monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: _Result())
     result = scanner.scan_file(str(path))
     assert result == {"reason": "found AWS Access Key ID", "line": 2, "matched_text": "AWS key here"}
+
+
+def test_scan_files_runs_secretlint_from_the_project_root(tmp_path, monkeypatch):
+    # secretlint reads .secretlintrc from its working directory -- it used to
+    # inherit wherever ziplex was launched, ignoring the project's own config.
+    from ziplex.file import scanner
+
+    seen = []
+    monkeypatch.setattr(scanner, "_scan_with_secretlint", lambda path, cwd=None: seen.append(cwd) or False)
+    path = tmp_path / "a.txt"
+    _write(path, "hello\n")
+
+    scan_files([str(path)], root=str(tmp_path))
+    assert seen == [str(tmp_path)]

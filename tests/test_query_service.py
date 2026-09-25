@@ -408,3 +408,15 @@ def test_search_project_default_cap_is_not_unlimited(tmp_path):
 
     assert len(result["matches"]) == query_service.DEFAULT_SEARCH_MAX_RESULTS
     assert result["truncated"] is True
+
+
+def test_get_detail_accepts_a_windows_style_path(tmp_path):
+    # Every other file query normalized "\\" -- get_detail() alone raised.
+    import json
+    from ziplex import query_service
+
+    aif = tmp_path / "p.json"
+    aif.write_text(json.dumps({"project": {"name": "p"}, "files": {"src/a.py": {"summary": "s"}}}), encoding="utf-8")
+    (tmp_path / "p.detail.json").write_text(json.dumps({"src/a.py": {"compressed": "def a(): ..."}}), encoding="utf-8")
+
+    assert query_service.get_detail(str(aif), "src" + chr(92) + "a.py") == "def a(): ..."

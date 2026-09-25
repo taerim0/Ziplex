@@ -62,7 +62,10 @@ def build_go_package_index(all_names: list[str]) -> dict[str, list[str]]:
     """
     index: dict[str, list[str]] = {}
     for name in all_names:
-        if name.endswith(".go"):
+        # _test.go files are compiled only into their own package's test
+        # binary -- importing a package never pulls them in, so they're
+        # never a real edge target (they showed up in every blast radius).
+        if name.endswith(".go") and not name.endswith("_test.go"):
             index.setdefault(parent_folder(name), []).append(name)
     return index
 

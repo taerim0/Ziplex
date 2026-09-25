@@ -115,3 +115,13 @@ def test_skips_env_variants_but_keeps_env_templates(tmp_path):
     collected = sorted(Path(p).name for p in collect_files(str(tmp_path)))
 
     assert collected == [".env.example", ".env.sample", "main.py"]
+
+
+def test_respects_nested_gitignore_scoped_to_its_own_folder(tmp_path):
+    _write(tmp_path / "svc" / ".gitignore", "secret.txt\ngen/\n")
+    for rel in ("svc/secret.txt", "svc/keep.txt", "svc/gen/x.txt", "other/secret.txt"):
+        _write(tmp_path / rel, "a\n")
+
+    collected = sorted(Path(p).relative_to(tmp_path).as_posix() for p in collect_files(str(tmp_path)))
+
+    assert collected == ["other/secret.txt", "svc/.gitignore", "svc/keep.txt"]

@@ -134,6 +134,16 @@ export function el(tag, attrs = {}, children = []) {
   return node;
 }
 
+// Bumped by router.js's route() on every navigation. A page that awaits a
+// fetch captures the value first and re-checks it after (see
+// isCurrentNavigation()) -- a slow response (Overview's freshness check can
+// take seconds on a large project) used to render over whatever page the
+// user had moved to meanwhile, and start a stale-watch timer there.
+let navSeq = 0;
+export function beginNavigation() { return ++navSeq; }
+export function navigationToken() { return navSeq; }
+export function isCurrentNavigation(token) { return token === navSeq; }
+
 // A themed in-page confirmation dialog, replacing window.confirm()'s
 // native OS-styled box -- reported directly: an alert-style native dialog
 // reads as the browser interrupting the app, and can't offer more than a
@@ -143,12 +153,17 @@ export function el(tag, attrs = {}, children = []) {
 // clicked, or null if dismissed via the overlay or Escape (every caller
 // treats null the same as its own explicit "stay"/"cancel" option). Only
 // one modal is ever open at a time -- a second call while one's still
-// pending (a fast double click/keypress) returns the same promise rather
-// than stacking a second overlay on top of the first.
+// pending resolves to null (the same as dismissing it) rather than
+// stacking a second overlay. It used to return the *first* modal's own
+// promise, so pressing Back while the Stop confirmation was open handed
+// that dialog's true/false to the leave guard, which read either as
+// "discard & stop" -- throwing away the checkpoint the user had asked for.
+// A repeated guard trigger (fast double Back) is de-duplicated separately
+// by pack.js's pendingGuardDecision.
 let openModal = null;
 
 export function showConfirmModal(message, buttons) {
-  if (openModal) return openModal;
+  if (openModal) return Promise.resolve(null);
 
   // Accessibility (code review, 2026-08-26): window.confirm() guaranteed a
   // focus-managed, screen-reader-announced native dialog for free -- this

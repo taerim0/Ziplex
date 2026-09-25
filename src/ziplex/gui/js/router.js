@@ -6,7 +6,7 @@
 // by listing <script> tags in the correct sequence.
 // ---- router -----------------------------------------------------------
 
-import { api, getAif, setActiveNav, setActiveTopbar, stopStaleWatch, initTopbarToggles } from "./app.js";
+import { api, getAif, setActiveNav, setActiveTopbar, stopStaleWatch, initTopbarToggles, beginNavigation } from "./app.js";
 import { applyStaticI18n } from "./i18n.js";
 import { renderPackJob, hasActiveGuard, confirmLeaveActivePackJob } from "./pack.js";
 import { renderHome, renderPackHome, renderCheck } from "./pages/landing.js";
@@ -22,6 +22,7 @@ export function route() {
   // every navigation is guaranteed to pass through. A no-op if nothing was
   // watching (stopStaleWatch() itself checks before clearing).
   stopStaleWatch();
+  beginNavigation();
 
   const raw = location.hash.slice(1) || "/";
   const [path, queryStr] = raw.split("?");

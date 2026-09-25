@@ -109,8 +109,20 @@ def _files_md(aif: dict, detail: dict) -> str:
 
         body = (detail.get(name) or {}).get("compressed")
         if body:
-            lines += [f"```{_language_tag(name)}", body, "```", ""]
+            fence = _fence_for(body)
+            lines += [f"{fence}{_language_tag(name)}", body, fence, ""]
     return "\n".join(lines)
+
+
+def _fence_for(body: str) -> str:
+    """A backtick fence longer than any backtick run inside `body` -- a
+    Markdown file's compressed body keeps its own ``` code blocks, which
+    closed a fixed ``` wrapper early and ran every later file together."""
+    longest = run = 0
+    for ch in body:
+        run = run + 1 if ch == "`" else 0
+        longest = max(longest, run)
+    return "`" * max(3, longest + 1)
 
 
 def _relationships_md(aif: dict) -> str:

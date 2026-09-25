@@ -391,6 +391,9 @@ def get_detail(aif_path: str, file: str, start_line: int | None = None, end_line
     instead of the whole thing.
     """
     detail = _load_json(str(_detail_path(aif_path)))
+    # Same normalization every other file query here applies -- a
+    # Windows-style `src\x.py` raised "not found" only on this one.
+    file = _normalize_path_arg(file)
     entry = detail.get(file)
     if entry is None:
         raise ValueError(f"{file!r} not found in {_detail_path(aif_path)}")

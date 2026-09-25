@@ -185,9 +185,34 @@ def _unwrap_declarator(node):
     node), so this returns `node` unchanged for them.
     """
     declarator = node.child_by_field_name("declarator")
+    # A pointer/reference return (`int* f()`, `const std::string& get()`)
+    # wraps the function_declarator in one or more pointer_declarator/
+    # reference_declarator layers -- stopping at the first layer silently
+    # dropped every such function's signature.
+    while declarator is not None and declarator.type in _POINTER_DECLARATORS:
+        declarator = declarator.child_by_field_name("declarator") or next(
+            (c for c in declarator.named_children if c.type.endswith("declarator")), None
+        )
     if declarator is not None and declarator.type == "function_declarator":
         return declarator
     return node
+
+
+_POINTER_DECLARATORS = ("pointer_declarator", "reference_declarator")
+
+
+def _pointer_suffix(node) -> str:
+    """The `*`/`&` layers between a C++ function_definition and its
+    function_declarator (see _unwrap_declarator()), so the rendered return
+    type reads `int*` rather than a misleading bare `int`."""
+    suffix = ""
+    declarator = node.child_by_field_name("declarator")
+    while declarator is not None and declarator.type in _POINTER_DECLARATORS:
+        suffix += "*" if declarator.type == "pointer_declarator" else "&"
+        declarator = declarator.child_by_field_name("declarator") or next(
+            (c for c in declarator.named_children if c.type.endswith("declarator")), None
+        )
+    return suffix
 
 
 def _traverse_signatures(node, results: list, node_types: list, implicit_names: dict, name_prefixes: dict, zero_arg_types: frozenset, parent, field_handler=None):
@@ -243,7 +268,12 @@ def _traverse_signatures(node, results: list, node_types: list, implicit_names: 
             param_text = params.text.decode() if params else "()"
             sig = f"{name}{param_text}"
             if ret:
-                sig += f" -> {ret.text.decode()}"
+                # TS/JS's return_type is a type_annotation whose text keeps
+                # its leading ": " -- rendered as "-> : number" otherwise.
+                ret_text = ret.text.decode().lstrip(":").strip()
+                if sig_node is not node:
+                    ret_text += _pointer_suffix(node)
+                sig += f" -> {ret_text}"
             results.append(sig)
         return
 

@@ -98,7 +98,7 @@ def collect_and_scan(
     Returns the raw {"safe": [...], "dangerous": [...]} scan_files() dict.
     """
     files = collect_files(project_path, **collection_kwargs(project_path, extra_include, extra_ignore))
-    return scan_files(files)
+    return scan_files(files, root=project_path)
 
 
 def init_config(project_path: str) -> str:

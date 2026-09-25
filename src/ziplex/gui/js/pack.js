@@ -62,6 +62,10 @@ export function confirmLeaveActivePackJob() {
   return pendingGuardDecision;
 }
 
+// Bumped by every renderPackJob() call, so a previous render's poll loop can
+// tell it's been superseded (see stillOnThisJob() inside it).
+let renderSeq = 0;
+
 export async function renderPackJob(jobId) {
   // Reset on every fresh render (a brand-new job, or the URL bar navigating
   // directly to one) rather than inheriting whatever a previous job's guard
@@ -118,7 +122,7 @@ export async function renderPackJob(jobId) {
         { label: t("pack.stopDiscard"), value: "discard" },
         { label: t("pack.guard.stay"), value: null },
       ]);
-      if (choice === null) return false;
+      if (choice !== "save" && choice !== "discard") return false;
       await requestStop(choice === "save");
       // Leaving is confirmed either way past this point -- clear the guard
       // so it doesn't keep firing for every later, unrelated navigation
@@ -529,17 +533,24 @@ export async function renderPackJob(jobId) {
 
   let since = 0;
   let stopped = false;
+  const thisRender = ++renderSeq;
+  // Leaving before any guard was armed (before the first status response)
+  // used to leave this loop running on whatever page came next -- where it
+  // would arm the "stop the pack?" guard, or the review guard and reload
+  // warning, for a job that page has nothing to do with.
+  const stillOnThisJob = () => thisRender === renderSeq && location.hash === `#/pack/${jobId}`;
 
   async function poll() {
-    if (stopped) return;
+    if (stopped || !stillOnThisJob()) { stopped = true; return; }
     let data;
     try {
       data = await api("/api/pack/status", { job_id: jobId, since });
     } catch (e) {
       stopped = true;
-      showErrorState(e.message);
+      if (stillOnThisJob()) showErrorState(e.message);
       return;
     }
+    if (!stillOnThisJob()) { stopped = true; return; }
     // Re-checked here, not just at entry: this specific request could have
     // already been in flight when the running-guard's modal resolved
     // "save & stop"/"discard & stop" (which sets stopped = true) --

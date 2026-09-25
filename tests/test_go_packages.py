@@ -140,3 +140,11 @@ def test_expand_dependencies_for_file_leaves_deps_untouched_with_no_go_module():
         "main.go", "main.go", ["fmt", "github.com/someone-else/lib"], None, {},
     )
     assert deps == ["fmt", "github.com/someone-else/lib"]
+
+
+def test_build_go_package_index_leaves_out_test_files():
+    # Importing a package never pulls in its _test.go files.
+    from ziplex.go_packages import build_go_package_index
+
+    index = build_go_package_index(["pkg/a.go", "pkg/a_test.go", "main.go"])
+    assert index == {"pkg": ["pkg/a.go"], ".": ["main.go"]}

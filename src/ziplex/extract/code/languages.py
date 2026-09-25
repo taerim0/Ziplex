@@ -105,35 +105,61 @@ def _py_api_handler(node: Node, results: list) -> bool:
     if node.type != "decorated_definition":
         return False
 
-    decorator = None
-    for child in node.children:
-        if child.type == "decorator":
-            decorator = child
-            break
+    # Every decorator, not just the first (`@login_required` above
+    # `@app.get(...)` hid the route), and matched structurally: a call to
+    # `<obj>.<method>("/path", ...)`. Substring-matching ".patch" anywhere
+    # in the decorator turned every `@mock.patch("pkg.mod.func")` in a test
+    # file into a "PATCH pkg.mod.func" route, and Flask's main form,
+    # `@app.route("/x", methods=[...])`, was never recognized at all.
+    for decorator in (c for c in node.children if c.type == "decorator"):
+        call = next((c for c in decorator.named_children if c.type == "call"), None)
+        func = call.child_by_field_name("function") if call else None
+        if func is None or func.type != "attribute":
+            continue
+        attr = func.child_by_field_name("attribute")
+        method_name = attr.text.decode() if attr else ""
+        if method_name != "route" and method_name not in _HTTP_METHOD_CALLS:
+            continue
+        args = call.child_by_field_name("arguments")
+        first = args.named_children[0] if args and args.named_children else None
+        path = _plain_string_value(first)
+        if not path or not path.startswith("/"):
+            continue
+        if method_name == "route":
+            methods = _route_methods(args) or ["GET"]
+        else:
+            methods = [_HTTP_METHOD_CALLS[method_name]]
+        results.extend(f"{m} {path}" for m in methods)
 
-    if decorator:
-        method = None
-        path = None
+    # Keep recursing: a decorated class (class-based views, a Blueprint
+    # factory) can hold decorated route methods of its own.
+    return False
 
-        for n in _walk_all(decorator):
-            if n.type == "attribute":
-                attr_text = n.text.decode()
-                if ".get"      in attr_text: method = "GET"
-                elif ".post"   in attr_text: method = "POST"
-                elif ".put"    in attr_text: method = "PUT"
-                elif ".delete" in attr_text: method = "DELETE"
-                elif ".patch"  in attr_text: method = "PATCH"
-                break
 
-        for n in _walk_all(decorator):
-            if n.type == "string_content":
-                path = n.text.decode()
-                break
+def _plain_string_value(node: Node | None) -> str | None:
+    """A Python string literal's content, or None for anything else (an
+    f-string with interpolation, a name, a concatenation)."""
+    if node is None or node.type != "string":
+        return None
+    if any(c.type == "interpolation" for c in node.named_children):
+        return None
+    content = next((c for c in node.named_children if c.type == "string_content"), None)
+    return content.text.decode() if content else ""
 
-        if method and path:
-            results.append(f"{method} {path}")
 
-    return True
+def _route_methods(args: Node) -> list[str]:
+    """`methods=["GET", "POST"]` from an @app.route(...) call, uppercased."""
+    for kw in args.named_children:
+        if kw.type != "keyword_argument":
+            continue
+        name = kw.child_by_field_name("name")
+        value = kw.child_by_field_name("value")
+        if name is None or name.text != b"methods" or value is None:
+            continue
+        return [
+            s.upper() for s in (_plain_string_value(c) for c in value.named_children) if s
+        ]
+    return []
 
 
 _HTTP_METHOD_CALLS = {"get": "GET", "post": "POST", "put": "PUT", "delete": "DELETE", "patch": "PATCH"}
@@ -971,15 +997,32 @@ def _php_dependency_handler(node: Node, results: list) -> bool:
 
     if node.type in ("require_once_expression", "require_expression",
                       "include_once_expression", "include_expression"):
-        for child in node.children:
-            if child.type == "string":
-                for grandchild in child.children:
-                    if grandchild.type == "string_content":
-                        results.append(Path(grandchild.text.decode()).stem)
-                        break
+        path = next((p for p in (_php_path_literal(c) for c in node.named_children) if p), None)
+        if path:
+            results.append(Path(path).stem)
         return True
 
     return False
+
+
+def _php_path_literal(node: Node) -> str | None:
+    """The file path a require/include argument names, if static. Only a
+    bare single-quoted `'x.php'` was read before; `require_once("x.php")`
+    (parenthesized) and `"x.php"` (double-quoted -- an encapsed_string, a
+    different node type) were both dropped. `__DIR__ . "/x.php"` (the
+    idiomatic absolute form) contributes its string half."""
+    if node.type == "parenthesized_expression":
+        inner = node.named_children[0] if node.named_children else None
+        return _php_path_literal(inner) if inner is not None else None
+    if node.type == "binary_expression":
+        right = node.child_by_field_name("right")
+        return _php_path_literal(right) if right is not None else None
+    if node.type in ("string", "encapsed_string"):
+        if any(c.type != "string_content" for c in node.named_children):
+            return None  # "$dir/x.php" -- interpolated, not static
+        content = next((c for c in node.named_children if c.type == "string_content"), None)
+        return content.text.decode() if content else None
+    return None
 
 
 _RUBY_REQUIRE_CALLS = {"require", "require_relative"}

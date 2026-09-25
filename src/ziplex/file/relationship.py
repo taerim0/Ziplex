@@ -110,8 +110,15 @@ def _dotted_path_matches(dep_segments: list[str], candidate: str) -> bool:
     validate, so it's never filtered here.
     """
     cand_parts = list(Path(candidate).with_suffix("").parts)
-    k = min(len(dep_segments), len(cand_parts))
-    return cand_parts[-k:] == dep_segments[-k:]
+    # Every dep segment has to be accounted for by the candidate's path.
+    # Comparing only the overlap let `ruamel.yaml` match a *root-level*
+    # yaml.py (and `os.path` a root-level path.py): a 1-part path "aligns"
+    # with any dep's last segment. Accepted cost: a project packed from
+    # inside its own package folder, importing itself by absolute name
+    # (`mypkg.utils` from mypkg/ as the root), no longer resolves that edge.
+    if len(dep_segments) > len(cand_parts):
+        return False
+    return cand_parts[-len(dep_segments):] == dep_segments
 
 
 def _flatten_stem_map(stem_map: dict) -> set:
