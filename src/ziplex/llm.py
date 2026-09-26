@@ -176,6 +176,55 @@ def reset_usage() -> None:
     (pack() runs synchronously per request), so not guarded against.
     """
     usage_tracker.reset()
+    _circuit.reset()
+
+
+class _CircuitBreaker:
+    """Pack-wide "stop calling a provider that keeps giving up". After
+    CIRCUIT_BREAKER_THRESHOLD consecutive calls end with retries exhausted
+    (429/5xx/network every time -- a spent quota, an outage), every later
+    generate() returns "{}" at once instead of sitting through the full
+    backoff again. Found by code review: with a quota gone, each 8-file
+    batch spent ~75s of backoff, then retried every file alone for another
+    ~75s each -- about 45 minutes and 9x the requests for a 100-file
+    project, all of it ending in placeholders. Reset per pack
+    (reset_usage()); any successful call closes it again."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._streak = 0
+        self._announced = False
+
+    def reset(self) -> None:
+        with self._lock:
+            self._streak = 0
+            self._announced = False
+
+    def is_open(self) -> bool:
+        with self._lock:
+            return self._streak >= CIRCUIT_BREAKER_THRESHOLD
+
+    def record(self, exhausted: bool) -> None:
+        with self._lock:
+            self._streak = self._streak + 1 if exhausted else 0
+
+    def announce_once(self) -> bool:
+        with self._lock:
+            first, self._announced = not self._announced, True
+            return first
+
+
+CIRCUIT_BREAKER_THRESHOLD = 3
+_circuit = _CircuitBreaker()
+_call_state = threading.local()
+
+
+def last_call_exhausted() -> bool:
+    """True if this thread's most recent generate() gave up because retries
+    ran out (or the circuit breaker was open) -- as opposed to a
+    request-specific refusal (a safety block, a malformed body), which a
+    smaller per-item retry might still get past."""
+    return getattr(_call_state, "exhausted", False)
 
 
 def get_usage() -> dict:
@@ -259,6 +308,15 @@ def _retry_loop(make_request, interpret, retry: int, prefix: str) -> str:
     GeminiProvider's safety-blocked-response case reads differently from
     a generic API error, even though both are equally non-retryable).
     """
+    _call_state.exhausted = False
+    if _circuit.is_open():
+        _call_state.exhausted = True
+        if _circuit.announce_once():
+            print(pick(
+                f"  ❌ {prefix}The provider kept failing after retries; skipping further LLM calls this run",
+                f"  ❌ {prefix}재시도 후에도 제공자가 계속 실패해 이번 실행의 LLM 호출을 중단합니다",
+            ))
+        return "{}"
     for attempt in range(retry):
         try:
             response = make_request()
@@ -294,6 +352,7 @@ def _retry_loop(make_request, interpret, retry: int, prefix: str) -> str:
         try:
             result = interpret(data, response)
             if result.status == "ok":
+                _circuit.record(exhausted=False)
                 return _clean_json(result.text)
         except (KeyError, IndexError, TypeError, AttributeError) as e:
             # A well-formed but unexpected body shape -- an OpenAI-compatible
@@ -306,7 +365,8 @@ def _retry_loop(make_request, interpret, retry: int, prefix: str) -> str:
                 f"  ❌ {prefix}Unexpected response shape ({e.__class__.__name__})",
                 f"  ❌ {prefix}예상 밖의 응답 형식 ({e.__class__.__name__})",
             ))
-            break
+            _circuit.record(exhausted=False)
+            return "{}"
         if result.status == "retry":
             wait = _retry_wait(attempt)
             print(pick(
@@ -317,8 +377,13 @@ def _retry_loop(make_request, interpret, retry: int, prefix: str) -> str:
             continue
 
         print(pick(f"  ❌ {prefix}{result.message_en}", f"  ❌ {prefix}{result.message_ko}"))
-        break
+        _circuit.record(exhausted=False)
+        return "{}"
 
+    # Every attempt was a retryable failure: the provider is out of
+    # capacity/quota, not rejecting this one request.
+    _call_state.exhausted = True
+    _circuit.record(exhausted=True)
     return "{}"
 
 

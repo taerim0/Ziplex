@@ -356,9 +356,9 @@ def _resolve_checkpoint(
 def _select_files(
     root_path: str, root: Path, include: list[str] | None, ignore: list[str] | None,
     auto: bool, interactive: bool, preselected: list[str] | None,
-) -> tuple[list[str], list[dict], list[str]]:
+) -> tuple[list[str], list[dict], list[str], list[str]]:
     """Steps 1-3 of the pipeline: collect -> security scan -> select.
-    Returns (selected, dangerous, included_anyway) -- `selected` may come
+    Returns (selected, dangerous, included_anyway, safe_files) -- `selected` may come
     back empty; pack() itself (not this function) decides what an empty
     selection means for the rest of the run.
     """
@@ -435,7 +435,7 @@ def _select_files(
             for f in excluded:
                 print(f"  ❌ {Path(f).name}")
 
-    return selected, dangerous, included_anyway
+    return selected, dangerous, included_anyway, safe_files
 
 
 def _extract_rules(
@@ -501,7 +501,12 @@ def _extract_rules(
             except json.JSONDecodeError:
                 rules_data = None
 
-            if rules_data is not None and "rules" in rules_data:
+            # isinstance, not just key presence: `{"rules": null}` (seen from
+            # small local models) made `rules` None -- pack()'s own "must
+            # exit" sentinel -- so the run stopped silently with no
+            # checkpoint and every paid summary was lost. A non-list value
+            # is a failed call like any other.
+            if isinstance(rules_data, dict) and isinstance(rules_data.get("rules"), list):
                 # The "rules" key being present at all -- even paired with
                 # an empty list -- means this is a real answer (a trivial
                 # project can legitimately have no inferable coding rules),
@@ -665,6 +670,7 @@ def _assemble_aif(
     include: list[str] | None, ignore: list[str] | None, lang: str, rules: list[str],
     folders: dict, folder_confidences: dict, folder_file_counts: dict, token_results: dict,
     files_data: dict, root: Path, selected: list[str], root_path: str, current_manifest: dict[str, str],
+    deselected: list[str] | None = None,
 ) -> dict:
     """Step 7: assembles the final in-memory aif dict from every piece the
     earlier stages already computed -- no new logic of its own past this
@@ -694,7 +700,15 @@ def _assemble_aif(
             # this pack used instead of diffing against an unscoped full
             # file tree and reporting every out-of-scope file as spuriously
             # "added"/"removed".
-            "scope": {"include": include or [], "ignore": ignore or []},
+            # `deselected`: safe files a human left unchecked (GUI picker,
+            # interactive select_files()) -- present only when there are
+            # any. Without it every one of them showed up as "added" in
+            # every later freshness check, so a partial pack was stale
+            # forever (CI gate always failing, a permanent GUI badge).
+            "scope": {
+                "include": include or [], "ignore": ignore or [],
+                **({"deselected": deselected} if deselected else {}),
+            },
             "format_notes": FORMAT_NOTES.get(lang, FORMAT_NOTES["en"]),
             # What language every LLM-written value (summaries/rules/prompt)
             # -- and, for use_llm=False, STRUCTURAL_ONLY_NOTE/the structural
@@ -1005,9 +1019,11 @@ def pack(
     # instead (see that function's own docstring for why), so this third
     # return value was dead state left over from the pack()/main()
     # decomposition, a real gap caught by code review.
-    selected, dangerous, _included_anyway = _select_files(
+    selected, dangerous, _included_anyway, safe_files = _select_files(
         root_path, root, include, ignore, auto, interactive, preselected,
     )
+    selected_set = set(selected)
+    deselected = sorted(_rel_key(f, root) for f in safe_files if f not in selected_set)
 
     if not selected:
         print(pick("No files selected.", "선택된 파일 없음."))
@@ -1313,6 +1329,7 @@ def pack(
         project_name, prompt, tech_stack, security_scan,
         include, ignore, lang, rules, folders, folder_confidences, folder_file_counts,
         token_results, files_data, root, selected, root_path, current_manifest,
+        deselected=deselected,
     )
 
     # delete the checkpoint on success

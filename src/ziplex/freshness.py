@@ -20,6 +20,7 @@ is exactly this module's own subject.
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -187,7 +188,16 @@ def scope_from_aif(aif: dict) -> tuple[list[str] | None, list[str] | None]:
     instead of going through another file read.
     """
     scope = (aif.get("project") or {}).get("scope") or {}
-    return scope.get("include") or None, scope.get("ignore") or None
+    # Files deliberately left out of a manual selection come back as
+    # literal, root-anchored ignore patterns, so a later collect never sees
+    # them and they can't be reported "added".
+    ignore = list(scope.get("ignore") or []) + [_literal_pattern(p) for p in scope.get("deselected") or []]
+    return scope.get("include") or None, ignore or None
+
+
+def _literal_pattern(rel_path: str) -> str:
+    """A gitignore pattern matching exactly `rel_path` from the root."""
+    return "/" + re.sub(r"([\[\]*?!#\\])", r"\\\1", rel_path)
 
 
 def cache_path_for_aif(aif_path: str) -> Path:

@@ -27,6 +27,7 @@ from pathlib import Path
 import json
 
 from .file.textutil import relative_key as _rel_key
+from . import llm
 from .llm import analyze_file_summary, analyze_text_summary, analyze_batch_summaries
 from .progress_i18n import pick
 
@@ -165,6 +166,10 @@ def request_batch_summaries(batch: list[tuple[str, dict]], lang: str = "en", _re
     # non-retryable API error) -- re-batching would just repeat that same
     # failing call, so only an unusable-but-real response gets a re-batch.
     provider_gave_up = response.strip() == "{}"
+    # Retries ran out (quota spent, outage) rather than this request being
+    # refused: per-file fallback would repeat the same failing call once
+    # per file, each with the full backoff.
+    provider_exhausted = provider_gave_up and llm.last_call_exhausted()
     summaries = _parse_batch_response(response)
 
     result = {}
@@ -182,6 +187,9 @@ def request_batch_summaries(batch: list[tuple[str, dict]], lang: str = "en", _re
             f"  ⚠️  배치 응답에서 {len(missed)}/{len(batch)}개 파일 누락 -- 한 배치로 재요청",
         ))
         result.update(request_batch_summaries(missed, lang=lang, _rebatch=False))
+    elif provider_exhausted:
+        for name, _data in missed:
+            result[name] = SUMMARY_FAILED_PLACEHOLDERS.get(lang, SUMMARY_FAILED_PLACEHOLDERS["en"])
     else:
         for name, data in missed:
             result[name] = request_summary(name, data, lang=lang)

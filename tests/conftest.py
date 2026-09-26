@@ -5,8 +5,21 @@ belonging to any one module.
 import pytest
 
 from ziplex import checkpoint
+from ziplex import llm
 from ziplex import progress_i18n
 from ziplex import settings as app_settings
+
+
+@pytest.fixture(autouse=True)
+def _reset_llm_call_state():
+    """llm's pack-wide circuit breaker and per-thread "last call exhausted"
+    flag are module state; a test that exhausts retries must not open the
+    breaker (or leave the flag set) for every test after it."""
+    llm._circuit.reset()
+    llm._call_state.exhausted = False
+    yield
+    llm._circuit.reset()
+    llm._call_state.exhausted = False
 
 
 @pytest.fixture(autouse=True)
