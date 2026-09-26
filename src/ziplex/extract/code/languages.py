@@ -345,6 +345,18 @@ def _py_dependency_handler(node: Node, results: list) -> bool:
                         _append_if_not_stdlib(module_text + name_node.text.decode(), results)
             else:
                 _append_if_not_stdlib(module_text, results)
+                # `from app.api.routes import items, login` imports two
+                # submodule *files*; `from app.core.config import settings`
+                # imports a symbol. Only the file system can tell, so each
+                # name is emitted as a `P.name` candidate too --
+                # py_imports.py keeps the ones that resolve to a module
+                # file and drops the rest (found packing
+                # fastapi/full-stack-fastapi-template: 51/79 edges missing).
+                for name_node in node.children_by_field_name("name"):
+                    if name_node.type == "aliased_import":
+                        name_node = name_node.child_by_field_name("name")
+                    if name_node is not None:
+                        _append_if_not_stdlib(f"{module_text}.{name_node.text.decode()}", results)
         return True
 
     if node.type == "import_statement":

@@ -320,6 +320,10 @@ def resolve_dependency(
         candidates = stem_map.get(last_segment)
         if candidates and len(dep_segments) > 1:
             candidates = [c for c in candidates if _dotted_path_matches(dep_segments, c)] or None
+    if candidates and source_name and Path(source_name).suffix in _PYTHON_SOURCE_EXTENSIONS:
+        # A Python import never names a file in another language --
+        # `tests.utils.user` landed on frontend/tests/utils/user.ts.
+        candidates = [c for c in candidates if Path(c).suffix in _PYTHON_SOURCE_EXTENSIONS]
     if not candidates:
         return None
     source_ext = Path(source_name).suffix if source_name else None
