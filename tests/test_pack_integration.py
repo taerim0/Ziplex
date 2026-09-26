@@ -1897,3 +1897,27 @@ def test_stop_and_save_does_not_restamp_a_stale_language_ai_guide(tmp_path, monk
     saved = json.loads(checkpoint._checkpoint_path(str(project)).read_text(encoding="utf-8"))
     assert saved["project"]["language"] == "en"
     assert saved["project"]["prompt"] == ""
+
+
+def test_rules_prompt_uses_relative_paths_and_caps_signatures_per_file(tmp_path, monkeypatch):
+    # A GUI pack's collected paths are absolute; analyze_rules() used to get
+    # them verbatim (the local username and folder names went to a
+    # third-party API), with every signature of every file uncapped.
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    captured = []
+
+    class _Capturing(llm.MockProvider):
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
+            captured.append(prompt)
+            return super().generate(prompt, retry)
+
+    monkeypatch.setattr(llm, "_provider", _Capturing())
+    project = tmp_path / "secret_client_folder"
+    _write(project / "big.py", "".join(f"def f{i}(x):\n    return x\n\n" for i in range(40)))
+
+    packager.pack(str(project), auto=True, interactive=False)
+
+    rules_prompt = next(p for p in captured if '"rules"' in p)
+    assert "secret_client_folder" not in rules_prompt
+    assert "'big.py'" in rules_prompt
+    assert "(+20 more)" in rules_prompt and "f39(" not in rules_prompt

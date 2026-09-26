@@ -160,6 +160,9 @@ MAX_ARCHITECTURE_FILES = 80
 # failure, so it checkpoints and exits deterministically on any large
 # enough project.
 MAX_RULES_FILES = 80
+# Per-file cap on signatures sent to analyze_rules(): coding rules are a
+# project-wide pattern, visible from a sample of each file's API.
+MAX_RULES_SIGNATURES_PER_FILE = 20
 
 
 def _build_architecture_summary(files_data: dict, tech_stack: list[dict]) -> list[str]:
@@ -481,9 +484,16 @@ def _extract_rules(
         # own files is enough to infer them from, so truncating here (kept
         # in dict insertion order, same as the architecture cap) doesn't
         # need a "N more not shown" note the way a human-facing list would.
-        scoped_signatures_map = signatures_map
-        if len(signatures_map) > MAX_RULES_FILES:
-            scoped_signatures_map = dict(list(signatures_map.items())[:MAX_RULES_FILES])
+        # Keyed by project-relative path (a GUI pack's keys are absolute:
+        # `C:\Users\<name>\<client>\...` went to a third-party API and
+        # cost tokens on every key) and capped per file -- a class with
+        # hundreds of methods sent all of them.
+        scoped_signatures_map = {}
+        for fp, sigs in list(signatures_map.items())[:MAX_RULES_FILES]:
+            shown = list(sigs[:MAX_RULES_SIGNATURES_PER_FILE])
+            if len(sigs) > MAX_RULES_SIGNATURES_PER_FILE:
+                shown.append(f"(+{len(sigs) - MAX_RULES_SIGNATURES_PER_FILE} more)")
+            scoped_signatures_map[_rel_key(fp, root)] = shown
         while not rules:
             rules_response = analyze_rules(scoped_signatures_map, lang=lang)
             try:

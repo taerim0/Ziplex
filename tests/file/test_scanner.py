@@ -377,3 +377,43 @@ def test_scan_file_still_flags_quoted_code_secrets_and_unquoted_shell_and_env_on
         path = tmp_path / name
         _write(path, content)
         assert scan_file(str(path)) is not None, name
+
+
+def test_scan_file_catches_secrets_the_old_keyword_list_and_first_match_missed(tmp_path):
+    cases = {
+        "annotated.py": 'API_KEY: str = "sk-live-9f8a7b6c5d4e3f2a1b0c"\n',
+        "annotated.ts": 'const apiKey: string = "9f8a7b6c5d4e3f2a1b0c";\n',
+        "jwt.js": 'const JWT_SECRET = "supersecretvalue123";\n',
+        "auth.ts": 'export const NEXTAUTH_SECRET = "d8f7a6s5d4f3g2h1";\n',
+        ".npmrc": "//registry.npmjs.org/:_authToken=npm_abcdefghijklmnopqrstuvwxyz0123456789\n",
+        "ai.py": 'client = Anthropic(key="sk-ant-api03-abcdefghijklmnopqrstuv")\n',
+        "hf.py": 'login("hf_abcdefghijklmnopqrstuvwxyzABCDEF")\n',
+        "openai.env": "KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789\n",
+    }
+    for name, content in cases.items():
+        path = tmp_path / name
+        _write(path, content)
+        assert scan_file(str(path)) is not None, name
+
+
+def test_scan_file_ignores_env_templates_permissions_and_interpolation(tmp_path):
+    cases = {
+        ".env.example": "OPENAI_API_KEY=sk-...\nDB_PASSWORD=changethis\nAPI_KEY=<your key>\nSECRET_KEY=your_secret_here\n",
+        "publish.yml": "permissions:\n  id-token: write\n",
+        "pnpm-lock.yaml": "  registry-auth-token: 5.1.1\n",
+        "compose.yml": "  DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/app\n",
+        "deploy.md": "export POSTGRES_PASSWORD=\"$(python -c 'import secrets')\"\n",
+        "notes.md": "set `database_url = str(value)` first\n",
+        "short.test.ts": "const token = 'foo'\n",
+        "doc.ts": " * const token = 'honoishot'\n",
+    }
+    for name, content in cases.items():
+        path = tmp_path / name
+        _write(path, content)
+        assert scan_file(str(path)) is None, name
+
+
+def test_scan_file_still_flags_a_real_shaped_key_in_an_env_template(tmp_path):
+    path = tmp_path / ".env.example"
+    _write(path, "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789AB\n")
+    assert scan_file(str(path)) is not None

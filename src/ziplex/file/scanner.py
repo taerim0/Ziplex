@@ -20,18 +20,38 @@ from .media import classify_media_file
 # unquoted still has to be supported at all (not quote-only) so a standard
 # .env-style assignment (API_KEY=sk-live-abc123, no quotes) keeps matching.
 _VALUE_FRAGMENT = r'("[^"]*"|\'[^\']*\'|[A-Za-z0-9_.\-/:+]+)'
+# Regex fragments for a secret-holding field name, matched case-insensitively
+# as a whole identifier. The *SECRET*/*TOKEN* families replaced a short
+# fixed list that missed JWT_SECRET, NEXTAUTH_SECRET, GITHUB_TOKEN, HF_TOKEN,
+# an .npmrc `_authToken` and the like.
 _SENSITIVE_KEYWORDS = [
-    "AWS_SECRET", "API_KEY", "APIKEY", "PASSWORD", "SECRET_KEY", "CLIENT_SECRET",
-    "PRIVATE_KEY", "ACCESS_TOKEN", "AUTH_TOKEN", "API_TOKEN", "DATABASE_URL",
+    r"[A-Za-z0-9_]*API_?KEY",
+    r"[A-Za-z0-9_]*PASSWORD", r"[A-Za-z0-9_]*PASSWD",
+    r"[A-Za-z0-9_]*SECRET(?:_?KEY)?",
+    r"[A-Za-z0-9_]*TOKEN",
+    r"[A-Za-z0-9_]*PRIVATE_KEY",
+    r"DATABASE_URL",
 ]
+# The field name must be a whole identifier: not glued onto a longer word
+# on the left (the fragments already absorb any `prefix_`), and not a
+# prefix of a longer name on the right (`secrets_dir`, `token_count`).
+# `-`/`.` too: `id-token: write` (a GitHub Actions permission) and
+# `registry-auth-token: 5.1.1` (a lockfile package) are not secret fields.
+_KEY_BOUNDARY_LEFT = r"(?<![/@A-Za-z0-9_.\-])"
+# An optional type annotation between the name and `=` (`API_KEY: str =
+# "sk-live-..."`, `const apiKey: string = "..."`): without it the only match
+# was the annotation itself, skipped as a non-literal, and the literal after
+# `=` was never looked at.
+_TYPE_ANNOTATION = r"(?:\s*:\s*[A-Za-z_][\w\[\]., |]*?(?=\s*=))?"
 # `KEY = value` and also `KEY: value` / `"KEY": value` (JSON, YAML, TOML
-# inline tables) -- "=" alone missed every JSON/YAML config file. Group 1
-# is the separator, group 2 the value; see _scan_with_pattern() for why
-# the separator matters.
+# inline tables) -- "=" alone missed every JSON/YAML config file. Named
+# groups key/sep/value; see _counts_as_a_secret() for why the separator
+# matters.
 SENSITIVE_PATTERNS = [
     # (?<![/@]): not part of a package name ('@inquirer/password': 5.2.2 in
     # a pnpm lockfile) -- a real field name is never preceded by / or @.
-    rf'(?<![/@]){keyword}["\']?\s*([=:])\s*{_VALUE_FRAGMENT}' for keyword in _SENSITIVE_KEYWORDS
+    rf'{_KEY_BOUNDARY_LEFT}(?P<key>{keyword})["\']?{_TYPE_ANNOTATION}\s*(?P<sep>[=:])\s*(?P<value>{_VALUE_FRAGMENT})'
+    for keyword in _SENSITIVE_KEYWORDS
 ]
 
 # Secrets recognizable by their own shape, whatever they're assigned to --
@@ -47,6 +67,10 @@ _SECRET_SHAPES = [
     ("Slack token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}")),
     ("Google API key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
     ("Stripe live key", re.compile(r"\b[sr]k_live_[0-9A-Za-z]{16,}")),
+    ("Anthropic API key", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}")),
+    ("OpenAI API key", re.compile(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{32,}")),
+    ("Hugging Face token", re.compile(r"\bhf_[A-Za-z0-9]{30,}")),
+    ("npm token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
 ]
 
 # Files whose every assignment is a literal value (no code, so no
@@ -59,6 +83,15 @@ _ENV_VALUE_FRAGMENT = r'("[^"]*"|\'[^\']*\'|\S+)'
 def _is_env_file(file_path: str) -> bool:
     name = file_path.replace("\\", "/").rsplit("/", 1)[-1].lower()
     return name == ".env" or name.startswith(".env.") or name.endswith(".env")
+
+
+def _is_env_template(file_path: str) -> bool:
+    """`.env.example`/`.sample`/`.template`/`.dist` -- the committed templates
+    DEFAULT_IGNORE deliberately keeps. Their values are placeholders by
+    purpose (`OPENAI_API_KEY=sk-...`, `DB_PASSWORD=changethis`), so field
+    names prove nothing there; only a real secret's own shape counts."""
+    name = file_path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name.endswith((".example", ".sample", ".template", ".dist")) and ".env" in name
 
 
 def _is_yaml_file(file_path: str) -> bool:
@@ -75,11 +108,10 @@ def _is_code_file(file_path: str) -> bool:
     return suffix in LANGUAGE_CONFIGS and suffix not in (".sh", ".bash")
 
 
-def _keyword_is_a_whole_quoted_key(line: str, start: int, keyword: str) -> bool:
-    """When a quote directly follows the keyword (`password"`), the keyword
-    must end a quoted key (`"db_password": ...`) -- not the tail of a quoted
+def _keyword_is_a_whole_quoted_key(line: str, start: int, end: int) -> bool:
+    """When a quote directly follows the key (`password"`), the key must
+    be a whole quoted key (`"db_password": ...`) -- not the tail of a quoted
     sentence (`"Hide password" : "Show password"`, a JSX ternary)."""
-    end = start + len(keyword)
     if end >= len(line) or line[end] not in ("'", '"'):
         return True
     i = start
@@ -101,6 +133,11 @@ _PLACEHOLDER_VALUES = {
 }
 
 _NON_WORD_RE = re.compile(r"[^a-z0-9]+")
+# Placeholder shapes beyond _PLACEHOLDER_VALUES' exact words: an elided
+# value (`sk-...`), a "change me" instruction, a `your_...` hint, all-x.
+_PLACEHOLDER_SHAPE_RE = re.compile(
+    r".*(?:\.\.\.|…).*|change[_-]?(?:me|this|it)\w*|your[_-].*|x{3,}|<[^<>]+>", re.IGNORECASE
+)
 # The whole value is one template/interpolation slot: Jinja/Handlebars
 # `{{ x }}`, shell/JS `${X}`, Python `%(x)s`, `<x>` -- e.g. a react-email
 # template's `password = "{{ password }}"` default prop.
@@ -149,11 +186,14 @@ def _looks_like_a_real_secret(raw_value: str, keyword: str, literal_context: boo
         return False  # empty, or a bare run of "..."/"…"
     if value.lower() in _PLACEHOLDER_VALUES:
         return False
-    if _TEMPLATE_PLACEHOLDER_RE.fullmatch(value):
+    if _TEMPLATE_PLACEHOLDER_RE.fullmatch(value) or _PLACEHOLDER_SHAPE_RE.fullmatch(value):
+        return False
+    if value.startswith(("${", "$(")):
+        # Filled in at runtime: `"$(python -c '...token_urlsafe()')"`.
         return False  # `"{{ password }}"`, `"${PASSWORD}"`: filled in later, not a literal
-    if len(value) <= 2:
+    if len(value) <= 4:
         # Too short to plausibly be a real credential, quoted or not -- a
-        # 1-2 character placeholder like "x", common in tests unrelated to
+        # 1-4 character placeholder like "x"/"foo"/"abc", common in tests unrelated to
         # secret-scanning itself (e.g. GeminiProvider(api_key="x") in a
         # model-resolution test, or GEMINI_API_KEY=x in a doctor.py fixture).
         return False
@@ -267,14 +307,21 @@ def _scan_with_pattern(file_path: str) -> dict | None:
     if content is None:
         return None
 
-    env_file = _is_env_file(file_path)
+    env_template = _is_env_template(file_path)
+    env_file = _is_env_file(file_path) and not env_template
     yaml_file = _is_yaml_file(file_path)
     code_file = _is_code_file(file_path)
-    patterns = SENSITIVE_PATTERNS
+    # Prose: an unquoted `database_url = str(value)` in a Markdown code span
+    # is quoted code, not configuration.
+    prose_file = file_path.lower().endswith((".md", ".mdx", ".rst"))
+    patterns = [] if env_template else SENSITIVE_PATTERNS
     if env_file:
         # Every value is a literal here, so take the whole unquoted token
         # (the conservative charset would cut PASSWORD=Pa$$w0rd! short).
-        patterns = [rf'{keyword}["\']?\s*([=:])\s*{_ENV_VALUE_FRAGMENT}' for keyword in _SENSITIVE_KEYWORDS]
+        patterns = [
+            rf'{_KEY_BOUNDARY_LEFT}(?P<key>{keyword})["\']?{_TYPE_ANNOTATION}\s*(?P<sep>[=:])\s*(?P<value>{_ENV_VALUE_FRAGMENT})'
+            for keyword in _SENSITIVE_KEYWORDS
+        ]
 
     # Line-outer, pattern-inner -- the first offending *line* in top-to-
     # bottom file order wins, regardless of which pattern happens to sit
@@ -286,33 +333,53 @@ def _scan_with_pattern(file_path: str) -> dict | None:
             if shape.search(line):
                 reason = pick(f"Looks like a {label}", f"{label} 형식으로 보임")
                 return {"reason": reason, "line": lineno, "matched_text": line}
-        for keyword, pattern in zip(_SENSITIVE_KEYWORDS, patterns):
-            match = re.search(pattern, line, re.IGNORECASE)
-            if not match:
-                continue
-            separator, value = match.group(1), match.group(2)
-            quoted = value[:1] in ("'", '"')
-            if code_file and not quoted:
-                # In source code an unquoted value is an expression --
-                # `auth_token = response["access_token"]`, `database_url =
-                # str(value)`, `const recoverPassword = async (...)` (all
-                # found packing fastapi/full-stack-fastapi-template).
-                continue
-            if not _keyword_is_a_whole_quoted_key(line, match.start(), keyword):
-                continue
-            if separator == ":" and not quoted and not (yaml_file or env_file):
-                # An unquoted value after ":" outside YAML/.env is a type
-                # annotation (`password: str`), a dict entry referencing a
-                # variable (`{"api_key": api_key}`), or prose -- not a literal.
-                continue
-            if separator == ":" and not (yaml_file or env_file) and line.lstrip().startswith(("*", "//", "#", "<!--")):
-                # A `key: 'value'` inside a code comment is a documentation
-                # example (a JSDoc usage block), not configuration.
-                continue
-            if _looks_like_a_real_secret(value, keyword, literal_context=env_file):
-                reason = pick(f"Pattern match: {pattern}", f"패턴 일치: {pattern}")
-                return {"reason": reason, "line": lineno, "matched_text": line}
+        for pattern in patterns:
+            # Every match on the line, not just the first: in
+            # `API_KEY: str = "sk-live-..."` the first hit is the type
+            # annotation (skipped below), and the literal after `=` was
+            # never looked at.
+            for match in re.finditer(pattern, line, re.IGNORECASE):
+                if _counts_as_a_secret(match, line, code_file, yaml_file, env_file, prose_file):
+                    # The matched field name, not the raw regex -- a human
+                    # reviewing "why was this flagged" reads this.
+                    key = match.group("key")
+                    reason = pick(
+                        f"Pattern match: {key} is assigned a literal value",
+                        f"패턴 일치: {key}에 리터럴 값이 할당됨",
+                    )
+                    return {"reason": reason, "line": lineno, "matched_text": line}
     return None
+
+
+def _counts_as_a_secret(
+    match: re.Match, line: str, code_file: bool, yaml_file: bool, env_file: bool, prose_file: bool = False
+) -> bool:
+    key, separator, value = match.group("key"), match.group("sep"), match.group("value")
+    quoted = value[:1] in ("'", '"')
+    if line[match.end("value"):].startswith(("${", "$(")):
+        # The value continues into an interpolation
+        # (`postgresql://postgres:${POSTGRES_PASSWORD}@db/app`) -- a
+        # template filled in at runtime, not a literal credential.
+        return False
+    if (code_file or prose_file) and not quoted:
+        # In source code an unquoted value is an expression --
+        # `auth_token = response["access_token"]`, `database_url =
+        # str(value)`, `const recoverPassword = async (...)` (all
+        # found packing fastapi/full-stack-fastapi-template).
+        return False
+    if not _keyword_is_a_whole_quoted_key(line, match.start("key"), match.end("key")):
+        return False
+    if separator == ":" and not quoted and not (yaml_file or env_file):
+        # An unquoted value after ":" outside YAML/.env is a type
+        # annotation (`password: str`), a dict entry referencing a
+        # variable (`{"api_key": api_key}`), or prose -- not a literal.
+        return False
+    if not (yaml_file or env_file) and line.lstrip().startswith(("*", "//", "#", "<!--")):
+        # A `key: 'value'` / `const token = '...'` inside a code comment is
+        # a documentation example (a JSDoc usage block), not configuration.
+        # A real-format key there is still caught by _SECRET_SHAPES.
+        return False
+    return _looks_like_a_real_secret(value, key, literal_context=env_file)
 
 
 def scan_file(file_path: str, root: str | None = None) -> dict | None:
