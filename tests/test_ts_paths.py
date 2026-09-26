@@ -97,3 +97,55 @@ def test_import_context_applies_ts_aliases_through_the_shared_entry_point(tmp_pa
     names = ["src/a.ts", "src/b.ts"]
     ctx = resolve_import_context(str(tmp_path), names)
     assert expand_file_dependencies(str(tmp_path / "src/a.ts"), "src/a.ts", ["@/b"], ctx) == ["src/b.ts"]
+
+
+def _t3_like(tmp_path):
+    _write(tmp_path, "pnpm-workspace.yaml", "packages:\n  - apps/*\n  - packages/*\n")
+    _write(tmp_path, "packages/db/package.json", json.dumps({"name": "@acme/db", "exports": {
+        ".": {"types": "./dist/index.d.ts", "default": "./src/index.ts"},
+        "./schema": {"types": "./dist/schema.d.ts", "default": "./src/schema.ts"},
+    }}))
+    _write(tmp_path, "packages/ui/package.json", json.dumps({"name": "@acme/ui", "exports": {
+        ".": "./src/index.ts", "./*": "./src/*.tsx"}}))
+    _write(tmp_path, "packages/legacy/package.json", json.dumps({"name": "legacy-lib", "main": "lib/main.js"}))
+    _write(tmp_path, "apps/web/package.json", json.dumps({"name": "@acme/web"}))
+    return [
+        "apps/web/src/page.tsx", "packages/db/src/index.ts", "packages/db/src/schema.ts",
+        "packages/ui/src/index.ts", "packages/ui/src/button.tsx", "packages/legacy/lib/main.js",
+        "packages/legacy/lib/extra.js",
+    ]
+
+
+def test_workspace_packages_resolve_through_conditional_subpath_and_wildcard_exports(tmp_path):
+    index = resolve_ts_context(str(tmp_path), _t3_like(tmp_path))
+    deps = index.rewrite("apps/web/src/page.tsx", [
+        "@acme/db", "@acme/db/schema", "@acme/ui", "@acme/ui/button", "@acme/db/missing", "react",
+    ])
+    # `types` points at an uncommitted dist/ -- the `default` source file wins
+    assert deps == [
+        "packages/db/src/index.ts", "packages/db/src/schema.ts", "packages/ui/src/index.ts",
+        "packages/ui/src/button.tsx", "@acme/db/missing", "react",
+    ]
+
+
+def test_workspace_package_without_exports_uses_main_and_plain_subpaths(tmp_path):
+    index = resolve_ts_context(str(tmp_path), _t3_like(tmp_path))
+    assert index.rewrite("apps/web/src/page.tsx", ["legacy-lib", "legacy-lib/lib/extra"]) == [
+        "packages/legacy/lib/main.js", "packages/legacy/lib/extra.js",
+    ]
+
+
+def test_npm_workspaces_field_and_a_root_dot_pattern_are_both_understood(tmp_path):
+    _write(tmp_path, "package.json", json.dumps({"name": "root-pkg", "exports": "./src/index.ts",
+                                                "workspaces": {"packages": [".", "libs/*", "!libs/skip", "../outside"]}}))
+    _write(tmp_path, "libs/core/package.json", json.dumps({"name": "core", "exports": "./index.ts"}))
+    names = ["src/index.ts", "libs/core/index.ts", "examples/demo.ts"]
+    index = resolve_ts_context(str(tmp_path), names)
+    assert index.rewrite("examples/demo.ts", ["root-pkg", "core"]) == ["src/index.ts", "libs/core/index.ts"]
+
+
+def test_an_unparseable_workspace_file_never_fails_a_pack(tmp_path):
+    _write(tmp_path, "pnpm-workspace.yaml", "packages: [unclosed\n")
+    _write(tmp_path, "package.json", "{ broken")
+    index = resolve_ts_context(str(tmp_path), ["a.ts"])
+    assert index.rewrite("a.ts", ["react"]) == ["react"]

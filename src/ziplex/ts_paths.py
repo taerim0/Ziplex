@@ -1,6 +1,7 @@
 """Resolves TS/JS path aliases -- tsconfig.json/jsconfig.json
-`compilerOptions.paths` (`"@/*": ["src/*"]`) and `baseUrl` -- to the
-concrete collected files they name.
+`compilerOptions.paths` (`"@/*": ["src/*"]`) and `baseUrl` -- and
+monorepo workspace package imports (`@acme/ui/button`, via each
+package.json's `exports`) to the concrete collected files they name.
 
 Without this, `import { x } from '@/utils/x'` reached resolve_dependency()
 as a bare specifier: not "./"-relative, so it went to the dotted stem
@@ -17,6 +18,8 @@ the nearest ancestor tsconfig.json (else jsconfig.json) applies to a file
 -- tsc's own `include`/`files`/project-references matching isn't modeled --
 and a package-name `extends` (`"@tsconfig/node20"`, which lives in
 node_modules) is skipped; only relative `extends` chains are followed.
+Workspaces come from the root pnpm-workspace.yaml or package.json
+`workspaces` only (no nested workspace roots, no Yarn PnP).
 """
 
 import json
@@ -163,15 +166,125 @@ def resolve_alias(dep: str, options: dict, all_names: set) -> str | None:
     return None
 
 
+def _workspace_globs(root_path: str) -> list[str]:
+    """Workspace package globs from pnpm-workspace.yaml, else the root
+    package.json's `workspaces` (npm/yarn/bun: a list, or {"packages": [...]}).
+    Root-level only, like go.mod in go_packages.py."""
+    text = read_text(str(Path(root_path) / "pnpm-workspace.yaml"))
+    if text is not None:
+        from ruamel.yaml import YAML
+        from ruamel.yaml.error import YAMLError
+        try:
+            data = YAML(typ="safe").load(text)
+        except YAMLError:
+            data = None
+        packages = data.get("packages") if isinstance(data, dict) else None
+        if isinstance(packages, list):
+            return [p for p in packages if isinstance(p, str)]
+    data = _load_json(root_path, "package.json") or {}
+    workspaces = data.get("workspaces")
+    if isinstance(workspaces, dict):
+        workspaces = workspaces.get("packages")
+    return [p for p in workspaces if isinstance(p, str)] if isinstance(workspaces, list) else []
+
+
+def build_workspace_packages(root_path: str) -> dict[str, tuple[str, dict]]:
+    """{package name: (project-relative dir, its package.json)} for every
+    workspace package. `!`-negated globs and node_modules are skipped."""
+    root = Path(root_path)
+    packages: dict[str, tuple[str, dict]] = {}
+    for pattern in _workspace_globs(root_path):
+        if pattern.startswith("!"):
+            continue
+        pattern = posixpath.normpath(pattern.replace("\\", "/"))
+        if pattern == ".":
+            folders = [root]  # hono's pnpm-workspace.yaml lists the root itself
+        elif pattern.startswith(("../", "/")) or pattern == "..":
+            continue  # outside the packed project
+        else:
+            try:
+                folders = sorted(root.glob(pattern))
+            except (ValueError, IndexError, OSError):
+                continue  # a glob pathlib can't parse -- never fail a pack over it
+        for folder in folders:
+            if "node_modules" in folder.parts or not folder.is_dir():
+                continue
+            rel = folder.relative_to(root).as_posix()
+            data = _load_json(root_path, f"{rel}/package.json")
+            if data and isinstance(data.get("name"), str):
+                packages.setdefault(data["name"], (rel, data))
+    return packages
+
+
+def _export_targets(value) -> list[str]:
+    """Every file path an `exports` entry can point at, in declaration
+    order -- a condition object (`{"types": ..., "default": ...}`) or a
+    fallback array flattens to its leaves. The caller keeps the first that
+    is a collected file, so a `types` entry pointing at an uncommitted
+    dist/ .d.ts is skipped for the `default` source file behind it."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [t for v in value.values() for t in _export_targets(v)]
+    if isinstance(value, list):
+        return [t for v in value for t in _export_targets(v)]
+    return []
+
+
+def resolve_workspace_import(dep: str, packages: dict, all_names: set) -> str | None:
+    """`@acme/ui` / `@acme/ui/button` -> the workspace file it names, via
+    the package's `exports` (subpath keys, one `*` wildcard allowed), else
+    `main`/`module`/`index` for the root and a plain subpath otherwise."""
+    for name in sorted(packages, key=len, reverse=True):
+        if dep != name and not dep.startswith(name + "/"):
+            continue
+        folder, manifest = packages[name]
+        subpath = "." + dep[len(name):]
+        exports = manifest.get("exports")
+        if exports is None:
+            if subpath == ".":
+                entries = [manifest.get(k) for k in ("module", "main", "types") if isinstance(manifest.get(k), str)]
+                return next(
+                    (hit for e in entries + ["index"] if (hit := resolve_module_path(posixpath.join(folder, e), all_names))),
+                    None,
+                )
+            return resolve_module_path(posixpath.join(folder, subpath), all_names)
+        if not isinstance(exports, dict) or not any(k.startswith(".") for k in exports):
+            exports = {".": exports}  # bare string / array / condition object = root entry only
+        targets = []
+        if subpath in exports:
+            targets = _export_targets(exports[subpath])
+        else:
+            for key, value in exports.items():
+                capture = _match_pattern(key, subpath) if "*" in key else None
+                if capture is not None:
+                    targets = [t.replace("*", capture) for t in _export_targets(value)]
+                    break
+        for target in targets:
+            hit = resolve_module_path(posixpath.join(folder, target), all_names)
+            if hit:
+                return hit
+        return None
+    return None
+
+
 class TsPathIndex:
-    """Per-pack lookup: which config governs a file, and each config's
-    effective options -- both computed lazily, once."""
+    """Per-pack lookup: which config governs a file, each config's
+    effective options, and the workspace package map -- all computed
+    lazily, once."""
 
     def __init__(self, root_path: str, all_names: list[str]):
         self.root_path = root_path
         self.all_names = set(all_names)
         self._config_for_dir: dict[str, str | None] = {}
         self._options: dict[str, dict] = {}
+        self._packages: dict | None = None
+
+    @property
+    def packages(self) -> dict:
+        if self._packages is None:
+            self._packages = build_workspace_packages(self.root_path)
+        return self._packages
 
     def _config_in(self, folder: str) -> str | None:
         if folder not in self._config_for_dir:
@@ -202,14 +315,20 @@ class TsPathIndex:
         if not name.endswith(TS_SOURCE_EXTENSIONS):
             return deps
         options = self.options_for(name)
-        if not options.get("paths") and options.get("base_url") is None:
+        has_alias = bool(options.get("paths")) or options.get("base_url") is not None
+        if not has_alias and not self.packages:
             return deps
         rewritten = []
         for dep in deps:
             if dep.startswith((".", "/")) or dep in self.all_names:
                 rewritten.append(dep)
                 continue
-            rewritten.append(resolve_alias(dep, options, self.all_names) or dep)
+            # tsc consults paths/baseUrl before node_modules, where a
+            # workspace package lives (symlinked) -- same order here.
+            resolved = resolve_alias(dep, options, self.all_names) if has_alias else None
+            if resolved is None and self.packages:
+                resolved = resolve_workspace_import(dep, self.packages, self.all_names)
+            rewritten.append(resolved or dep)
         return rewritten
 
 
