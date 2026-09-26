@@ -40,7 +40,30 @@ from mcp.server import MCPServer
 from . import query_service
 from . import __version__
 
-mcp = MCPServer("ziplex")
+# Sent to the client once at connect time. EXPERIMENTS #10 found an agent
+# offered the graph as an optional resource ignored it and hand-rolled a
+# regex import scanner instead -- so tell it up front which questions the
+# graph already answers, instead of leaving that to tool-description luck.
+INSTRUCTIONS = """\
+Ziplex serves an already-packed snapshot of one project: per-file summaries, \
+a resolved dependency graph, and compressed source.
+
+For structural questions -- who imports X, what breaks if X changes, what X \
+depends on, most-depended-on files, cycles, layering between folders -- \
+answer from get_dependents / get_blast_radius / get_relationships first. \
+Import resolution is already done (relative paths, index files, package \
+imports); don't rebuild it by grepping import statements or writing a \
+scanner script.
+
+To orient in an unfamiliar project, start with get_overview, then \
+get_folders / list_files; read get_detail (bodies elided) or raw files only \
+for the few files that turn out to matter.
+
+The pack is a snapshot: a "stale" field on get_overview / list_files, or \
+check_freshness, tells you which files changed on disk since packing -- \
+verify those against the real source before trusting their entries."""
+
+mcp = MCPServer("ziplex", instructions=INSTRUCTIONS)
 
 # Set once by main() from --aif/--project, read fresh by every wrapper
 # below on every call -- never baked in at import time, so main() setting

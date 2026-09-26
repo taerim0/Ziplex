@@ -58,6 +58,8 @@ def test_skill_md_has_valid_frontmatter_and_mentions_the_project():
     assert "references/overview.md" in skill_md
     assert "references/files.md" in skill_md
     assert "references/relationships.md" in skill_md
+    # EXPERIMENTS #10: an agent not told to use the graph rebuilt it by script
+    assert "Structural questions: use the graph first" in skill_md
     assert "references/detail.json" in skill_md
 
 
@@ -208,9 +210,30 @@ def test_relationships_md_annotates_a_text_reference_only_edge():
 
     app_section, utils_section = rel_md.split("## `src/app.py`")[1].split("## `src/utils.py`")
     # app.py's real import of utils.py must not be annotated as a text ref
-    assert "text reference" not in app_section
-    # utils.py's edge back to app.py exists only as a text reference
-    assert "`src/app.py` (text reference, not an import)" in utils_section
+    assert "- depends on: `src/utils.py`" in app_section.splitlines()
+    # utils.py's edge back to app.py exists only as a text reference --
+    # annotated on both ends: utils' outgoing edge and app's "used by" line
+    assert "- depends on: `src/app.py` (text reference, not an import)" in utils_section
+    assert "- used by: `src/utils.py` (text reference, not an import)" in app_section
+    assert "- used by: `src/app.py`" in utils_section.splitlines()
+
+
+def test_relationships_md_lists_direct_dependents_as_used_by():
+    rel_md = generate_skill_files(_sample_aif(), {})["references/relationships.md"]
+    app_section, utils_section = rel_md.split("## `src/app.py`")[1].split("## `src/utils.py`")
+
+    assert "- used by: `src/app.py`" in utils_section
+    assert "used by" not in app_section  # nothing imports app.py
+
+
+def test_relationships_md_gives_a_section_to_a_target_with_no_entry_of_its_own():
+    aif = _sample_aif()
+    aif["relationships"]["src/app.py"]["internal"].append("src/orphan.py")
+    rel_md = generate_skill_files(aif, {})["references/relationships.md"]
+
+    orphan_section = rel_md.split("## `src/orphan.py`")[1]
+    assert "(no dependencies)" in orphan_section
+    assert "- used by: `src/app.py`" in orphan_section
 
 
 def test_detail_json_round_trips():

@@ -96,8 +96,12 @@ This is a Ziplex-packed **snapshot** ({file_count} files, {rule_count} coding ru
 
 1. **`references/overview.md`** — the AI guide above, coding rules, a per-folder map (each folder's role, file count, and confidence), an overall confidence rollup, and token stats (how much smaller this reference is than the raw source).
 2. **`references/files.md`** — every file's one-line summary and a confidence score (0.0-1.0). A low score means the summary's wording didn't overlap much with the file's real signatures -- worth a closer look before trusting it, not a guarantee it's wrong.
-3. **`references/relationships.md`** — the dependency graph: what each file imports, and (derivable from it) what would be affected by changing one.
+3. **`references/relationships.md`** — the dependency graph, already resolved: per file, what it depends on and which files use it.
 4. **`references/detail.json`** — full compressed source per file (structure and signatures kept, function bodies elided), keyed by the same relative path used everywhere else here. Read a file's entry only once its summary/confidence/relationships say it's worth a closer look -- that's the entire point of Ziplex's compression; reading every entry defeats it.
+
+## Structural questions: use the graph first
+
+Who imports X, what breaks if X changes, what X depends on, most-depended-on files, cycles, layering between folders -- answer these from `references/relationships.md` (each file's "used by" lines are its direct dependents; follow them repeatedly for the full blast radius). Import resolution is already done there (relative paths, index files, package imports); don't rebuild it by grepping import statements or writing a scanner script. Only confirm against raw source for files the project may have changed since this snapshot.
 """
 
 
@@ -211,9 +215,24 @@ def _files_md(aif: dict) -> str:
 
 def _relationships_md(aif: dict) -> str:
     relationships = aif.get("relationships", {})
-    lines = ["# Dependency graph", "", "Each file's own outgoing edges -- what it depends on."]
+    lines = [
+        "# Dependency graph", "",
+        "Per file: what it depends on, and which files use it (its direct dependents).",
+    ]
+    text_note = " (text reference, not an import)"
+
+    # Reverse index, precomputed here: a skill has no query tool, and
+    # EXPERIMENTS #10 saw agents invert the graph by hand-written script
+    # when only outgoing edges were listed. (dependent, is_text_ref) pairs.
+    used_by: dict[str, list[tuple[str, bool]]] = {}
     for name in sorted(relationships):
         deps = relationships[name]
+        text_refs = set(deps.get("internal_text_refs", []))
+        for d in deps.get("internal", []):
+            used_by.setdefault(d, []).append((name, d in text_refs))
+
+    for name in sorted(set(relationships) | set(used_by)):
+        deps = relationships.get(name, {})
         internal = deps.get("internal", [])
         external = deps.get("external", [])
         # A target both imported and text-mentioned counts as the former
@@ -222,14 +241,12 @@ def _relationships_md(aif: dict) -> str:
         text_refs = set(deps.get("internal_text_refs", []))
         lines += ["", f"## `{name}`"]
         if internal:
-            lines += [
-                f"- depends on: `{d}`" + (" (text reference, not an import)" if d in text_refs else "")
-                for d in internal
-            ]
+            lines += [f"- depends on: `{d}`" + (text_note if d in text_refs else "") for d in internal]
         if external:
             lines += [f"- depends on (external): `{d}`" for d in external]
         if not internal and not external:
             lines.append("- (no dependencies)")
+        lines += [f"- used by: `{u}`" + (text_note if is_text else "") for u, is_text in used_by.get(name, [])]
     return "\n".join(lines) + "\n"
 
 

@@ -40,6 +40,13 @@ def test_all_tools_are_registered():
     }
 
 
+def test_server_instructions_point_structural_questions_at_the_graph_tools():
+    # EXPERIMENTS #10: an agent not told to use the graph rebuilt it by script
+    instructions = mcp_server.mcp.instructions
+    for tool in ("get_dependents", "get_blast_radius", "get_relationships", "get_overview"):
+        assert tool in instructions
+
+
 def test_tool_descriptions_come_from_docstrings():
     tools = {t.name: t for t in asyncio.run(mcp_server.mcp.list_tools())}
     assert "always-affordable" in tools["get_overview"].description
