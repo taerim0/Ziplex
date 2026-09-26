@@ -346,3 +346,34 @@ def test_scan_file_still_flags_a_pem_key_embedded_in_a_string(tmp_path):
     # raw string: an escaped "\n" inside a JS string literal, then real base64
     _write(path, r'const k = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA1234abcd";' + "\n")
     assert scan_file(str(path)) is not None
+
+
+def test_scan_file_ignores_expressions_and_ui_text_found_in_a_fullstack_repo(tmp_path):
+    # False positives on fastapi/full-stack-fastapi-template: in source code
+    # an unquoted value is an expression, and a keyword ending a quoted
+    # sentence is not a key.
+    cases = {
+        "user.py": '    auth_token = response["access_token"]\n',
+        "config.py": "        database_url = str(value)\n",
+        "recover-password.tsx": "  const recoverPassword = async (data: FormData) => {\n",
+        "password-input.tsx": '    aria-label={showPassword ? "Hide password" : "Show password"}\n',
+        "new_account.tsx": '  password = "{{ password }}",\n',
+        "compose.yml": "      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD?Variable not set}\n",
+    }
+    for name, content in cases.items():
+        path = tmp_path / name
+        _write(path, content)
+        assert scan_file(str(path)) is None, name
+
+
+def test_scan_file_still_flags_quoted_code_secrets_and_unquoted_shell_and_env_ones(tmp_path):
+    cases = {
+        "settings.py": 'SECRET_KEY = "k8s-9f2a7c1e5b3d"\n',
+        "client.ts": 'const cfg = { "db_password": "hunter2hunter2" }\n',
+        "deploy.sh": "export API_KEY=sk-live-abc123def456\n",
+        ".env": "PASSWORD=MyPassword!2024\n",
+    }
+    for name, content in cases.items():
+        path = tmp_path / name
+        _write(path, content)
+        assert scan_file(str(path)) is not None, name

@@ -64,6 +64,29 @@ def _is_env_file(file_path: str) -> bool:
 def _is_yaml_file(file_path: str) -> bool:
     return file_path.lower().endswith((".yaml", ".yml"))
 
+
+def _is_code_file(file_path: str) -> bool:
+    """A source file where a hardcoded secret is always a quoted string
+    literal -- `API_KEY = abc123` is a variable reference in Python/JS/Go/...,
+    never a literal. Shell is the exception (`PASSWORD=hunter2` *is* one)."""
+    from ..extract.code.languages import LANGUAGE_CONFIGS
+
+    suffix = "." + file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
+    return suffix in LANGUAGE_CONFIGS and suffix not in (".sh", ".bash")
+
+
+def _keyword_is_a_whole_quoted_key(line: str, start: int, keyword: str) -> bool:
+    """When a quote directly follows the keyword (`password"`), the keyword
+    must end a quoted key (`"db_password": ...`) -- not the tail of a quoted
+    sentence (`"Hide password" : "Show password"`, a JSX ternary)."""
+    end = start + len(keyword)
+    if end >= len(line) or line[end] not in ("'", '"'):
+        return True
+    i = start
+    while i > 0 and (line[i - 1].isalnum() or line[i - 1] in "_-"):
+        i -= 1
+    return i > 0 and line[i - 1] == line[end]
+
 # Values these patterns must not flag on their own, case-insensitively --
 # a real placeholder/reference rather than an actual secret, not a
 # judgment call about entropy or format. Verified directly dogfooding
@@ -78,6 +101,10 @@ _PLACEHOLDER_VALUES = {
 }
 
 _NON_WORD_RE = re.compile(r"[^a-z0-9]+")
+# The whole value is one template/interpolation slot: Jinja/Handlebars
+# `{{ x }}`, shell/JS `${X}`, Python `%(x)s`, `<x>` -- e.g. a react-email
+# template's `password = "{{ password }}"` default prop.
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{\{[^{}]*\}\}|\$\{[^{}]*\}|%\([\w.]+\)[sd]|<[\w.-]+>")
 
 
 def _normalize_for_self_reference(value: str) -> str:
@@ -122,6 +149,8 @@ def _looks_like_a_real_secret(raw_value: str, keyword: str, literal_context: boo
         return False  # empty, or a bare run of "..."/"…"
     if value.lower() in _PLACEHOLDER_VALUES:
         return False
+    if _TEMPLATE_PLACEHOLDER_RE.fullmatch(value):
+        return False  # `"{{ password }}"`, `"${PASSWORD}"`: filled in later, not a literal
     if len(value) <= 2:
         # Too short to plausibly be a real credential, quoted or not -- a
         # 1-2 character placeholder like "x", common in tests unrelated to
@@ -240,6 +269,7 @@ def _scan_with_pattern(file_path: str) -> dict | None:
 
     env_file = _is_env_file(file_path)
     yaml_file = _is_yaml_file(file_path)
+    code_file = _is_code_file(file_path)
     patterns = SENSITIVE_PATTERNS
     if env_file:
         # Every value is a literal here, so take the whole unquoted token
@@ -261,7 +291,16 @@ def _scan_with_pattern(file_path: str) -> dict | None:
             if not match:
                 continue
             separator, value = match.group(1), match.group(2)
-            if separator == ":" and value[:1] not in ("'", '"') and not (yaml_file or env_file):
+            quoted = value[:1] in ("'", '"')
+            if code_file and not quoted:
+                # In source code an unquoted value is an expression --
+                # `auth_token = response["access_token"]`, `database_url =
+                # str(value)`, `const recoverPassword = async (...)` (all
+                # found packing fastapi/full-stack-fastapi-template).
+                continue
+            if not _keyword_is_a_whole_quoted_key(line, match.start(), keyword):
+                continue
+            if separator == ":" and not quoted and not (yaml_file or env_file):
                 # An unquoted value after ":" outside YAML/.env is a type
                 # annotation (`password: str`), a dict entry referencing a
                 # variable (`{"api_key": api_key}`), or prose -- not a literal.
