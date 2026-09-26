@@ -31,9 +31,9 @@ directly testable without touching a filesystem.
 """
 from pathlib import Path
 
-from .aif_io import attach_weak_edges
-from .query_service import _detail_path
-from .confidence import project_confidence_summary
+from .aif_io import attach_weak_edges, detail_path_for
+from .confidence import project_confidence_summary, REVIEW_THRESHOLD
+from .skill_export import graph_summary_md
 
 # Common extension -> Markdown fenced-code-block language tag, for a nicer
 # (but non-essential) syntax-highlighted read. Deliberately not exhaustive --
@@ -105,7 +105,7 @@ def _files_md(aif: dict, detail: dict) -> str:
         data = files[name]
         summary = (data.get("summary") or "").strip()
         confidence = data.get("confidence", 1.0)
-        flag = " ⚠️ low confidence -- verify against the code below" if confidence < 0.34 else ""
+        flag = " ⚠️ low confidence -- verify against the code below" if confidence < REVIEW_THRESHOLD else ""
         lines += [f"### `{name}` (confidence: {confidence:.2f}){flag}", "", summary or "(no summary)", ""]
 
         body = (detail.get(name) or {}).get("compressed")
@@ -136,7 +136,11 @@ def _relationships_md(aif: dict) -> str:
     there worth spending tokens on.
     """
     relationships = aif.get("relationships", {})
-    lines = ["## Dependency graph", "", "Only files with at least one real dependency are listed.", ""]
+    lines = [
+        "## Dependency graph", "",
+        *graph_summary_md(relationships, heading="### Graph summary"), "",
+        "Only files with at least one real dependency are listed.", "",
+    ]
     for name in sorted(relationships):
         deps = relationships[name]
         internal = deps.get("internal", [])
@@ -164,8 +168,8 @@ def generate_flat_markdown(aif: dict, detail: dict) -> str:
 
 def export_flat(aif_path: str, output_path: str | None = None) -> str:
     """I/O wrapper: reads aif_path (+ its sibling <name>.detail.json, via
-    query_service's own _detail_path() -- same shared convention
-    skill_export.py already reuses rather than re-deriving independently)
+    aif_io.detail_path_for() -- the one shared definition of that
+    convention)
     and writes the flat Markdown file. Returns the path written to.
 
     output_path defaults to aif_path's own stem with a .flat.md suffix,
@@ -176,7 +180,7 @@ def export_flat(aif_path: str, output_path: str | None = None) -> str:
 
     with open(aif_path, "r", encoding="utf-8") as f:
         aif = json.load(f)
-    detail_path = _detail_path(aif_path)
+    detail_path = detail_path_for(aif_path)
     with open(detail_path, "r", encoding="utf-8") as f:
         detail = json.load(f)
 

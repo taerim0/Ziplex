@@ -35,7 +35,7 @@ def test_all_tools_are_registered():
     tools = asyncio.run(mcp_server.mcp.list_tools())
     names = {t.name for t in tools}
     assert names == {
-        "get_overview", "list_files", "get_folders", "get_relationships", "get_dependents",
+        "get_overview", "list_files", "get_folders", "get_relationships", "get_graph_summary", "get_dependents",
         "get_blast_radius", "get_detail", "check_freshness", "search_project",
     }
 
@@ -178,10 +178,8 @@ def test_get_relationships_via_call_tool(tmp_path):
 
     assert result.is_error is False
     data = _json_result(result)
-    assert data == {
-        "a.py": {"internal": [], "external": [], "internal_text_refs": []},
-        "b.py": {"internal": ["a.py"], "external": [], "internal_text_refs": []},
-    }
+    # certain edges only by default; a file with no edges at all is omitted
+    assert data == {"b.py": {"internal": ["a.py"], "external": []}}
 
 
 def test_get_relationships_files_param_scopes_the_result_via_call_tool(tmp_path):
@@ -189,7 +187,8 @@ def test_get_relationships_files_param_scopes_the_result_via_call_tool(tmp_path)
     result = _call("get_relationships", {"aif_path": aif_path, "files": ["a.py"]})
 
     assert result.is_error is False
-    assert _json_result(result) == {"a.py": {"internal": [], "external": [], "internal_text_refs": []}}
+    # an explicitly requested file is kept even with no edges
+    assert _json_result(result) == {"a.py": {"internal": [], "external": []}}
 
 
 def test_list_files_confidence_below_param_via_call_tool(tmp_path):

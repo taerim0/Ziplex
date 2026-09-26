@@ -105,5 +105,8 @@ def run_diagnostics(project_path: str | None = None) -> dict:
         result["project_path"] = str(root)
         result["project_is_dir"] = root.is_dir()
         result["project_has_env_file"] = (root / ".env").is_file()
-        result["project_is_git_repo"] = (root / ".git").exists()
+        # Walk up: a package inside a monorepo is still in a git work tree
+        # (`ziplex doctor packages/api` used to say "not a git repo").
+        resolved = root.resolve()
+        result["project_is_git_repo"] = any((d / ".git").exists() for d in (resolved, *resolved.parents))
     return result

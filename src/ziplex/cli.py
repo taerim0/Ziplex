@@ -10,7 +10,7 @@ from .extract.code.compressor import compress_file
 from .file.collector import collect_files, print_tree as print_file_tree
 from .file.scanner import scan_files
 from .file.media import classify_media_file
-from .file.textutil import relative_key as _rel_key
+from .file.textutil import relative_key as _rel_key, normalize_path
 from .text_references import find_text_references_for_file, merge_text_references
 from .import_context import resolve_import_context, expand_file_dependencies
 from .tokenizer import analyze_tokens_with_compression, count_tokens_for_model
@@ -753,10 +753,13 @@ def _cmd_search(args) -> None:
 def _cmd_detail(args) -> None:
     detail = _load_json_or_exit(args.detail_path)
 
-    entry = detail.get(args.file)
+    # normalize_path(): a Windows `src\a.py` (or `./src/a.py`) names the
+    # same '/'-keyed entry -- same rule as query_service.get_detail().
+    file = normalize_path(args.file)
+    entry = detail.get(file)
     if entry is None:
-        print(f"⚠️  '{args.file}'는 {args.detail_path}에 없습니다")
-        return
+        print(f"⚠️  '{file}'는 {args.detail_path}에 없습니다")
+        sys.exit(1)
 
     print(read_detail_range(entry.get("compressed", ""), args.start, args.end))
 
@@ -976,11 +979,12 @@ def _cmd_summary(args) -> None:
     set_fn, container_key, label = (
         (set_folder_summary, "folders", "폴더") if args.folder else (set_file_summary, "files", "파일")
     )
-    if args.file not in aif.get(container_key, {}):
-        print(f"❌ {args.aif_path}에 {label} '{args.file}'이(가) 없습니다")
+    key = normalize_path(args.file)
+    if key not in aif.get(container_key, {}):
+        print(f"❌ {args.aif_path}에 {label} '{key}'이(가) 없습니다")
         sys.exit(1)
 
-    set_fn(aif, args.file, args.summary)
+    set_fn(aif, key, args.summary)
 
     write_aif(args.aif_path, aif)
 

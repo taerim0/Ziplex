@@ -703,15 +703,142 @@ def get_blast_radius(relationships: dict, file: str, *, include_text_refs: bool 
     first hop must stay excluded from the whole transitive walk, not just
     the direct-dependents step.
     """
+    # One reverse index up front, then a plain BFS: calling get_dependents()
+    # per visited node rescanned every entry each hop -- O(V*E) per query.
+    reverse = _reverse_index(relationships, include_text_refs)
     visited: set[str] = set()
     queue = [file]
     while queue:
         current = queue.pop()
-        for dependent in get_dependents(relationships, current, include_text_refs=include_text_refs):
+        for dependent in reverse.get(current, ()):
             if dependent not in visited:
                 visited.add(dependent)
                 queue.append(dependent)
     return sorted(visited)
+
+
+def certain_edges(entry: dict, include_text_refs: bool) -> list[str]:
+    """An entry's `internal` targets, minus prose-mention-only ones unless
+    include_text_refs."""
+    internal = entry.get("internal", [])
+    if include_text_refs:
+        return list(internal)
+    weak = set(entry.get("internal_text_refs", []))
+    return [t for t in internal if t not in weak]
+
+
+def _reverse_index(relationships: dict, include_text_refs: bool) -> dict[str, list[str]]:
+    reverse: dict[str, list[str]] = {}
+    for name, entry in relationships.items():
+        for target in certain_edges(entry, include_text_refs):
+            reverse.setdefault(target, []).append(name)
+    return reverse
+
+
+def _strongly_connected_components(nodes: list[str], out: dict[str, list[str]]) -> list[list[str]]:
+    """Tarjan's algorithm, iterative (a deep import chain must not hit
+    Python's recursion limit). Components of size > 1 only, plus self-loops."""
+    index: dict[str, int] = {}
+    low: dict[str, int] = {}
+    on_stack: set[str] = set()
+    stack: list[str] = []
+    result: list[list[str]] = []
+    counter = 0
+    for root in nodes:
+        if root in index:
+            continue
+        work = [(root, iter(out.get(root, ())))]
+        index[root] = low[root] = counter
+        counter += 1
+        stack.append(root)
+        on_stack.add(root)
+        while work:
+            node, children = work[-1]
+            advanced = False
+            for child in children:
+                if child not in index:
+                    index[child] = low[child] = counter
+                    counter += 1
+                    stack.append(child)
+                    on_stack.add(child)
+                    work.append((child, iter(out.get(child, ()))))
+                    advanced = True
+                    break
+                if child in on_stack:
+                    low[node] = min(low[node], index[child])
+            if advanced:
+                continue
+            work.pop()
+            if work:
+                parent = work[-1][0]
+                low[parent] = min(low[parent], low[node])
+            if low[node] == index[node]:
+                component = []
+                while True:
+                    member = stack.pop()
+                    on_stack.discard(member)
+                    component.append(member)
+                    if member == node:
+                        break
+                if len(component) > 1 or node in out.get(node, ()):
+                    result.append(sorted(component))
+    return sorted(result)
+
+
+def graph_summary(
+    relationships: dict,
+    *,
+    include_text_refs: bool = False,
+    top_n: int = 10,
+    scope=None,
+) -> dict:
+    """Whole-graph aggregates an agent otherwise re-derives by hand from the
+    full relationships dump (EXPERIMENTS #11-#14: every graph-side agent
+    wrote its own in-degree ranking, Tarjan SCC and orphan scan).
+
+    `scope` (a predicate on file names, or None for every file) limits
+    which files count -- e.g. code files only, so README/config files with
+    no imports don't flood `orphans`. Edges are counted only when both ends
+    are in scope."""
+    names = [n for n in relationships if scope is None or scope(n)]
+    in_scope = set(names)
+    out = {n: [t for t in certain_edges(relationships[n], include_text_refs) if t in in_scope and t != n] for n in names}
+    reverse: dict[str, list[str]] = {}
+    for name, targets in out.items():
+        for target in targets:
+            reverse.setdefault(target, []).append(name)
+    text_ref_edges = 0
+    if not include_text_refs:
+        text_ref_edges = sum(
+            1 for n in names for t in relationships[n].get("internal_text_refs", []) if t in in_scope
+        )
+
+    def ranked(counts: dict[str, int]) -> list[dict]:
+        top = sorted(((c, n) for n, c in counts.items() if c), key=lambda x: (-x[0], x[1]))[:top_n]
+        return [{"file": n, "count": c} for c, n in top]
+
+    folder_edges: dict[tuple[str, str], int] = {}
+    for name, targets in out.items():
+        for target in targets:
+            a, b = posixpath.dirname(name) or ".", posixpath.dirname(target) or "."
+            if a != b:
+                folder_edges[(a, b)] = folder_edges.get((a, b), 0) + 1
+    orphans = sorted(n for n in names if not out[n] and not reverse.get(n))
+    never_imported = sorted(n for n in names if not reverse.get(n))
+    return {
+        "file_count": len(names),
+        "edge_count": sum(len(t) for t in out.values()),
+        "text_ref_edges_excluded": text_ref_edges,
+        "most_depended_on": ranked({n: len(reverse.get(n, [])) for n in names}),
+        "most_dependencies": ranked({n: len(out[n]) for n in names}),
+        "cycles": _strongly_connected_components(names, out),
+        "never_imported_count": len(never_imported),
+        "orphans": orphans,
+        "folder_edges": [
+            {"from": a, "to": b, "count": c}
+            for (a, b), c in sorted(folder_edges.items(), key=lambda x: (-x[1], x[0]))[:top_n]
+        ],
+    }
 
 
 def print_tree(tree: dict):

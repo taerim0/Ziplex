@@ -48,9 +48,10 @@ INSTRUCTIONS = """\
 Ziplex serves an already-packed snapshot of one project: per-file summaries, \
 a resolved dependency graph, and compressed source.
 
-For structural questions -- who imports X, what breaks if X changes, what X \
-depends on, most-depended-on files, cycles, layering between folders -- \
-answer from get_dependents / get_blast_radius / get_relationships first. \
+For structural questions answer from the graph first: get_graph_summary for \
+whole-graph questions (most-depended-on files, cycles, unused files, layering \
+between folders), get_dependents / get_blast_radius for who imports X and what \
+breaks if X changes, get_relationships for what specific files depend on. \
 Import resolution is already done (relative paths, index files, package \
 imports); don't rebuild it by grepping import statements or writing a \
 scanner script.
@@ -145,12 +146,26 @@ get_folders.__doc__ = query_service.get_folders.__doc__
 mcp.tool()(get_folders)
 
 
-def get_relationships(*, aif_path: str | None = None, files: list[str] | None = None) -> dict:
-    return query_service.get_relationships(_resolve_aif(aif_path), files)
+def get_relationships(
+    *, aif_path: str | None = None, files: list[str] | None = None, include_text_refs: bool = False
+) -> dict:
+    return query_service.get_relationships(_resolve_aif(aif_path), files, include_text_refs=include_text_refs)
 
 
 get_relationships.__doc__ = query_service.get_relationships.__doc__
 mcp.tool()(get_relationships)
+
+
+def get_graph_summary(
+    *, aif_path: str | None = None, include_text_refs: bool = False, top_n: int = 10, code_only: bool = True
+) -> dict:
+    return query_service.get_graph_summary(
+        _resolve_aif(aif_path), include_text_refs=include_text_refs, top_n=top_n, code_only=code_only
+    )
+
+
+get_graph_summary.__doc__ = query_service.get_graph_summary.__doc__
+mcp.tool()(get_graph_summary)
 
 
 def get_dependents(*, aif_path: str | None = None, file: str, include_text_refs: bool = True) -> list[str]:

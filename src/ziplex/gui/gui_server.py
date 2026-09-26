@@ -458,7 +458,9 @@ def api_relationships():
     # absent entirely, which must stay None (query_service.get_relationships
     # treats files=[] as "return nothing", not "no filter").
     files = request.args.getlist("files") or None
-    return jsonify(query_service.get_relationships(aif_path, files))
+    # The relationship editor shows and edits prose-mention edges too, so it
+    # asks for the full shape (MCP's default is certain edges only).
+    return jsonify(query_service.get_relationships(aif_path, files, include_text_refs=True))
 
 
 @app.route("/api/relationships/link", methods=["POST"])

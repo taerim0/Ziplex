@@ -106,7 +106,7 @@ def test_query_service_sees_weak_edges_again_after_a_save(tmp_path):
 
     assert query_service.get_dependents(str(out), "a.py") == ["README.md", "b.py"]
     assert query_service.get_dependents(str(out), "a.py", include_text_refs=False) == ["b.py"]
-    assert query_service.get_relationships(str(out))["README.md"]["internal_text_refs"] == ["a.py"]
+    assert query_service.get_relationships(str(out), include_text_refs=True)["README.md"]["internal_text_refs"] == ["a.py"]
     # an isolated file is still a recognized file, not "not found"
     assert query_service.get_dependents(str(out), "c.py") == []
 
@@ -230,5 +230,5 @@ def test_save_relationships_edit_refuses_to_run_on_an_unreadable_detail_json(tmp
     assert out.read_text(encoding="utf-8") == before  # nothing written
 
     detail_path.write_text(good_detail, encoding="utf-8")
-    rels = query_service.get_relationships(str(out))
+    rels = query_service.get_relationships(str(out), include_text_refs=True)
     assert rels["README.md"]["internal_text_refs"] == ["a.py"]

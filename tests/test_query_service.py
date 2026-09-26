@@ -275,7 +275,7 @@ def test_get_relationships_scopes_to_the_given_files(tmp_path):
 
     result = query_service.get_relationships(aif_path, files=["src/b.py"])
 
-    assert result == {"src/b.py": {"internal": ["src/a.py"], "external": [], "internal_text_refs": []}}
+    assert result == {"src/b.py": {"internal": ["src/a.py"], "external": []}}
 
 
 def test_get_relationships_silently_skips_a_name_not_in_the_graph(tmp_path):
@@ -283,13 +283,13 @@ def test_get_relationships_silently_skips_a_name_not_in_the_graph(tmp_path):
 
     result = query_service.get_relationships(aif_path, files=["src/b.py", "nope.py"])
 
-    assert result == {"src/b.py": {"internal": ["src/a.py"], "external": [], "internal_text_refs": []}}
+    assert result == {"src/b.py": {"internal": ["src/a.py"], "external": []}}
 
 
 def test_get_relationships_default_is_the_whole_graph(tmp_path):
     aif_path = _write_mixed_confidence_aif(tmp_path)
 
-    result = query_service.get_relationships(aif_path)
+    result = query_service.get_relationships(aif_path, include_text_refs=True)
 
     assert set(result) == {"src/a.py", "src/b.py", "docs/readme.md", "top.py"}
 

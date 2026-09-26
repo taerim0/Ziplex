@@ -24,9 +24,10 @@ import json
 import re
 from pathlib import Path
 
-from .aif_io import attach_weak_edges
-from .query_service import _detail_path
+from .aif_io import attach_weak_edges, read_detail_or_none
 from .confidence import project_confidence_summary
+from .extract.code.languages import is_code_path
+from .file.relationship import graph_summary
 
 
 def _yaml_double_quoted(s: str) -> str:
@@ -101,7 +102,7 @@ This is a Ziplex-packed **snapshot** ({file_count} files, {rule_count} coding ru
 
 ## Structural questions: use the graph first
 
-Who imports X, what breaks if X changes, what X depends on, most-depended-on files, cycles, layering between folders -- answer these from `references/relationships.md` (each file's "used by" lines are its direct dependents; follow them repeatedly for the full blast radius). Import resolution is already done there (relative paths, index files, package imports); don't rebuild it by grepping import statements or writing a scanner script. Only confirm against raw source for files the project may have changed since this snapshot.
+Who imports X, what breaks if X changes, what X depends on, most-depended-on files, cycles, layering between folders -- answer these from `references/relationships.md`: its "Graph summary" section already lists the most-depended-on files, cycles, unconnected files and folder layering; each file's "used by" lines are its direct dependents (follow them repeatedly for the full blast radius). Import resolution is already done there (relative paths, index files, package imports); don't rebuild it by grepping import statements or writing a scanner script. Only confirm against raw source for files the project may have changed since this snapshot.
 """
 
 
@@ -213,10 +214,36 @@ def _files_md(aif: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def graph_summary_md(relationships: dict, top_n: int = 10, heading: str = "## Graph summary") -> list[str]:
+    """Markdown lines for the whole-graph aggregates query_service's
+    get_graph_summary() returns -- most-depended-on files, cycles, unused
+    source files, folder layering -- so a skill or flat export (no query
+    tool) answers those without the reader re-deriving them from every
+    per-file entry. Source files and certain edges only."""
+    s = graph_summary(relationships, include_text_refs=False, top_n=top_n, scope=is_code_path)
+    lines = [
+        heading, "",
+        f"Source files: {s['file_count']}, import edges: {s['edge_count']} "
+        f"(prose mentions excluded; {s['never_imported_count']} files are imported by no other file).",
+    ]
+    if s["most_depended_on"]:
+        lines += ["", "**Most depended on**: " + ", ".join(f"`{e['file']}` ({e['count']})" for e in s["most_depended_on"])]
+    if s["most_dependencies"]:
+        lines += ["", "**Most dependencies**: " + ", ".join(f"`{e['file']}` ({e['count']})" for e in s["most_dependencies"])]
+    lines += ["", "**Cycles**: " + ("; ".join(" <-> ".join(f"`{f}`" for f in c) for c in s["cycles"]) or "none")]
+    if s["orphans"]:
+        lines += ["", f"**Unconnected source files** ({len(s['orphans'])}): " + ", ".join(f"`{f}`" for f in s["orphans"])]
+    if s["folder_edges"]:
+        lines += ["", "**Folder -> folder imports**: " + ", ".join(f"`{e['from']}` -> `{e['to']}` ({e['count']})" for e in s["folder_edges"])]
+    return lines
+
+
 def _relationships_md(aif: dict) -> str:
     relationships = aif.get("relationships", {})
     lines = [
         "# Dependency graph", "",
+        *graph_summary_md(relationships), "",
+        "## Per file", "",
         "Per file: what it depends on, and which files use it (its direct dependents).",
     ]
     text_note = " (text reference, not an import)"
@@ -239,7 +266,7 @@ def _relationships_md(aif: dict) -> str:
         # only (see file/relationship.py's build_tree() docstring), so this
         # set is exactly the internal edges with no real import behind them.
         text_refs = set(deps.get("internal_text_refs", []))
-        lines += ["", f"## `{name}`"]
+        lines += ["", f"### `{name}`"]
         if internal:
             lines += [f"- depends on: `{d}`" + (text_note if d in text_refs else "") for d in internal]
         if external:
@@ -345,11 +372,7 @@ def export_skill(aif_path: str, output_dir: str | None = None, aif: dict | None 
         with open(aif_file, "r", encoding="utf-8") as f:
             aif = json.load(f)
 
-    try:
-        with open(_detail_path(aif_path), "r", encoding="utf-8") as f:
-            detail = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        detail = {}
+    detail = read_detail_or_none(aif_path) or {}
 
     # Restore prose-mention edges from detail.json's `text_refs` so
     # references/relationships.md renders the same graph it always has.

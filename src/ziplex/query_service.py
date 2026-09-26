@@ -16,18 +16,27 @@ Read-only by design -- see `mcp_server.py`'s module docstring for why.
 """
 
 import json
+import os
+import time
 from pathlib import Path
 
 from .file.relationship import (
     get_dependents as _get_dependents,
     get_blast_radius as _get_blast_radius,
+    certain_edges,
+    graph_summary as _graph_summary,
 )
+from .extract.code.languages import is_code_path
 from .file.textutil import parent_folder, normalize_path
 from .search import search_files, read_detail_range
 from .freshness import check_freshness_scoped, load_pack_scope, cache_path_for_aif
 from .config import collect_and_scan
 from .confidence import project_confidence_summary
-from .aif_io import attach_weak_edges
+from .aif_io import attach_weak_edges, expand_relationships, detail_path_for
+
+
+_JSON_CACHE: dict[str, tuple[tuple[int, int], dict]] = {}
+_JSON_CACHE_MAX = 8
 
 
 def _load_json(path: str) -> dict:
@@ -52,9 +61,22 @@ def _load_json(path: str) -> dict:
     actionable to the calling agent than it would be to a human reading a
     raw traceback.
     """
+    # Memoized on (mtime, size): an MCP session calls these tools many times
+    # against the same unchanged pack, and detail.json alone can be several
+    # MB. Returned objects are shared -- every caller here treats them as
+    # read-only (attach_weak_edges()/expand_relationships() build new dicts).
     try:
+        stat = os.stat(path)
+        key = (stat.st_mtime_ns, stat.st_size)
+        cached = _JSON_CACHE.get(path)
+        if cached and cached[0] == key:
+            return cached[1]
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        _JSON_CACHE[path] = (key, data)
+        while len(_JSON_CACHE) > _JSON_CACHE_MAX:
+            _JSON_CACHE.pop(next(iter(_JSON_CACHE)))
+        return data
     except FileNotFoundError as e:
         raise FileNotFoundError(
             f"{path} not found -- check the path, or run `ziplex pack` on the "
@@ -69,6 +91,17 @@ def _load_json(path: str) -> dict:
             e.doc,
             e.pos,
         ) from e
+
+
+def _load_graph(aif_path: str, include_text_refs: bool) -> dict:
+    """The in-memory relationships shape, loading detail.json only when
+    prose-mention edges are actually wanted -- every graph query used to
+    parse the whole detail.json (all compressed bodies) just to recover
+    `text_refs`, even for include_text_refs=False."""
+    if include_text_refs:
+        return _load_aif_with_weak_edges(aif_path).get("relationships", {})
+    aif = _load_json(aif_path)
+    return expand_relationships(aif.get("relationships", {}), aif.get("files", {}))
 
 
 def _load_aif_with_weak_edges(aif_path: str) -> dict:
@@ -87,12 +120,9 @@ def _load_aif_with_weak_edges(aif_path: str) -> dict:
 
 
 def _detail_path(aif_path: str) -> Path:
-    """<name>.detail.json sits next to aif.json under the same stem -- the
-    convention save_aif() writes to (packager.py). Not configurable, so
-    every function that needs detail content just derives it from aif_path.
-    """
-    p = Path(aif_path)
-    return p.with_name(f"{p.stem}.detail.json")
+    """<name>.detail.json next to aif.json -- aif_io.detail_path_for(), the
+    one shared definition of that convention."""
+    return detail_path_for(aif_path)
 
 
 def _cache_path(aif_path: str) -> Path:
@@ -122,10 +152,20 @@ def _stale_warning(project_path: str | None, aif_path: str) -> dict | None:
     """
     if project_path is None:
         return None
+    _require_project_dir(project_path)
     try:
         manifest = _load_json(str(_cache_path(aif_path)))
     except (OSError, json.JSONDecodeError):
         return None
+    # A full collect+scan+hash of the project per call made every
+    # list_files(folder=...) drill-down ~1000x slower (1.98s vs 0.002s on
+    # the self-pack) under the documented `ziplex-mcp --project` wiring.
+    # Reuse a report for a few seconds per (project, pack) -- long enough
+    # for a burst of orientation calls, short enough to notice real edits.
+    key = (os.path.abspath(project_path), os.path.abspath(aif_path), id(manifest))
+    cached = _STALE_CACHE.get(key)
+    if cached and time.monotonic() - cached[0] < _STALE_TTL_SECONDS:
+        return cached[1]
 
     # check_freshness_scoped(), not a bare collect_and_scan()["safe"] --
     # a real bug reported directly (2026-08-26): a file scan_files() flags
@@ -144,9 +184,28 @@ def _stale_warning(project_path: str | None, aif_path: str) -> dict | None:
     # exact sequence so a third missed call site can't happen again.
     extra_include, extra_ignore = load_pack_scope(aif_path)
     report = check_freshness_scoped(project_path, manifest, extra_include, extra_ignore)
-    if not report.is_stale:
-        return None
-    return {"is_stale": True, "changed": report.changed, "added": report.added, "removed": report.removed}
+    warning = None
+    if report.is_stale:
+        warning = {"is_stale": True, "changed": report.changed, "added": report.added, "removed": report.removed}
+    _STALE_CACHE[key] = (time.monotonic(), warning)
+    return warning
+
+
+_STALE_CACHE: dict[tuple, tuple[float, dict | None]] = {}
+_STALE_TTL_SECONDS = 30.0
+
+
+def _require_project_dir(project_path: str) -> None:
+    """A typo'd or wrongly-relative project_path used to collect zero files
+    and report every packed file as removed -- a confident, completely
+    wrong "the whole pack is stale". The CLI guards this; the query layer
+    (MCP/GUI) now does too."""
+    if not os.path.isdir(project_path):
+        raise ValueError(
+            f"project_path {project_path!r} is not a directory -- pass the project "
+            "folder the pack was made from (a relative path resolves against the "
+            "server's working directory)"
+        )
 
 
 def get_overview(aif_path: str, project_path: str | None = None) -> dict:
@@ -228,12 +287,9 @@ def list_files(
     project size the way an arbitrary regex match count has one.
     """
     if folder is not None:
-        folder = _normalize_path_arg(folder).rstrip("/")
-        # A leading "./" (`./src/ziplex`) silently matched nothing -- and an
-        # unknown folder returns {} by design, indistinguishable from empty.
-        while folder.startswith("./"):
-            folder = folder[2:]
-        folder = folder or "."
+        # normalize_path() strips a leading "./" too -- `./src/ziplex`
+        # silently matched nothing before, indistinguishable from empty.
+        folder = _normalize_path_arg(folder).rstrip("/") or "."
     aif = _load_json(aif_path)
     result = {}
     for name, data in aif.get("files", {}).items():
@@ -319,10 +375,20 @@ def get_folders(aif_path: str) -> dict:
     return aif.get("folders", {})
 
 
-def get_relationships(aif_path: str, files: list[str] | None = None) -> dict:
+def get_relationships(aif_path: str, files: list[str] | None = None, include_text_refs: bool = False) -> dict:
     """The whole dependency graph at once -- every file mapped to what it
-    depends on internally (other project files) and externally (packages),
-    aif.json's `relationships` field verbatim. get_dependents()/
+    depends on internally (other project files) and externally (packages).
+    For whole-graph questions (most-depended-on files, cycles, orphans,
+    folder layering) call get_graph_summary() instead -- it returns those
+    aggregates directly, at a fraction of this tool's size.
+
+    By default only certain edges (real imports and structural references)
+    are returned, as {"internal", "external"}, and a file with neither is
+    omitted from an unscoped result. include_text_refs=True returns the full
+    shape instead: `internal` also holding prose-mention edges (a README
+    naming a file), listed again under `internal_text_refs` -- measured on
+    Ziplex's own pack those were 63% of all internal edges, tripled the
+    response, and skewed any in-degree count toward files docs mention. get_dependents()/
     get_blast_radius() answer a question about one file; this is the same
     underlying graph with nothing filtered out, for a caller that wants the
     project's overall shape in one call (e.g. a whole-tree browser view)
@@ -342,12 +408,41 @@ def get_relationships(aif_path: str, files: list[str] | None = None) -> dict:
     graph it can already see the keys of (typically via list_files()), not
     looking one up blind the way get_detail() does.
     """
-    aif = _load_aif_with_weak_edges(aif_path)
-    relationships = aif.get("relationships", {})
-    if files is None:
+    relationships = _load_graph(aif_path, include_text_refs)
+    if files is not None:
+        normalized = (_normalize_path_arg(name) for name in files)
+        relationships = {name: relationships[name] for name in normalized if name in relationships}
+    if include_text_refs:
         return relationships
-    normalized = (_normalize_path_arg(name) for name in files)
-    return {name: relationships[name] for name in normalized if name in relationships}
+    result = {}
+    for name, entry in relationships.items():
+        slim = {"internal": certain_edges(entry, False), "external": entry.get("external", [])}
+        if files is not None or slim["internal"] or slim["external"]:
+            result[name] = slim
+    return result
+
+
+def get_graph_summary(aif_path: str, include_text_refs: bool = False, top_n: int = 10, code_only: bool = True) -> dict:
+    """Whole-graph aggregates in one small response: file_count,
+    edge_count, most_depended_on / most_dependencies (top_n files with
+    counts), cycles (every import cycle, as sorted file lists), orphans
+    (files with no edges in or out), never_imported_count, and the top_n
+    folder->folder edge counts (layering). Use this for "which files are
+    central", "are there cycles", "what is unused", "how do folders depend
+    on each other" instead of pulling get_relationships() and counting.
+
+    code_only=True (default) counts source files only, so docs/config files
+    with no imports don't flood `orphans`; edges are counted only when both
+    ends are in scope. include_text_refs=False (default) counts real imports
+    and structural references only; `text_ref_edges_excluded` says how many
+    prose-mention edges were left out."""
+    relationships = _load_graph(aif_path, include_text_refs)
+    return _graph_summary(
+        relationships,
+        include_text_refs=include_text_refs,
+        top_n=top_n,
+        scope=is_code_path if code_only else None,
+    )
 
 
 def get_dependents(aif_path: str, file: str, include_text_refs: bool = True) -> list[str]:
@@ -365,8 +460,7 @@ def get_dependents(aif_path: str, file: str, include_text_refs: bool = True) -> 
     ext_resource path) -- see file/relationship.py's `get_dependents()` and
     text_references.py for what counts as which.
     """
-    aif = _load_aif_with_weak_edges(aif_path)
-    relationships = aif.get("relationships", {})
+    relationships = _load_graph(aif_path, include_text_refs)
     file = _require_known_file(relationships, file, aif_path)
     return _get_dependents(relationships, file, include_text_refs=include_text_refs)
 
@@ -381,8 +475,7 @@ def get_blast_radius(aif_path: str, file: str, include_text_refs: bool = True) -
 
     include_text_refs is get_dependents()'s own param -- see its docstring.
     """
-    aif = _load_aif_with_weak_edges(aif_path)
-    relationships = aif.get("relationships", {})
+    relationships = _load_graph(aif_path, include_text_refs)
     file = _require_known_file(relationships, file, aif_path)
     return _get_blast_radius(relationships, file, include_text_refs=include_text_refs)
 
@@ -439,6 +532,7 @@ def check_freshness(project_path: str, aif_path: str) -> dict:
     even though it's unchanged and still on disk -- a real bug reported
     directly (2026-08-26).
     """
+    _require_project_dir(project_path)
     manifest = _load_json(str(_cache_path(aif_path)))
     extra_include, extra_ignore = load_pack_scope(aif_path)
     report = check_freshness_scoped(project_path, manifest, extra_include, extra_ignore)

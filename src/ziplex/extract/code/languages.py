@@ -1491,5 +1491,13 @@ for _ext in (".jsx", ".mjs", ".cjs"):
     LANGUAGE_CONFIGS[_ext] = LANGUAGE_CONFIGS[".js"]
 
 
+def is_code_path(name: str) -> bool:
+    """True for a file name whose extension has a LanguageConfig -- the one
+    shared "is this source code" test (query_service's graph summary scope,
+    the skill/flat exports)."""
+    base = name.replace("\\", "/").rsplit("/", 1)[-1]
+    return "." in base and "." + base.rsplit(".", 1)[-1].lower() in LANGUAGE_CONFIGS
+
+
 def get_language_config(ext: str) -> LanguageConfig | None:
     return LANGUAGE_CONFIGS.get(ext)

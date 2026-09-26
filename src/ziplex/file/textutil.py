@@ -56,9 +56,15 @@ def normalize_path(value: str) -> str:
     normalized first. Shared so query_service.py's read-side lookups and
     file/relationship.py's add_relationship()/remove_relationship() (the
     write-side API behind `ziplex link`/`ziplex unlink` and the GUI's
-    relationship editor) can't drift into normalizing differently.
+    relationship editor) can't drift into normalizing differently. A
+    leading "./" is stripped too: `./src/a.py` names the same key, and a
+    miss there is either a spurious not-found or, for the filters that skip
+    unknown names by design, a silently empty answer.
     """
-    return value.replace("\\", "/")
+    value = value.replace("\\", "/")
+    while value.startswith("./"):
+        value = value[2:]
+    return value
 
 
 def parent_folder(name: str) -> str:
