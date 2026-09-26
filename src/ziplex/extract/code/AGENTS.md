@@ -16,7 +16,7 @@ Single source of truth per language: `LANGUAGE_CONFIGS: dict[ext, LanguageConfig
 
 Supporting a new extension is one `LanguageConfig` entry — `extractor.py`/`compressor.py` never hardcode per-language node types.
 
-Currently supported: `.py`, `.java`, `.ts`/`.js` (`.js` via the TSX grammar), `.lua`, `.mlua` (`.d.mlua` too -- `Path.suffix` already reduces to `.mlua`), `.gd`, `.go`, `.cpp`/`.cc`/`.cxx` (one shared config), `.rs`, `.cs`, `.php`, `.rb`, `.sh`/`.bash` (one shared config).
+Currently supported: `.py`, `.java`, `.ts`/`.mts`/`.cts`, `.tsx` (the `.ts` config on the TSX grammar), `.js`/`.jsx`/`.mjs`/`.cjs` (one shared config, TSX grammar), `.lua`, `.mlua` (`.d.mlua` too -- `Path.suffix` already reduces to `.mlua`), `.gd`, `.go`, `.cpp`/`.cc`/`.cxx` (one shared config), `.rs`, `.cs`, `.php`, `.rb`, `.sh`/`.bash` (one shared config).
 
 ### Per-language notes
 

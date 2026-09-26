@@ -44,6 +44,7 @@ from .confidence import project_confidence_summary
 # sitter compression, not cosmetic Markdown highlighting).
 _LANGUAGE_TAGS: dict[str, str] = {
     ".py": "python", ".java": "java", ".ts": "typescript", ".js": "javascript",
+    ".tsx": "tsx", ".jsx": "jsx", ".mts": "typescript", ".cts": "typescript", ".mjs": "javascript", ".cjs": "javascript",
     ".lua": "lua", ".mlua": "lua", ".gd": "gdscript", ".go": "go",
     ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".rs": "rust", ".cs": "csharp",
     ".php": "php", ".rb": "ruby", ".sh": "bash", ".bash": "bash",

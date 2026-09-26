@@ -6,7 +6,7 @@ ever reference this config; they don't hardcode per-language node types themselv
 """
 
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
@@ -1465,6 +1465,18 @@ LANGUAGE_CONFIGS: dict[str, LanguageConfig] = {
     ".sh": _sh_config,
     ".bash": _sh_config,
 }
+
+# The other TS/JS module extensions. Only .ts/.js were ever registered, so
+# every .tsx/.jsx/.mjs/.cjs/.mts/.cts file was treated as plain text -- no
+# signatures, no dependencies -- which left React/Next projects (mostly
+# .tsx) with an essentially empty graph. Found packing shadcn-ui/taxonomy.
+# .tsx needs the TSX grammar (JSX is a syntax error under plain TS); .js
+# already parses with it, so its siblings share its config outright.
+LANGUAGE_CONFIGS[".tsx"] = replace(LANGUAGE_CONFIGS[".ts"], language=Language(tstypescript.language_tsx()))
+for _ext in (".mts", ".cts"):
+    LANGUAGE_CONFIGS[_ext] = LANGUAGE_CONFIGS[".ts"]
+for _ext in (".jsx", ".mjs", ".cjs"):
+    LANGUAGE_CONFIGS[_ext] = LANGUAGE_CONFIGS[".js"]
 
 
 def get_language_config(ext: str) -> LanguageConfig | None:

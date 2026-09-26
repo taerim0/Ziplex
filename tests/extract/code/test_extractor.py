@@ -1427,3 +1427,15 @@ def test_extract_api_skips_http_client_calls_that_look_like_express_routes(tmp_p
         encoding="utf-8",
     )
     assert extract_api(str(file_path)) == ["GET /users", "POST /login"]
+
+
+def test_every_ts_js_module_extension_is_parsed_as_code(tmp_path):
+    # Only .ts/.js were registered: .tsx/.jsx/.mjs/.cjs/.mts/.cts came back
+    # with no signatures and no dependencies (found packing shadcn-ui/taxonomy).
+    jsx = 'import { cn } from "@/lib/utils"\nexport function Button() {\n  return <div className={cn("a")} />\n}\n'
+    plain = 'import x from "./y"\nexport function run(a) {\n  return a\n}\n'
+    for ext, src in {".tsx": jsx, ".jsx": jsx, ".mjs": plain, ".cjs": plain, ".mts": plain, ".cts": plain}.items():
+        path = tmp_path / f"mod{ext}"
+        path.write_text(src, encoding="utf-8")
+        assert extract_dependencies(str(path)), ext
+        assert any(s.startswith(("Button", "run")) for s in extract_signatures(str(path))), ext
