@@ -12,7 +12,7 @@ from .file.scanner import scan_files
 from .file.media import classify_media_file
 from .file.textutil import relative_key as _rel_key
 from .text_references import find_text_references_for_file, merge_text_references
-from .go_packages import resolve_go_context, expand_dependencies_for_file
+from .import_context import resolve_import_context, expand_file_dependencies
 from .tokenizer import analyze_tokens_with_compression, count_tokens_for_model
 from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider, get_usage
 from .packager import pack, save_aif, resolve_output_path
@@ -699,19 +699,18 @@ def _cmd_tree(args) -> None:
     # same keys; see resolve_dependency()'s exact-key-match branch).
     all_names = [_rel_key(fp, args.path) for fp in safe_files]
 
-    # Go's import paths name a *package* (a directory), not a file --
-    # see go_packages.py's own docstring. resolve_go_context()/
-    # expand_dependencies_for_file() are the same two calls packager.py's
-    # pack() makes -- both routing through the same wrappers is what
+    # Go packages / TS path aliases -- see import_context.py.
+    # resolve_import_context()/expand_file_dependencies() are the same two
+    # calls packager.py's pack() makes -- both routing through them is what
     # keeps this command and pack() from silently disagreeing on the
     # same feature's output (exactly what happened to the text-reference
     # merge below before it was fixed).
-    go_module_path, go_package_index = resolve_go_context(args.path, all_names)
+    import_ctx = resolve_import_context(args.path, all_names)
 
     files_data = {}
     for file_path in safe_files:
         name = _rel_key(file_path, args.path)
-        deps = expand_dependencies_for_file(file_path, name, extract_dependencies(file_path), go_module_path, go_package_index)
+        deps = expand_file_dependencies(file_path, name, extract_dependencies(file_path), import_ctx)
         text_refs = find_text_references_for_file(file_path, name, all_names)
         # merge_text_references() -- the same shared merge step packager.py's
         # per-file loop routes through -- is what lets build_tree() tag a

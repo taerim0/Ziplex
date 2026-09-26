@@ -9,7 +9,7 @@ from .file.media import classify_media_file, media_summary
 from .file.textutil import relative_key as _rel_key
 from .extract.code.extractor import extract_all
 from .text_references import find_text_references_for_file, merge_text_references
-from .go_packages import resolve_go_context, expand_dependencies_for_file
+from .import_context import resolve_import_context, expand_file_dependencies
 from .tokenizer import analyze_tokens_with_payload
 from .aif_io import detach_weak_edges, write_aif, WEAK_KEY
 from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES, reset_usage, get_usage
@@ -1054,12 +1054,11 @@ def pack(
     # match a non-code file's content against, not just file_path itself.
     all_names = [_rel_key(fp, root) for fp in selected]
 
-    # Go's import paths name a *package* (a directory), not a file -- see
-    # go_packages.py's own docstring. Resolved once per pack(), not per
-    # file: None (no go.mod, or no `module` line) means there's nothing to
-    # resolve, so every .go file's raw import strings pass through
-    # untouched below at zero extra cost for a non-Go project.
-    go_module_path, go_package_index = resolve_go_context(root_path, all_names)
+    # Project-level import resolution (Go packages via go.mod, TS/JS path
+    # aliases via tsconfig -- see import_context.py). Resolved once per
+    # pack(), not per file; a project with no go.mod / no TS files pays
+    # nothing, every raw import string passing through untouched below.
+    import_ctx = resolve_import_context(root_path, all_names)
 
     # Text-reference matches (see text_references.py), kept separate from
     # files_data[fp]["dependencies"] until *after* step 5's LLM summary
@@ -1169,7 +1168,7 @@ def pack(
         # review (see extract_all()'s own docstring).
         extracted = extract_all(file_path)
         sigs = extracted["signatures"]
-        deps = expand_dependencies_for_file(file_path, name, extracted["dependencies"], go_module_path, go_package_index)
+        deps = expand_file_dependencies(file_path, name, extracted["dependencies"], import_ctx)
         apis = extracted["api"]
         compressed = extracted["compressed"]
         reused_summary = previous_summaries.get(name, "")

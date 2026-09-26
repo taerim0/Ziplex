@@ -188,8 +188,18 @@ def _resolve_relative_path(dep: str, source_name: str, all_names: set) -> str | 
     matched no stem, and marked every relative TS/JS import external --
     leaving TS/JS projects with almost no internal edges at all."""
     base = posixpath.dirname(source_name.replace("\\", "/"))
-    target = posixpath.normpath(posixpath.join(base, dep))
-    if target.startswith("../"):
+    return resolve_module_path(posixpath.join(base, dep), all_names)
+
+
+def resolve_module_path(target: str, all_names: set) -> str | None:
+    """A project-relative module path (already joined against whatever it's
+    relative to) resolved the way TS/JS module resolution does: the literal
+    name, TS ESM's `.js`->`.ts`, each extension a specifier may omit, then
+    the folder's `index.*`. Shared by relative imports above and tsconfig
+    `paths`/`baseUrl` aliases (ts_paths.py), which differ only in what the
+    target is joined against."""
+    target = posixpath.normpath(target)
+    if target == ".." or target.startswith("../"):
         return None  # points outside the packed project
     stem, ext = posixpath.splitext(target)
     candidates = [target]
