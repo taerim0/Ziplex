@@ -167,7 +167,9 @@ def test_resolve_dependency_prefers_same_extension_as_importer_for_a_cross_langu
     # against).
     stem_map = build_stem_map(["gui/js/pages/search.js", "search.py"])  # .js collected first
     assert resolve_dependency("search", stem_map, source_name="cli.py") == "search.py"
-    assert resolve_dependency("search", stem_map, source_name="pages/router.js") == "gui/js/pages/search.js"
+    # A bare JS specifier is a package, never a file stem -- only ./-relative
+    # or tsconfig-aliased imports reach files (see the `from "react"` test below).
+    assert resolve_dependency("search", stem_map, source_name="pages/router.js") is None
     assert resolve_dependency("search", stem_map) == "gui/js/pages/search.js"  # no source -- old fallback
 
 
@@ -613,3 +615,12 @@ def test_resolve_dependency_python_relative_miss_falls_back_to_the_stem_heuristi
     # `from . import helper` may name a function in __init__.py, not a module file.
     stem_map = build_stem_map(["pkg/a.py", "lib/helper.py"])
     assert resolve_dependency(".helper", stem_map, source_name="pkg/a.py") == "lib/helper.py"
+
+
+def test_resolve_dependency_never_stem_matches_a_bare_ts_js_package_specifier():
+    # create-t3-turbo: `import { cache } from "react"` landed on apps/nextjs/src/trpc/react.tsx.
+    stem_map = build_stem_map(["src/trpc/react.tsx", "src/page.tsx", "lib/utils.py"])
+    assert resolve_dependency("react", stem_map, source_name="src/page.tsx") is None
+    assert resolve_dependency("react", stem_map, source_name="src/page.mjs") is None
+    assert resolve_dependency("src/trpc/react.tsx", stem_map, source_name="src/page.tsx") == "src/trpc/react.tsx"
+    assert resolve_dependency("utils", stem_map, source_name="main.py") == "lib/utils.py"  # Python unaffected

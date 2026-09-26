@@ -210,6 +210,7 @@ def resolve_module_path(target: str, all_names: set) -> str | None:
 
 
 _PYTHON_SOURCE_EXTENSIONS = (".py", ".pyi")
+_TS_JS_SOURCE_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte")
 
 
 def _resolve_python_relative(dep: str, source_name: str, all_names: set) -> str | None:
@@ -306,6 +307,12 @@ def resolve_dependency(
             return resolved
         # e.g. `from . import helper` naming a function in __init__.py, not
         # a module -- fall through to the stem heuristic, as before.
+    if source_name and Path(source_name).suffix in _TS_JS_SOURCE_EXTENSIONS:
+        # A bare TS/JS specifier names a package; aliases and workspace
+        # packages were already rewritten to exact file names upstream
+        # (ts_paths.py). Stem-matching it put `from "react"` on a local
+        # trpc/react.tsx -- found packing create-t3-turbo.
+        return None
     candidates = stem_map.get(dep)
     if not candidates:
         dep_segments = [s for s in dep.split(".") if s]
