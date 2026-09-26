@@ -199,6 +199,28 @@ def _resolve_relative_path(dep: str, source_name: str, all_names: set) -> str | 
     return next((c for c in candidates if c in all_names), None)
 
 
+_PYTHON_SOURCE_EXTENSIONS = (".py", ".pyi")
+
+
+def _resolve_python_relative(dep: str, source_name: str, all_names: set) -> str | None:
+    """A Python relative import (".mod", "..pkg.mod" -- the extractor keeps
+    the leading dots) resolved against the importing file's own package:
+    one dot is its folder, each extra dot one level up. The stem heuristic
+    alone can't tell two same-named modules apart once the dots are
+    dropped -- found packing Ziplex itself: `from .file.relationship`
+    matched a stale src/file/relationship.py over src/ziplex/file/'s."""
+    level = len(dep) - len(dep.lstrip("."))
+    base = posixpath.dirname(source_name.replace("\\", "/"))
+    for _ in range(level - 1):
+        if not base:
+            return None  # climbs past the project root
+        base = posixpath.dirname(base)
+    target = posixpath.join(base, *[s for s in dep[level:].split(".") if s])
+    candidates = [target + ext for ext in _PYTHON_SOURCE_EXTENSIONS]
+    candidates.append(posixpath.join(target, "__init__.py"))
+    return next((c for c in candidates if c in all_names), None)
+
+
 def resolve_dependency(
     dep: str, stem_map: dict, all_names: set | None = None, source_name: str | None = None
 ) -> str | None:
@@ -268,6 +290,12 @@ def resolve_dependency(
         # stem heuristic below, which would re-split it on "." (see
         # _resolve_relative_path()).
         return _resolve_relative_path(dep, source_name, all_names)
+    if source_name and dep.startswith(".") and Path(source_name).suffix in _PYTHON_SOURCE_EXTENSIONS:
+        resolved = _resolve_python_relative(dep, source_name, all_names)
+        if resolved:
+            return resolved
+        # e.g. `from . import helper` naming a function in __init__.py, not
+        # a module -- fall through to the stem heuristic, as before.
     candidates = stem_map.get(dep)
     if not candidates:
         dep_segments = [s for s in dep.split(".") if s]

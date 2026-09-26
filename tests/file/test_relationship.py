@@ -592,3 +592,24 @@ def test_resolve_dependency_resolves_a_bare_dot_to_the_folders_index():
     stem_map = build_stem_map(["src/helper/cookie/index.ts", "src/helper/cookie/index.test.ts", "src/helper/index.ts"])
     assert resolve_dependency(".", stem_map, source_name="src/helper/cookie/index.test.ts") == "src/helper/cookie/index.ts"
     assert resolve_dependency("..", stem_map, source_name="src/helper/cookie/index.test.ts") == "src/helper/index.ts"
+
+
+def test_resolve_dependency_resolves_python_relative_imports_against_the_package():
+    # Packing Ziplex itself: `from .file.relationship` in src/ziplex/query_service.py
+    # landed on a stale src/file/relationship.py sharing the same dotted tail.
+    names = [
+        "src/file/relationship.py", "src/ziplex/file/relationship.py", "src/ziplex/query_service.py",
+        "src/ziplex/extract/__init__.py", "src/ziplex/extract/code/parser.py",
+    ]
+    stem_map = build_stem_map(names)
+    src = "src/ziplex/query_service.py"
+    assert resolve_dependency(".file.relationship", stem_map, source_name=src) == "src/ziplex/file/relationship.py"
+    assert resolve_dependency(".extract", stem_map, source_name=src) == "src/ziplex/extract/__init__.py"
+    nested = "src/ziplex/extract/code/parser.py"
+    assert resolve_dependency("...file.relationship", stem_map, source_name=nested) == "src/ziplex/file/relationship.py"
+
+
+def test_resolve_dependency_python_relative_miss_falls_back_to_the_stem_heuristic():
+    # `from . import helper` may name a function in __init__.py, not a module file.
+    stem_map = build_stem_map(["pkg/a.py", "lib/helper.py"])
+    assert resolve_dependency(".helper", stem_map, source_name="pkg/a.py") == "lib/helper.py"
