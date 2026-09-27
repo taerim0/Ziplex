@@ -90,8 +90,9 @@ def rewrite_python_imports(name: str, deps: list[str], all_names: set) -> list[s
     a module, and is dropped (only when `P` itself is also in deps, i.e. it
     came from `from P import name`). A package's own `__init__.py` edge is
     dropped when a submodule of it resolved from the same statement -- the
-    import names that submodule, not the package. Anything else unresolved
-    passes through untouched."""
+    import names that submodule, not the package. A relative symbol import
+    (`from . import __version__`) becomes an edge to the package's own
+    `__init__.py`. Anything else unresolved passes through untouched."""
     if not name.endswith(PY_SOURCE_EXTENSIONS):
         return deps
     present = set(deps)
@@ -100,12 +101,25 @@ def rewrite_python_imports(name: str, deps: list[str], all_names: set) -> list[s
         parent for d, hit in resolved.items()
         if hit and (parent := _parent(d)) in present and (resolved.get(parent) or "").endswith("__init__.py")
     }
+    parents = {_parent(d) for d in present}
     out = []
     for dep in deps:
         hit = resolved[dep]
         if hit:
             if dep not in covered_packages:
                 out.append(hit)
+        elif dep.startswith(".") and dep not in parents:
+            # `from . import __version__` / `from ..pkg import name` where
+            # `name` is a symbol: the edge is to the package it lives in. It
+            # used to pass through as a bogus ".__version__" external
+            # dependency. (`dep not in parents`: `.mod` from
+            # `from .mod import X` names a module that just wasn't
+            # collected, so it keeps passing through as before.)
+            package = _parent(dep) or dep[: len(dep) - len(dep.lstrip("."))]
+            if package not in present:
+                package_hit = resolve_python_module(package, name, all_names)
+                if package_hit and package_hit not in out:
+                    out.append(package_hit)
         elif _parent(dep) not in present:
             out.append(dep)
     return out

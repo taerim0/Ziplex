@@ -10,8 +10,8 @@ from .file.textutil import relative_key as _rel_key
 from .extract.code.extractor import extract_all
 from .text_references import find_text_references_for_file, merge_text_references
 from .import_context import resolve_import_context, expand_file_dependencies
-from .tokenizer import analyze_tokens_with_payload
-from .aif_io import detach_weak_edges, write_aif, WEAK_KEY
+from .tokenizer import analyze_tokens_with_payload, count_tokens_for_model
+from .aif_io import detach_weak_edges, dumps_aif, write_aif, WEAK_KEY
 from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES, reset_usage, get_usage
 from .freshness import build_manifest, load_previous_summaries
 from .confidence import estimate_confidence, REVIEW_THRESHOLD
@@ -101,7 +101,7 @@ FORMAT_NOTES: dict[str, str] = {
         "screen, not by hand. Each file's `confidence` (0.0-1.0) is a "
         f"heuristic: a score below {REVIEW_THRESHOLD} means the summary's "
         "wording didn't overlap much with the file's own extracted signatures, "
-        "worth double-checking before trusting it. A file with no `confidence` "
+        "worth double-checking before trusting it. A file or folder with no `confidence` "
         "key scored 1.0 (the key is omitted to save tokens). detail.json's compressed "
         "body uses '⋮----' to mark a function body Ziplex elided to save "
         "tokens -- everything else (signatures, imports, decorators) is left "
@@ -123,7 +123,7 @@ FORMAT_NOTES: dict[str, str] = {
         f"화면을 통해 수정하세요. 각 파일의 `confidence`(0.0-1.0)는 휴리스틱 "
         f"점수입니다: {REVIEW_THRESHOLD} 미만이면 summary의 표현이 그 파일의 "
         "실제 시그니처와 많이 겹치지 않았다는 뜻이니 신뢰하기 전에 다시 확인하는 "
-        "것이 좋습니다. `confidence` 키가 없는 파일은 1.0점입니다(토큰 절감을 위해 "
+        "것이 좋습니다. `confidence` 키가 없는 파일·폴더는 1.0점입니다(토큰 절감을 위해 "
         "키를 생략함). detail.json의 compressed 본문에서 '⋮----'는 Ziplex가 "
         "토큰 절감을 위해 생략한 함수 본문을 표시합니다 -- 그 외(시그니처, "
         "import, 데코레이터)는 그대로 남아 있습니다. project.security_scan은 "
@@ -522,8 +522,13 @@ def _extract_rules(
             if len(sigs) > MAX_RULES_SIGNATURES_PER_FILE:
                 shown.append(f"(+{len(sigs) - MAX_RULES_SIGNATURES_PER_FILE} more)")
             scoped_signatures_map[_rel_key(fp, root)] = shown
+        # Same capped "file: summary" lines analyze_prompt() gets -- see
+        # analyze_rules()'s docstring for why signatures alone weren't enough.
+        rules_summaries = _build_architecture_summary(
+            {_rel_key(fp, root): data for fp, data in files_data.items()}, [],
+        )
         while not rules:
-            rules_response = analyze_rules(scoped_signatures_map, lang=lang)
+            rules_response = analyze_rules(scoped_signatures_map, lang=lang, summaries=rules_summaries)
             try:
                 rules_data = json.loads(rules_response)
             except json.JSONDecodeError:
@@ -1404,6 +1409,24 @@ def resolve_output_path(aif: dict, output_path: str | None, project_path: str | 
     return RESULT_DIR / f"{aif['project']['name']}.json"
 
 
+def _measure_saved_tokens(aif: dict, lean_aif: dict) -> None:
+    """Sets every model's `compressed`/`saved_pct` in `tokens` to the size of
+    the aif.json actually being written (in both dicts, so the caller's
+    printers and --max-tokens guard see it too). pack()'s own count only
+    covers per-file summaries -- the final file isn't known until
+    correct_aif() prunes the working fields -- and on Ziplex's own pack it
+    reported 8,387 tokens for a 13,358-token aif.json (relationships,
+    folders, rules and project left out)."""
+    text = dumps_aif(lean_aif)
+    for model, data in (lean_aif.get("tokens") or {}).items():
+        compressed = count_tokens_for_model(text, model)
+        original = data.get("original", 0)
+        saved_pct = round((original - compressed) / original * 100, 1) if original else 0
+        data.update(compressed=compressed, saved_pct=saved_pct)
+        if model in aif.get("tokens", {}):
+            aif["tokens"][model].update(compressed=compressed, saved_pct=saved_pct)
+
+
 def save_aif(aif: dict, output_path: str | None = None, progress_lang: str = "ko", project_path: str | None = None) -> None:
     """Writes the AIF result to output_path, or to
     <project_path>/DEFAULT_OUTPUT_SUBDIR/<project name>.json if output_path
@@ -1462,6 +1485,13 @@ def save_aif(aif: dict, output_path: str | None = None, progress_lang: str = "ko
 
     lean_aif = {k: v for k, v in aif.items() if k != "_manifest"}
     lean_aif["files"] = lean_files
+    # Same "missing means 1.0" rule for folders -- every reader already
+    # defaults it (query_service, skill/flat export, GUI review).
+    if aif.get("folders"):
+        lean_aif["folders"] = {
+            path: {k: v for k, v in info.items() if not (k == "confidence" and v == 1.0)}
+            for path, info in aif["folders"].items()
+        }
 
     # Certain edges stay in aif.json; prose-mention edges go to detail.json's
     # per-file `text_refs` -- see aif_io.py's docstring.
@@ -1470,6 +1500,7 @@ def save_aif(aif: dict, output_path: str | None = None, progress_lang: str = "ko
         if name in detail:
             detail[name][WEAK_KEY] = refs
 
+    _measure_saved_tokens(aif, lean_aif)
     write_aif(str(output_path), lean_aif)
     print(pick(f"\n✅ AIF.json saved: {output_path}", f"\n✅ AIF.json 저장됨: {output_path}"))
 

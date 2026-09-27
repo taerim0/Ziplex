@@ -1,9 +1,14 @@
-import subprocess
+import hashlib
 import json
+import os
 import re
+import shutil
+import subprocess
+import threading
+from pathlib import Path
 
 from ..file.textutil import read_text
-from ..progress_i18n import pick
+from ..progress_i18n import current as _progress_lang, pick
 from .media import classify_media_file
 
 # fallback keyword/pattern pairs used when secretlint fails/isn't
@@ -53,6 +58,10 @@ SENSITIVE_PATTERNS = [
     rf'{_KEY_BOUNDARY_LEFT}(?P<key>{keyword})["\']?{_TYPE_ANNOTATION}\s*(?P<sep>[=:])\s*(?P<value>{_VALUE_FRAGMENT})'
     for keyword in _SENSITIVE_KEYWORDS
 ]
+# Compiled once: the scan loop is line x pattern, and re.finditer() on a
+# pattern string pays a cache lookup per call -- ~230k of them (~0.3s) per
+# scan of Ziplex's own repo, and every freshness check rescans.
+_SENSITIVE_RES = [re.compile(p, re.IGNORECASE) for p in SENSITIVE_PATTERNS]
 
 # Secrets recognizable by their own shape, whatever they're assigned to --
 # a PEM key has no `KEY=` line at all, and a token under an unlisted name
@@ -229,7 +238,28 @@ def _line_at(file_path: str, line: int | None) -> str | None:
     return lines[line - 1] if 1 <= line <= len(lines) else None
 
 
-def _scan_with_secretlint(file_path: str, cwd: str | None = None) -> dict | bool | None:
+# secretlint refuses to run without one of these in its working directory.
+_SECRETLINT_CONFIGS = (
+    ".secretlintrc", ".secretlintrc.json", ".secretlintrc.yaml", ".secretlintrc.yml",
+    ".secretlintrc.js", ".secretlintrc.cjs",
+)
+
+
+def _secretlint_command(root: str | None) -> str | None:
+    """secretlint's resolved executable path when the project has a
+    secretlint config and secretlint is installed, else None (skip it, use
+    the pattern scan). Checked once per scan_files() call, before any
+    process is spawned: without a config secretlint just errors out, so
+    spawning it per file only cost time (~100ms+ per file where installed).
+    Resolved via shutil.which() so a Windows npm `.cmd` shim runs too -- a
+    bare "secretlint" argv[0] raised FileNotFoundError there every time."""
+    base = Path(root) if root else Path.cwd()
+    if not any((base / name).is_file() for name in _SECRETLINT_CONFIGS):
+        return None
+    return shutil.which("secretlint")
+
+
+def _scan_with_secretlint(file_path: str, cwd: str | None = None, cmd: str = "secretlint") -> dict | bool | None:
     """False if secretlint ran and found nothing; a reason dict (see
     scan_file()) if it found something; None if secretlint itself couldn't
     run at all -- not installed, no .secretlintrc config in scope (it
@@ -238,28 +268,14 @@ def _scan_with_secretlint(file_path: str, cwd: str | None = None) -> dict | bool
     instead of trusting an empty result that might just mean secretlint
     silently failed to run.
 
-    Known gap, not fixed here: on Windows, a global npm install of
-    secretlint is a .cmd shim, and subprocess.run() with a bare
-    "secretlint" argv[0] (no shell=True) can't resolve the .cmd extension
-    the way a real shell's PATH lookup would -- every invocation raises
-    FileNotFoundError and falls back to the regex path below, on every
-    Windows machine, without secretlint ever actually running (verified
-    directly). Resolving it via shutil.which() first would fix that, but
-    was tried and reverted: it also makes secretlint actually *run* (a real
-    Node process spawn, ~100ms+) on every scanned file on every platform,
-    including the overwhelmingly common case of a project with no
-    .secretlintrc at all (secretlint errors out immediately once spawned,
-    same net result as today, just far slower to get there) -- a real,
-    measured slowdown (this project's own test suite went from ~8s to
-    ~40s) for a fix that only helps the narrower "Windows + a project that
-    actually configured secretlint" case. Left as today's fast, if
-    Windows-broken, behavior until that tradeoff has an actual answer
-    (e.g. checking for a secretlint config file's existence first, cheaply,
-    before ever spawning the process).
+    `cmd` is _secretlint_command()'s resolved path -- scan_file() only
+    calls this once that gate has confirmed a config exists, which is what
+    let the Windows `.cmd`-shim fix (resolving via shutil.which()) land
+    without the per-file Node spawn it used to cost on every project.
     """
     try:
         result = subprocess.run(
-            ["secretlint", "--format", "json", file_path],
+            [cmd, "--format", "json", file_path],
             capture_output=True,
             text=True,
             # secretlint reads .secretlintrc from its working directory --
@@ -302,6 +318,17 @@ def _scan_with_secretlint(file_path: str, cwd: str | None = None) -> dict | bool
         return None  # secretlint failed -> fallback
 
 
+# .env files: every value is a literal there, so take the whole unquoted
+# token (the conservative charset would cut PASSWORD=Pa$$w0rd! short).
+_ENV_SENSITIVE_RES = [
+    re.compile(
+        rf'{_KEY_BOUNDARY_LEFT}(?P<key>{keyword})["\']?{_TYPE_ANNOTATION}\s*(?P<sep>[=:])\s*(?P<value>{_ENV_VALUE_FRAGMENT})',
+        re.IGNORECASE,
+    )
+    for keyword in _SENSITIVE_KEYWORDS
+]
+
+
 def _scan_with_pattern(file_path: str) -> dict | None:
     content = read_text(file_path)
     if content is None:
@@ -314,14 +341,9 @@ def _scan_with_pattern(file_path: str) -> dict | None:
     # Prose: an unquoted `database_url = str(value)` in a Markdown code span
     # is quoted code, not configuration.
     prose_file = file_path.lower().endswith((".md", ".mdx", ".rst"))
-    patterns = [] if env_template else SENSITIVE_PATTERNS
+    patterns = [] if env_template else _SENSITIVE_RES
     if env_file:
-        # Every value is a literal here, so take the whole unquoted token
-        # (the conservative charset would cut PASSWORD=Pa$$w0rd! short).
-        patterns = [
-            rf'{_KEY_BOUNDARY_LEFT}(?P<key>{keyword})["\']?{_TYPE_ANNOTATION}\s*(?P<sep>[=:])\s*(?P<value>{_ENV_VALUE_FRAGMENT})'
-            for keyword in _SENSITIVE_KEYWORDS
-        ]
+        patterns = _ENV_SENSITIVE_RES
 
     # Line-outer, pattern-inner -- the first offending *line* in top-to-
     # bottom file order wins, regardless of which pattern happens to sit
@@ -338,7 +360,7 @@ def _scan_with_pattern(file_path: str) -> dict | None:
             # `API_KEY: str = "sk-live-..."` the first hit is the type
             # annotation (skipped below), and the literal after `=` was
             # never looked at.
-            for match in re.finditer(pattern, line, re.IGNORECASE):
+            for match in pattern.finditer(line):
                 if _counts_as_a_secret(match, line, code_file, yaml_file, env_file, prose_file):
                     # The matched field name, not the raw regex -- a human
                     # reviewing "why was this flagged" reads this.
@@ -382,7 +404,10 @@ def _counts_as_a_secret(
     return _looks_like_a_real_secret(value, key, literal_context=env_file)
 
 
-def scan_file(file_path: str, root: str | None = None) -> dict | None:
+_AUTO = object()
+
+
+def scan_file(file_path: str, root: str | None = None, secretlint_cmd=_AUTO) -> dict | None:
     """None if the file looks safe. Otherwise a dict describing *why* it
     was flagged -- {"reason": ..., "line": 1-based line number or None,
     "matched_text": that line's own text or None} -- enough for a human to
@@ -400,13 +425,43 @@ def scan_file(file_path: str, root: str | None = None) -> dict | None:
     if classify_media_file(file_path) is not None:
         return None
 
-    result = _scan_with_secretlint(file_path, cwd=root)
+    cmd = _secretlint_command(root) if secretlint_cmd is _AUTO else secretlint_cmd
+    result = _scan_with_secretlint(file_path, cwd=root, cmd=cmd) if cmd else None
 
     # 2. pattern-based fallback if secretlint failed to run at all
     if result is None:
         return _scan_with_pattern(file_path)
 
     return result or None  # False (secretlint ran, found nothing) -> None
+
+
+# Per-process scan results keyed by content, so a freshness check (CLI,
+# every MCP call's stale check, the GUI watcher's recompute after each
+# save) rescans only what changed: the full scan was ~10ms per file, 1.5s
+# of a 1.5s freshness check on Ziplex's own 153 files -- ~40s at 4,000.
+_scan_cache: dict[tuple, dict | None] = {}
+_scan_cache_lock = threading.Lock()
+_SCAN_CACHE_MAX = 50_000
+# Above this, key on (size, mtime) instead of hashing the whole file --
+# large files here are media/binaries, and hashing a video per check would
+# cost more than the scan it saves.
+_HASH_LIMIT_BYTES = 1_000_000
+
+
+def _scan_cache_key(file_path: str, lang: str, cmd: str | None) -> tuple | None:
+    """Everything scan_file()'s result depends on: the path (file type
+    rules), content, the reason-text language, and whether secretlint ran.
+    None (don't cache) if the file can't be read."""
+    try:
+        st = os.stat(file_path)
+        if st.st_size > _HASH_LIMIT_BYTES:
+            fingerprint = ("stat", st.st_size, st.st_mtime_ns)
+        else:
+            with open(file_path, "rb") as f:
+                fingerprint = hashlib.blake2b(f.read(), digest_size=16).digest()
+    except OSError:
+        return None
+    return (os.path.abspath(file_path), fingerprint, lang, cmd)
 
 
 def scan_files(file_paths: list[str], root: str | None = None) -> dict:
@@ -418,8 +473,20 @@ def scan_files(file_paths: list[str], root: str | None = None) -> dict:
     *why* without a second scan_file() call per file.
     """
     results = {"safe": [], "dangerous": []}
+    cmd = _secretlint_command(root)
+    lang = _progress_lang()
     for file_path in file_paths:
-        reason = scan_file(file_path, root=root)
+        key = _scan_cache_key(file_path, lang, cmd)
+        with _scan_cache_lock:
+            cached = _scan_cache.get(key, _AUTO) if key else _AUTO
+        if cached is _AUTO:
+            cached = scan_file(file_path, root=root, secretlint_cmd=cmd)
+            if key:
+                with _scan_cache_lock:
+                    if len(_scan_cache) >= _SCAN_CACHE_MAX:
+                        _scan_cache.clear()
+                    _scan_cache[key] = cached
+        reason = cached
         if reason:
             results["dangerous"].append({"file": file_path, **reason})
         else:

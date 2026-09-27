@@ -445,6 +445,41 @@ _IDENTIFIER_FIDELITY_NOTE = (
     "transliterate it)."
 )
 
+# Appended to every per-file summary prompt too. Uncapped, 42 of 137
+# summaries on Ziplex's own pack opened with "This file contains..." --
+# words every AI reading aif.json pays for on every read. Naming key
+# functions/classes is also what confidence.py's overlap heuristic looks
+# for, so it doubles as the cheapest way to keep a summary out of review.
+_SUMMARY_STYLE_NOTE = (
+    "Each summary: one line, at most 20 words. Start with a verb (e.g. "
+    "\"Parses ...\", \"Defines ...\"), never with \"This file\". Where it "
+    "explains the role, name 1-3 of the file's key functions or classes."
+)
+
+# Per-file cap on signatures sent to a summary prompt: a one-line summary
+# doesn't need all 93 test functions of a test module (~1,850 tokens).
+MAX_SUMMARY_SIGNATURES = 30
+
+
+def _format_code_item(file: str, signatures: list[str], dependencies: list[str], header: str = "") -> str:
+    """One file's block in a summary prompt. Signatures one per line, not a
+    Python list repr (quotes and escapes cost tokens and read worse).
+    `header` is the file's leading docstring/comment (summarizer.
+    leading_doc()) -- its author's own statement of what the file is for,
+    which signatures alone can only be guessed from."""
+    lines = [f"File: {file}"]
+    if header:
+        lines.append(f"Header comment: {header}")
+    shown = signatures[:MAX_SUMMARY_SIGNATURES]
+    if shown:
+        lines.append("Signatures:")
+        lines.extend(f"- {sig}" for sig in shown)
+        if len(signatures) > len(shown):
+            lines.append(f"- (+{len(signatures) - len(shown)} more)")
+    if dependencies:
+        lines.append(f"Dependencies: {', '.join(dependencies)}")
+    return "\n".join(lines)
+
 
 # HTTP/API error codes worth retrying: rate limit plus transient server errors.
 _RETRYABLE_STATUS = (429, 500, 502, 503, 504)
@@ -941,16 +976,17 @@ def generate(prompt: str, retry: int = 5, label: str = "") -> str:
     return _active_provider().generate(prompt, retry=retry, label=label)
 
 
-def analyze_file_summary(file_path: str, signatures: list[str], dependencies: list[str], lang: str = "en") -> str:
+def analyze_file_summary(
+    file_path: str, signatures: list[str], dependencies: list[str], lang: str = "en", header: str = "",
+) -> str:
     prompt = f"""
 Based on the file info below, summarize this file's role in one line.
 Write the "summary" value in {_lang_name(lang)}. Keep the JSON key itself in English.
 {_IDENTIFIER_FIDELITY_NOTE}
+{_SUMMARY_STYLE_NOTE}
 Respond with JSON only, nothing else.
 
-File: {file_path}
-Function signatures: {signatures}
-Dependencies: {dependencies}
+{_format_code_item(file_path, signatures, dependencies, header)}
 
 {{"summary": "..."}}
 """
@@ -962,6 +998,7 @@ def analyze_text_summary(file_path: str, content: str, lang: str = "en") -> str:
 Based on the file content below, summarize this file's role in one line.
 Write the "summary" value in {_lang_name(lang)}. Keep the JSON key itself in English.
 {_IDENTIFIER_FIDELITY_NOTE}
+{_SUMMARY_STYLE_NOTE}
 Respond with JSON only, nothing else.
 
 File: {file_path}
@@ -998,11 +1035,9 @@ def analyze_batch_summaries(items: list[dict], lang: str = "en") -> str:
     for item in items:
         names.append(item["file"])
         if item.get("signatures") or item.get("dependencies"):
-            parts.append(
-                f"File: {item['file']}\n"
-                f"Function signatures: {item['signatures']}\n"
-                f"Dependencies: {item['dependencies']}"
-            )
+            parts.append(_format_code_item(
+                item["file"], item["signatures"], item["dependencies"], item.get("header", ""),
+            ))
         else:
             parts.append(
                 f"File: {item['file']}\n"
@@ -1016,6 +1051,7 @@ Write every summary value in {_lang_name(lang)}. Keep JSON keys (including each
 file name) in their original form -- only the summary text itself is
 translated.
 {_IDENTIFIER_FIDELITY_NOTE}
+{_SUMMARY_STYLE_NOTE}
 Respond with JSON only, nothing else.
 
 {joined}
@@ -1025,14 +1061,30 @@ Respond with JSON only, nothing else.
     return generate(prompt, label=", ".join(names))
 
 
-def analyze_rules(signatures_map: dict, lang: str = "en") -> str:
+def analyze_rules(signatures_map: dict, lang: str = "en", summaries: list[str] | None = None) -> str:
+    """`summaries` ("file: summary" lines, packager._build_architecture_
+    summary()'s shape) is what lets the model see how the project is put
+    together. From signatures alone every rule it could infer was naming
+    style -- all 7 on Ziplex's own pack were underscore prefixes, type
+    hints and test names, which an AI sees for itself in any one file."""
+    summary_block = "\n".join(summaries or [])
     prompt = f"""
-Analyze the function signatures and notable field declarations of the
-project below and extract its implicit coding rules.
+From the project below, extract the 3-7 conventions an AI editing this
+code must follow and would NOT notice from reading one file: where each
+kind of logic belongs, which module owns what, how errors/fallbacks are
+handled, what must never be done. Skip generic naming/formatting style
+(underscore prefixes, snake_case, type hints) unless the project breaks
+the usual convention. One sentence each, concrete (name the module or
+function it applies to).
 Write each rule in {_lang_name(lang)}. Keep the JSON key itself in English.
+{_IDENTIFIER_FIDELITY_NOTE}
 Respond with JSON only, nothing else.
 
-Signature list: {signatures_map}
+File summaries:
+{summary_block}
+
+Signature sample:
+{signatures_map}
 
 {{"rules": ["...", "...", "..."]}}
 """

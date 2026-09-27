@@ -7,8 +7,6 @@ from .file.textutil import read_text
 
 MODEL_ENCODINGS = {
     "GPT-4o":  "o200k_base",
-    "GPT-3.5": "cl100k_base",
-    "GPT-4":   "cl100k_base",
 }
 
 # tiktoken only ships encodings for OpenAI's own model family -- Claude and
@@ -23,8 +21,6 @@ APPROX_CHARS_PER_TOKEN = 4
 
 MODEL_MAX_TOKENS = {
     "GPT-4o":  128_000,
-    "GPT-3.5": 16_000,
-    "GPT-4":   128_000,
     "Claude":  200_000,
     "Gemini":  1_000_000,
 }

@@ -1979,3 +1979,39 @@ def test_pack_bare_json_string_prompt_checkpoints_instead_of_crashing(tmp_path, 
 
     assert aif == {}
     assert checkpoint._checkpoint_path(str(project)).exists()
+
+
+def test_save_aif_reports_the_saved_files_own_token_count(tmp_path, monkeypatch):
+    # pack()'s own count covered per-file summaries only -- 8,387 reported
+    # for a 13,358-token aif.json on Ziplex's own pack.
+    from ziplex.tokenizer import count_tokens_for_model
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "a.py", "import b\n\ndef f():\n    return b.g()\n")
+    _write(project / "b.py", "def g():\n    return 1\n")
+    out = tmp_path / "out.json"
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+    from ziplex.edits import finalize_aif
+    packager.save_aif(finalize_aif(aif), str(out), project_path=str(project))
+
+    saved = json.loads(out.read_text(encoding="utf-8"))
+    counted = count_tokens_for_model(out.read_text(encoding="utf-8"), "GPT-4o")
+    # Within a few tokens: the count is taken before its own digits land.
+    assert abs(saved["tokens"]["GPT-4o"]["compressed"] - counted) <= 5
+    assert "GPT-3.5" not in saved["tokens"]
+
+
+def test_save_aif_omits_a_folders_confidence_when_it_is_one():
+    aif = {"project": {"name": "p"}, "files": {}, "relationships": {}, "tokens": {},
+           "folders": {"a": {"summary": "s", "confidence": 1.0, "file_count": 2},
+                       "b": {"summary": "s", "confidence": 0.2, "file_count": 3}}}
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as d:
+        out = os.path.join(d, "x.json")
+        packager.save_aif(aif, out, project_path=d)
+        saved = json.loads(open(out, encoding="utf-8").read())
+    assert saved["folders"]["a"] == {"summary": "s", "file_count": 2}
+    assert saved["folders"]["b"]["confidence"] == 0.2
+

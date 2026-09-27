@@ -62,3 +62,12 @@ def test_extractor_emits_from_import_names_as_candidates(tmp_path):
     assert extract_dependencies(str(path)) == [
         "app.api.routes", "app.api.routes.items", "app.api.routes.login", "x",
     ]
+
+
+def test_relative_symbol_import_is_an_edge_to_the_package_not_an_external():
+    # `from . import __version__` used to surface as an external ".__version__".
+    names = {"src/pkg/__init__.py", "src/pkg/cli.py", "src/pkg/llm.py"}
+    deps = [".__version__", ".llm", ".missing", ".missing.X"]
+    assert rewrite_python_imports("src/pkg/cli.py", deps, names) == [
+        "src/pkg/__init__.py", "src/pkg/llm.py", ".missing",
+    ]

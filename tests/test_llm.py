@@ -821,3 +821,35 @@ def test_generate_clears_a_stale_exhausted_flag_for_a_provider_that_bypasses_the
     llm.generate('{"summary"}')
 
     assert llm.last_call_exhausted() is False
+
+
+def test_summary_prompts_list_signatures_one_per_line_capped_with_a_header(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    sigs = [f"def f{i}()" for i in range(llm.MAX_SUMMARY_SIGNATURES + 5)]
+
+    llm.analyze_file_summary("a.py", sigs, ["os"], header="Parses config files.")
+
+    prompt = captured[0]
+    assert "Header comment: Parses config files." in prompt
+    assert "- def f0()" in prompt
+    assert f"- def f{llm.MAX_SUMMARY_SIGNATURES}()" not in prompt
+    assert "- (+5 more)" in prompt
+    assert "['def f0()'" not in prompt  # no Python list repr
+    assert "at most 20 words" in prompt
+
+
+def test_batch_summary_prompt_carries_each_items_header(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_batch_summaries([
+        {"file": "a.py", "signatures": ["def a()"], "dependencies": [], "header": "Does A."},
+        {"file": "b.py", "signatures": ["def b()"], "dependencies": []},
+    ])
+    assert "Header comment: Does A." in captured[0]
+    assert captured[0].count("Header comment:") == 1
+
+
+def test_analyze_rules_gets_file_summaries_and_asks_for_more_than_naming_style(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    llm.analyze_rules({"main.py": ["add()"]}, summaries=["cli.py: Dispatches subcommands."])
+    assert "cli.py: Dispatches subcommands." in captured[0]
+    assert "Skip generic naming/formatting style" in captured[0]

@@ -13,9 +13,9 @@ from .file.media import classify_media_file
 from .file.textutil import relative_key as _rel_key, normalize_path
 from .text_references import find_text_references_for_file, merge_text_references
 from .import_context import resolve_import_context, expand_file_dependencies
-from .tokenizer import analyze_tokens_with_compression, count_tokens_for_model
+from .tokenizer import analyze_tokens_with_compression
 from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider, get_usage
-from .packager import pack, save_aif, resolve_output_path
+from .packager import pack, save_aif
 from .corrector import correct_aif
 from .edits import finalize_aif, set_file_summary, set_folder_summary
 from .file.relationship import (
@@ -649,16 +649,9 @@ def _cmd_pack(args) -> None:
             print(f"  합계: {usage['total_tokens']:,}")
 
         if args.max_tokens is not None:
-            # Measured on the saved aif.json itself -- what an AI actually
-            # reads. aif["tokens"]'s "compressed" figure counts per-file
-            # summaries only (no relationships, rules, AI guide, folders,
-            # format notes), so an over-budget aif.json could pass.
-            saved_text = resolve_output_path(aif, args.output, project_path=args.path).read_text(encoding="utf-8")
-            guard_tokens = {
-                model: {**data, "compressed": count_tokens_for_model(saved_text, model)}
-                for model, data in aif["tokens"].items()
-            }
-            passed, actual = _check_max_tokens(guard_tokens, args.max_tokens, args.max_tokens_model)
+            # aif["tokens"]'s "compressed" is the saved aif.json's own size
+            # (packager._measure_saved_tokens(), run by save_aif() above).
+            passed, actual = _check_max_tokens(aif["tokens"], args.max_tokens, args.max_tokens_model)
             if actual is None:
                 print(f"\n⚠️  --max-tokens-model '{args.max_tokens_model}'은 알 수 없는 모델입니다"
                       f" (사용 가능: {', '.join(aif['tokens'].keys())})")

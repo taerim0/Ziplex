@@ -319,3 +319,42 @@ def test_generate_summaries_logs_a_failure_not_a_checkmark_when_the_provider_is_
     assert "\u2705" not in out
     assert "\u274c a.py" in out
     assert results[str(tmp_path / "a.py")] == summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"]
+
+
+def test_leading_doc_reads_a_module_docstring():
+    assert summarizer.leading_doc('"""Parses\n   config files."""\nimport os\n') == "Parses config files."
+
+
+def test_leading_doc_reads_a_comment_block_after_shebang_and_coding_lines():
+    text = "#!/usr/bin/env python\n# -*- coding: utf-8 -*-\n# Tool that does X\n# and Y.\nimport os\n"
+    assert summarizer.leading_doc(text) == "Tool that does X and Y."
+
+
+def test_leading_doc_reads_a_jsdoc_block():
+    assert summarizer.leading_doc("/**\n * Renders the graph.\n */\nfunction f() {}\n") == "Renders the graph."
+
+
+def test_leading_doc_skips_license_banners_and_code_first_files():
+    assert summarizer.leading_doc("// SPDX-License-Identifier: MIT\nint a;\n") == ""
+    assert summarizer.leading_doc("# Copyright 2024 Someone\nimport os\n") == ""
+    assert summarizer.leading_doc("import os\n") == ""
+
+
+def test_leading_doc_is_capped():
+    text = '"""' + "word " * 500 + '"""'
+    assert len(summarizer.leading_doc(text)) == summarizer.MAX_HEADER_CHARS
+
+
+def test_request_batch_summaries_sends_each_files_header(monkeypatch):
+    seen = []
+
+    def _analyze(items, lang="en"):
+        seen.extend(items)
+        return json.dumps({"summaries": {i["file"]: "s" for i in items}})
+
+    monkeypatch.setattr(summarizer, "analyze_batch_summaries", _analyze)
+    batch = [("a.py", {"signatures": ["def a()"], "dependencies": [], "compressed": '"""Does A."""\ndef a(): ...'})]
+
+    summarizer.request_batch_summaries(batch)
+
+    assert seen[0]["header"] == "Does A."

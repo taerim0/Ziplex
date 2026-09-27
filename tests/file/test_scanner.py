@@ -61,7 +61,7 @@ def test_scan_files_splits_safe_and_dangerous_with_reasons(tmp_path):
 def test_scan_file_falls_back_to_pattern_when_secretlint_is_unavailable(tmp_path, monkeypatch):
     from ziplex.file import scanner
 
-    monkeypatch.setattr(scanner, "_scan_with_secretlint", lambda path, cwd=None: None)
+    monkeypatch.setattr(scanner, "_scan_with_secretlint", lambda path, cwd=None, cmd=None: None)
     path = tmp_path / "secret.env"
     _write(path, 'API_KEY = "abc123"\n')
 
@@ -207,6 +207,7 @@ def test_scan_with_secretlint_no_message_fallback_follows_progress_lang(tmp_path
     import subprocess
 
     stdout = '[{"messages": [{"range": {"start": {"line": 1}}}]}]'  # no "message" key
+    monkeypatch.setattr("ziplex.file.scanner._secretlint_command", lambda root: "secretlint")
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_secretlint_result(stdout))
     path = tmp_path / "secret.env"
     _write(path, "irrelevant -- secretlint itself is mocked\n")
@@ -226,6 +227,7 @@ def test_scan_with_secretlint_real_message_ignores_progress_lang(tmp_path, monke
     import subprocess
 
     stdout = '[{"messages": [{"message": "Found a GitHub token", "range": {"start": {"line": 2}}}]}]'
+    monkeypatch.setattr("ziplex.file.scanner._secretlint_command", lambda root: "secretlint")
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_secretlint_result(stdout))
     path = tmp_path / "secret.env"
     _write(path, "irrelevant -- secretlint itself is mocked\n")
@@ -241,7 +243,8 @@ def test_scan_file_trusts_a_clean_secretlint_result_without_falling_back(tmp_pat
     # specifically to prove the False/None distinction is respected.
     from ziplex.file import scanner
 
-    monkeypatch.setattr(scanner, "_scan_with_secretlint", lambda path, cwd=None: False)
+    monkeypatch.setattr("ziplex.file.scanner._secretlint_command", lambda root: "secretlint")
+    monkeypatch.setattr(scanner, "_scan_with_secretlint", lambda path, cwd=None, cmd=None: False)
     path = tmp_path / "secret.env"
     _write(path, 'API_KEY = "abc123"\n')
 
@@ -307,6 +310,7 @@ def test_scan_with_secretlint_reads_its_real_output_shape(tmp_path, monkeypatch)
     class _Result:
         stdout = __import__("json").dumps(output)
 
+    monkeypatch.setattr("ziplex.file.scanner._secretlint_command", lambda root: "secretlint")
     monkeypatch.setattr(scanner.subprocess, "run", lambda *a, **k: _Result())
     result = scanner.scan_file(str(path))
     assert result == {"reason": "found AWS Access Key ID", "line": 2, "matched_text": "AWS key here"}
@@ -318,7 +322,8 @@ def test_scan_files_runs_secretlint_from_the_project_root(tmp_path, monkeypatch)
     from ziplex.file import scanner
 
     seen = []
-    monkeypatch.setattr(scanner, "_scan_with_secretlint", lambda path, cwd=None: seen.append(cwd) or False)
+    monkeypatch.setattr("ziplex.file.scanner._secretlint_command", lambda root: "secretlint")
+    monkeypatch.setattr(scanner, "_scan_with_secretlint", lambda path, cwd=None, cmd=None: seen.append(cwd) or False)
     path = tmp_path / "a.txt"
     _write(path, "hello\n")
 
@@ -417,3 +422,45 @@ def test_scan_file_still_flags_a_real_shaped_key_in_an_env_template(tmp_path):
     path = tmp_path / ".env.example"
     _write(path, "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789AB\n")
     assert scan_file(str(path)) is not None
+
+
+def test_secretlint_is_skipped_without_a_config_and_resolved_with_one(tmp_path, monkeypatch):
+    # No config: never spawned (it would only error out). With one: the
+    # resolved path, so a Windows npm .cmd shim runs instead of raising.
+    from ziplex.file import scanner
+    monkeypatch.setattr(scanner.shutil, "which", lambda name: "/npm/secretlint.cmd")
+    assert scanner._secretlint_command(str(tmp_path)) is None
+    _write(tmp_path / ".secretlintrc.json", "{}")
+    assert scanner._secretlint_command(str(tmp_path)) == "/npm/secretlint.cmd"
+
+
+def test_scan_files_reuses_results_for_unchanged_content_only(tmp_path, monkeypatch):
+    from ziplex.file import scanner
+    calls = []
+    real = scanner.scan_file
+    monkeypatch.setattr(scanner, "scan_file", lambda *a, **k: calls.append(a[0]) or real(*a, **k))
+    monkeypatch.setattr(scanner, "_scan_cache", {})
+    path = tmp_path / "config.py"
+    _write(path, "x = 1\n")
+
+    assert scan_files([str(path)], root=str(tmp_path))["safe"] == [str(path)]
+    assert scan_files([str(path)], root=str(tmp_path))["safe"] == [str(path)]
+    assert len(calls) == 1
+
+    _write(path, 'API_KEY = "sk-live-9f8e7d6c5b4a"\n')
+    assert len(scan_files([str(path)], root=str(tmp_path))["dangerous"]) == 1
+    assert len(calls) == 2
+
+
+def test_scan_files_cache_follows_progress_lang(tmp_path, monkeypatch):
+    # The reason text is localized, so a cached entry must not leak across
+    # languages.
+    from ziplex.file import scanner
+    monkeypatch.setattr(scanner, "_scan_cache", {})
+    path = tmp_path / "config.py"
+    _write(path, 'API_KEY = "sk-live-9f8e7d6c5b4a"\n')
+    progress_i18n.set_current("en")
+    en = scan_files([str(path)], root=str(tmp_path))["dangerous"][0]["reason"]
+    progress_i18n.set_current("ko")
+    ko = scan_files([str(path)], root=str(tmp_path))["dangerous"][0]["reason"]
+    assert en != ko

@@ -65,6 +65,47 @@ def is_summary_failed_placeholder(summary: str) -> bool:
     return summary in SUMMARY_FAILED_PLACEHOLDERS.values()
 
 
+# How much of a file's leading docstring/comment goes into its summary
+# prompt -- enough for the author's own "what this is" sentence or two.
+MAX_HEADER_CHARS = 400
+_COMMENT_PREFIXES = ("#", "//", "--", ";", "/*", "*", "<!--")
+_LICENSE_MARKERS = ("copyright", "spdx-license", "licensed under", "all rights reserved")
+
+
+def leading_doc(compressed: str) -> str:
+    """The file's leading docstring or comment block, whitespace-collapsed
+    and capped at MAX_HEADER_CHARS -- "" when there is none, or when it's a
+    license banner. compress_file() keeps a module docstring while
+    stripping function bodies, but summary prompts only ever sent
+    signatures, so a model guessed a file's purpose from names alone (a
+    real case: packager.py summarized as building an "Architecture
+    Information File")."""
+    lines = compressed.lstrip("\ufeff").splitlines()
+    while lines and (not lines[0].strip() or lines[0].startswith("#!") or "coding" in lines[0][:25]):
+        lines.pop(0)
+    if not lines:
+        return ""
+    first = lines[0].strip()
+    collected = []
+    for quote in ('"""', "'''"):
+        if first.startswith(quote):
+            body = "\n".join(lines)
+            start = body.index(quote) + 3
+            end = body.find(quote, start)
+            collected = [body[start:end if end != -1 else None]]
+            break
+    else:
+        for line in lines:
+            stripped = line.strip()
+            if not stripped.startswith(_COMMENT_PREFIXES):
+                break
+            collected.append(stripped.lstrip("#/-;*<!").rstrip("*/->").strip())
+    text = " ".join(" ".join(collected).split())
+    if any(marker in text.lower() for marker in _LICENSE_MARKERS):
+        return ""
+    return text[:MAX_HEADER_CHARS]
+
+
 def request_summary(file_path: str, data: dict, lang: str = "en") -> str:
     """Tries once to get one file's summary; returns an empty string on failure.
 
@@ -77,6 +118,7 @@ def request_summary(file_path: str, data: dict, lang: str = "en") -> str:
             data["signatures"],
             data["dependencies"],
             lang=lang,
+            header=leading_doc(data.get("compressed", "")),
         )
     else:
         # Use the already-computed compressed text, not a fresh raw read: it's
@@ -158,6 +200,7 @@ def request_batch_summaries(batch: list[tuple[str, dict]], lang: str = "en", _re
             "signatures": data["signatures"],
             "dependencies": data["dependencies"],
             "content": data.get("compressed", ""),
+            "header": leading_doc(data.get("compressed", "")),
         }
         for name, data in batch
     ]

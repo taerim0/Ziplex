@@ -23,6 +23,16 @@ def _reset_llm_call_state():
 
 
 @pytest.fixture(autouse=True)
+def _reset_scan_cache():
+    """file/scanner.py caches scan results per process; a test that
+    monkeypatches the scanner must not see (or leave) another's results."""
+    from ziplex.file import scanner
+    scanner._scan_cache.clear()
+    yield
+    scanner._scan_cache.clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_progress_lang():
     """progress_i18n's ContextVar is process-wide, so a test that calls
     progress_i18n.set_current() (directly, or indirectly through
