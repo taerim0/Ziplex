@@ -166,9 +166,9 @@ def request_batch_summaries(batch: list[tuple[str, dict]], lang: str = "en", _re
     # non-retryable API error) -- re-batching would just repeat that same
     # failing call, so only an unusable-but-real response gets a re-batch.
     provider_gave_up = response.strip() == "{}"
-    # Retries ran out (quota spent, outage) rather than this request being
-    # refused: per-file fallback would repeat the same failing call once
-    # per file, each with the full backoff.
+    # Retries ran out (quota spent, outage, or read timeouts) rather than
+    # this request being refused: the per-file fallback below stops after
+    # one probe if that fails the same way.
     provider_exhausted = provider_gave_up and llm.last_call_exhausted()
     summaries = _parse_batch_response(response)
 
@@ -187,12 +187,19 @@ def request_batch_summaries(batch: list[tuple[str, dict]], lang: str = "en", _re
             f"  ⚠️  배치 응답에서 {len(missed)}/{len(batch)}개 파일 누락 -- 한 배치로 재요청",
         ))
         result.update(request_batch_summaries(missed, lang=lang, _rebatch=False))
-    elif provider_exhausted:
-        for name, _data in missed:
-            result[name] = SUMMARY_FAILED_PLACEHOLDERS.get(lang, SUMMARY_FAILED_PLACEHOLDERS["en"])
     else:
-        for name, data in missed:
+        for i, (name, data) in enumerate(missed):
             result[name] = request_summary(name, data, lang=lang)
+            # Retries ran out on the batch: the first single-file request
+            # is a probe. A quota/outage exhausts it too, so the rest get ""
+            # (generate_summaries() logs ❌ and substitutes the placeholder)
+            # instead of one full backoff per file. A batch prompt that was
+            # just too big to finish before a slow model's read timeout
+            # gets through single, so the per-file fallback continues.
+            if provider_exhausted and not result[name] and llm.last_call_exhausted():
+                for rest_name, _rest_data in missed[i + 1:]:
+                    result[rest_name] = ""
+                break
     return result
 
 

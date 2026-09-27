@@ -775,12 +775,12 @@ def _cmd_freshness(args) -> None:
     # against an unscoped file tree. Best-effort: any naming mismatch or
     # read failure just means no extra scope, same as an aif.json packed
     # before this field existed.
-    extra_include = extra_ignore = None
+    extra_include = extra_ignore = deselected = None
     aif_path = aif_path_for_cache(args.cache_path)
     if aif_path is not None:
-        extra_include, extra_ignore = load_pack_scope(str(aif_path))
+        extra_include, extra_ignore, deselected = load_pack_scope(str(aif_path))
 
-    report = check_freshness_scoped(args.path, manifest, extra_include, extra_ignore)
+    report = check_freshness_scoped(args.path, manifest, extra_include, extra_ignore, deselected)
 
     if not report.is_stale:
         print("✅ 최신 상태 — 변경된 파일 없음")
@@ -834,8 +834,8 @@ def _cmd_skill(args) -> None:
         if manifest is not None:
             # (None, None) when aif itself failed to parse above, same as
             # load_pack_scope()'s own failure fallback used to give.
-            extra_include, extra_ignore = scope_from_aif(aif) if aif is not None else (None, None)
-            report = check_freshness_scoped(args.project, manifest, extra_include, extra_ignore)
+            extra_include, extra_ignore, deselected = scope_from_aif(aif) if aif is not None else (None, None, None)
+            report = check_freshness_scoped(args.project, manifest, extra_include, extra_ignore, deselected)
             if report.is_stale:
                 print("⚠️  내보내려는 aif.json이 프로젝트의 현재 상태와 다릅니다 (오래됨) -- 그대로 내보냅니다.")
                 if report.changed:

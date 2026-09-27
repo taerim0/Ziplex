@@ -255,3 +255,67 @@ def test_generate_structural_summaries_returns_one_summary_per_pending_file(tmp_
         fp_a: "Defines: add()",
         fp_b: "No signatures or dependencies detected (structural-only mode, no LLM summary).",
     }
+
+
+def _exhausted_batch(monkeypatch):
+    """analyze_batch_summaries() giving up with retries exhausted."""
+    from ziplex import llm
+
+    def _analyze(items, lang="en"):
+        llm._call_state.exhausted = True
+        return "{}"
+
+    monkeypatch.setattr(summarizer, "analyze_batch_summaries", _analyze)
+    return llm
+
+
+def test_request_batch_summaries_stops_after_one_probe_when_the_provider_is_exhausted(monkeypatch):
+    llm = _exhausted_batch(monkeypatch)
+    probes = []
+
+    def _request(name, data, lang="en"):
+        probes.append(name)
+        llm._call_state.exhausted = True
+        return ""
+
+    monkeypatch.setattr(summarizer, "request_summary", _request)
+
+    result = summarizer.request_batch_summaries(_batch("a.py", "b.py", "c.py"))
+
+    assert probes == ["a.py"]
+    # "" -- not the placeholder text -- so generate_summaries() logs a failure.
+    assert result == {"a.py": "", "b.py": "", "c.py": ""}
+
+
+def test_request_batch_summaries_keeps_going_per_file_when_the_probe_succeeds(monkeypatch):
+    # A batch that timed out on a slow local model can still fit single
+    # files -- that's the case the per-file fallback exists for.
+    llm = _exhausted_batch(monkeypatch)
+
+    def _request(name, data, lang="en"):
+        llm._call_state.exhausted = False
+        return f"fallback for {name}"
+
+    monkeypatch.setattr(summarizer, "request_summary", _request)
+
+    result = summarizer.request_batch_summaries(_batch("a.py", "b.py"))
+
+    assert result == {"a.py": "fallback for a.py", "b.py": "fallback for b.py"}
+
+
+def test_generate_summaries_logs_a_failure_not_a_checkmark_when_the_provider_is_exhausted(monkeypatch, tmp_path, capsys):
+    llm = _exhausted_batch(monkeypatch)
+
+    def _request(name, data, lang="en"):
+        llm._call_state.exhausted = True
+        return ""
+
+    monkeypatch.setattr(summarizer, "request_summary", _request)
+    pending = {str(tmp_path / "a.py"): {"signatures": [], "dependencies": []}}
+
+    results = summarizer.generate_summaries(pending, tmp_path)
+
+    out = capsys.readouterr().out
+    assert "\u2705" not in out
+    assert "\u274c a.py" in out
+    assert results[str(tmp_path / "a.py")] == summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"]

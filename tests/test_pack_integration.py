@@ -1921,3 +1921,61 @@ def test_rules_prompt_uses_relative_paths_and_caps_signatures_per_file(tmp_path,
     assert "secret_client_folder" not in rules_prompt
     assert "'big.py'" in rules_prompt
     assert "(+20 more)" in rules_prompt and "f39(" not in rules_prompt
+
+
+def test_collapse_deselected_folds_fully_unchecked_folders():
+    deselected = ["tests/unit/a.py", "tests/b.py", "src/extra.py", "root.py"]
+    selected = ["src/main.py", "README.md"]
+    assert packager._collapse_deselected(deselected, selected) == ["root.py", "src/extra.py", "tests/"]
+
+
+def test_pack_records_collapsed_deselected_scope(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "src" / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "src" / "extra.py", "def sub(a, b):\n    return a - b\n")
+    for i in range(3):
+        _write(project / "tests" / f"test_{i}.py", f"def test_{i}():\n    pass\n")
+
+    aif = packager.pack(str(project), interactive=False, preselected=["src/main.py"])
+
+    assert aif["project"]["scope"]["deselected"] == ["src/extra.py", "tests/"]
+
+
+class _NonStringRulesProvider(llm.MockProvider):
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
+        if '"rules"' in prompt:
+            return json.dumps({"rules": [{"rule": "use snake_case"}]})
+        return super().generate(prompt, retry=retry)
+
+
+class _BareStringPromptProvider(llm.MockProvider):
+    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
+        if '"prompt"' in prompt:
+            return json.dumps("Here is the prompt for this project")
+        return super().generate(prompt, retry=retry)
+
+
+def test_pack_treats_non_string_rule_items_as_a_failed_call(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_provider", _NonStringRulesProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+
+    assert aif == {}
+    assert checkpoint._checkpoint_path(str(project)).exists()
+
+
+def test_pack_bare_json_string_prompt_checkpoints_instead_of_crashing(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_provider", _BareStringPromptProvider())
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+
+    aif = packager.pack(str(project), auto=True, interactive=False)
+
+    assert aif == {}
+    assert checkpoint._checkpoint_path(str(project)).exists()

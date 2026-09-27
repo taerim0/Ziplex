@@ -20,7 +20,6 @@ is exactly this module's own subject.
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -179,25 +178,34 @@ def freshness_candidate_files(scan_result: dict, root: str, manifest: dict[str, 
     return safe + included_before
 
 
-def scope_from_aif(aif: dict) -> tuple[list[str] | None, list[str] | None]:
-    """The (extra_include, extra_ignore) pair load_pack_scope() reads off
-    aif.json's own `project.scope` -- split out as the pure half of that
-    function so a caller that already has the parsed dict in hand (cli.py's
-    `_cmd_skill()`, which otherwise would re-read/re-parse the same
-    aif_path a second time in one invocation just for this) can reuse it
-    instead of going through another file read.
+def scope_from_aif(aif: dict) -> tuple[list[str] | None, list[str] | None, list[str] | None]:
+    """The (extra_include, extra_ignore, deselected) triple load_pack_scope()
+    reads off aif.json's own `project.scope` -- split out as the pure half
+    of that function so a caller that already has the parsed dict in hand
+    (cli.py's `_cmd_skill()`, which otherwise would re-read/re-parse the
+    same aif_path a second time in one invocation just for this) can reuse
+    it instead of going through another file read.
+
+    `deselected` (files/folders deliberately left out of a manual
+    selection) is returned separately rather than folded into the ignore
+    patterns: it's a freshness-only fact (check_freshness_scoped()), not a
+    collection rule -- folded in, it also silently hid those files from
+    query_service.search_project()'s live-disk search, and gitignore
+    escaping can't express every filename (a trailing space, a backslash
+    under pathspec) as an exact literal match anyway.
     """
     scope = (aif.get("project") or {}).get("scope") or {}
-    # Files deliberately left out of a manual selection come back as
-    # literal, root-anchored ignore patterns, so a later collect never sees
-    # them and they can't be reported "added".
-    ignore = list(scope.get("ignore") or []) + [_literal_pattern(p) for p in scope.get("deselected") or []]
-    return scope.get("include") or None, ignore or None
+    return scope.get("include") or None, scope.get("ignore") or None, scope.get("deselected") or None
 
 
-def _literal_pattern(rel_path: str) -> str:
-    """A gitignore pattern matching exactly `rel_path` from the root."""
-    return "/" + re.sub(r"([\[\]*?!#\\])", r"\\\1", rel_path)
+def is_deselected(rel_key: str, deselected: list[str] | None) -> bool:
+    """True if `rel_key` is one of `deselected`'s entries: an exact file key,
+    or anything under a folder entry (trailing "/") -- see
+    packager._collapse_deselected() for where folder entries come from."""
+    for entry in deselected or ():
+        if rel_key == entry or (entry.endswith("/") and rel_key.startswith(entry)):
+            return True
+    return False
 
 
 def cache_path_for_aif(aif_path: str) -> Path:
@@ -224,17 +232,17 @@ def aif_path_for_cache(cache_path: str) -> Path | None:
     return p.with_name(p.name[: -len(".cache.json")] + ".json")
 
 
-def load_pack_scope(aif_path: str) -> tuple[list[str] | None, list[str] | None]:
+def load_pack_scope(aif_path: str) -> tuple[list[str] | None, list[str] | None, list[str] | None]:
     """Reads back aif.json's own `project.scope` (packager.pack()'s record
     of the one-off --include/--ignore CLI extras that pack ran with, see
     that field's own comment) as check_freshness_scoped()'s
-    extra_include/extra_ignore -- a .ziplex.json is already reproducible
+    extra_include/extra_ignore (+ its `deselected` list) -- a .ziplex.json is already reproducible
     from disk on its own, but those CLI-only extras aren't persisted
     anywhere else, so without this a later freshness check would diff
     against an unscoped file tree and report every out-of-scope file as
     spuriously added/removed.
 
-    (None, None) on any read failure, or for an aif.json packed before this
+    (None, None, None) on any read failure, or for an aif.json packed before this
     field existed -- every caller already treats that the same as "no
     extra scope", check_freshness_scoped()'s own pre-existing default.
     Shared by query_service.py (get_overview/list_files/check_freshness)
@@ -246,7 +254,7 @@ def load_pack_scope(aif_path: str) -> tuple[list[str] | None, list[str] | None]:
         with open(aif_path, "r", encoding="utf-8") as f:
             aif = json.load(f)
     except (OSError, json.JSONDecodeError):
-        return None, None
+        return None, None, None
     return scope_from_aif(aif)
 
 
@@ -255,6 +263,7 @@ def check_freshness_scoped(
     manifest: dict[str, str],
     extra_include: list[str] | None = None,
     extra_ignore: list[str] | None = None,
+    deselected: list[str] | None = None,
 ) -> FreshnessReport:
     """collect_and_scan() -> freshness_candidate_files() -> check_freshness(),
     in one call. This is what every real freshness-check caller should use
@@ -282,9 +291,19 @@ def check_freshness_scoped(
     `project.scope` (aif.json's record of exactly what a given pack used --
     see that field's own comment) back in here; omit them (the default) for
     the pre-existing "just respect .ziplex.json" behavior.
+
+    `deselected` is `project.scope.deselected` (scope_from_aif()'s third
+    value): files a human left unchecked are dropped from the candidates
+    unless the manifest has them, so a partial pack isn't reported as
+    "added"-stale forever -- and they're never hashed at all.
     """
     scan_result = collect_and_scan(project_path, extra_include, extra_ignore)
     candidates = freshness_candidate_files(scan_result, project_path, manifest)
+    if deselected:
+        candidates = [
+            fp for fp in candidates
+            if (key := relative_key(fp, project_path)) in manifest or not is_deselected(key, deselected)
+        ]
     return check_freshness(candidates, project_path, manifest)
 
 

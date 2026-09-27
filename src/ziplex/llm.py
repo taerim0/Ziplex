@@ -182,31 +182,56 @@ def reset_usage() -> None:
 class _CircuitBreaker:
     """Pack-wide "stop calling a provider that keeps giving up". After
     CIRCUIT_BREAKER_THRESHOLD consecutive calls end with retries exhausted
-    (429/5xx/network every time -- a spent quota, an outage), every later
-    generate() returns "{}" at once instead of sitting through the full
+    (429/5xx/network every time -- a spent quota, an outage), later
+    generate() calls return "{}" at once instead of sitting through the full
     backoff again. Found by code review: with a quota gone, each 8-file
     batch spent ~75s of backoff, then retried every file alone for another
     ~75s each -- about 45 minutes and 9x the requests for a 100-file
-    project, all of it ending in placeholders. Reset per pack
-    (reset_usage()); any successful call closes it again."""
+    project, all of it ending in placeholders.
+
+    Half-open, not latched: once CIRCUIT_BREAKER_COOLDOWN_SECONDS have
+    passed since it opened, one probe call is let through -- success closes
+    it, another exhaustion re-opens it for a fresh cooldown. A latched
+    breaker could never close (no request was sent, so no success could be
+    recorded), so a 60-second 503 blip turned the entire rest of a pack
+    into placeholders. Reset per pack (reset_usage()) and on an explicit
+    user retry (reset_circuit())."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._streak = 0
+        self._opened_at = 0.0
+        self._probing = False
         self._announced = False
 
     def reset(self) -> None:
         with self._lock:
             self._streak = 0
+            self._opened_at = 0.0
+            self._probing = False
             self._announced = False
 
-    def is_open(self) -> bool:
+    def allow_request(self) -> bool:
+        """False while open; True when closed, or for the single probe of a
+        cooled-down open breaker."""
         with self._lock:
-            return self._streak >= CIRCUIT_BREAKER_THRESHOLD
+            if self._streak < CIRCUIT_BREAKER_THRESHOLD:
+                return True
+            if self._probing or time.monotonic() - self._opened_at < CIRCUIT_BREAKER_COOLDOWN_SECONDS:
+                return False
+            self._probing = True
+            return True
 
     def record(self, exhausted: bool) -> None:
         with self._lock:
-            self._streak = self._streak + 1 if exhausted else 0
+            self._probing = False
+            if exhausted:
+                self._streak += 1
+                if self._streak >= CIRCUIT_BREAKER_THRESHOLD:
+                    self._opened_at = time.monotonic()
+            else:
+                self._streak = 0
+                self._announced = False
 
     def announce_once(self) -> bool:
         with self._lock:
@@ -215,6 +240,7 @@ class _CircuitBreaker:
 
 
 CIRCUIT_BREAKER_THRESHOLD = 3
+CIRCUIT_BREAKER_COOLDOWN_SECONDS = 30.0
 _circuit = _CircuitBreaker()
 _call_state = threading.local()
 
@@ -225,6 +251,13 @@ def last_call_exhausted() -> bool:
     request-specific refusal (a safety block, a malformed body), which a
     smaller per-item retry might still get past."""
     return getattr(_call_state, "exhausted", False)
+
+
+def reset_circuit() -> None:
+    """Closes the circuit breaker -- for an explicit user "retry"
+    (checkpoint.handle_llm_failure()), which must actually send a request
+    rather than fail instantly against a still-cooling-down breaker."""
+    _circuit.reset()
 
 
 def get_usage() -> dict:
@@ -309,12 +342,12 @@ def _retry_loop(make_request, interpret, retry: int, prefix: str) -> str:
     a generic API error, even though both are equally non-retryable).
     """
     _call_state.exhausted = False
-    if _circuit.is_open():
+    if not _circuit.allow_request():
         _call_state.exhausted = True
         if _circuit.announce_once():
             print(pick(
-                f"  ❌ {prefix}The provider kept failing after retries; skipping further LLM calls this run",
-                f"  ❌ {prefix}재시도 후에도 제공자가 계속 실패해 이번 실행의 LLM 호출을 중단합니다",
+                f"  ❌ {prefix}The provider kept failing after retries; pausing LLM calls ({CIRCUIT_BREAKER_COOLDOWN_SECONDS:.0f}s between probes)",
+                f"  ❌ {prefix}재시도 후에도 제공자가 계속 실패해 LLM 호출을 잠시 중단합니다 ({CIRCUIT_BREAKER_COOLDOWN_SECONDS:.0f}초마다 재확인)",
             ))
         return "{}"
     for attempt in range(retry):
@@ -900,6 +933,11 @@ def generate(prompt: str, retry: int = 5, label: str = "") -> str:
     lines a provider's generate() prints -- reported directly as missing:
     a failing pack gave no indication of *which* file was the problem.
     """
+    # Cleared here, the one entry point every provider goes through -- not
+    # only inside _retry_loop(), which a provider may bypass (MockProvider),
+    # leaving a stale flag from an earlier call on this thread for
+    # last_call_exhausted() to misreport.
+    _call_state.exhausted = False
     return _active_provider().generate(prompt, retry=retry, label=label)
 
 

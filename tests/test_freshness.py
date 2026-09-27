@@ -298,3 +298,28 @@ def test_load_previous_summaries_tolerates_a_corrupt_cache_file(tmp_path):
     (result_dir / "project.cache.json").write_text("{ not valid json", encoding="utf-8")
 
     assert load_previous_summaries("some/project", ["a.py"], result_dir) == {}
+
+
+def test_is_deselected_matches_exact_keys_and_folder_entries_only():
+    from ziplex.freshness import is_deselected
+    # Exact string match: names gitignore escaping couldn't express
+    # (trailing space, backslash) work like any other.
+    assert is_deselected("notes ", ["notes "])
+    assert is_deselected("dir/x\\y.py", ["dir/x\\y.py"])
+    assert not is_deselected("notes", ["notes "])
+    assert is_deselected("tests/unit/a.py", ["tests/"])
+    assert not is_deselected("tests_old/a.py", ["tests/"])
+    assert not is_deselected("a.py", None)
+
+
+def test_check_freshness_scoped_does_not_report_deselected_files_as_added(tmp_path):
+    project = tmp_path / "project"
+    _write(project / "main.py", "x = 1\n")
+    _write(project / "skip me.py", "y = 1\n")
+    _write(project / "tests" / "test_a.py", "z = 1\n")
+    _write(project / "new.py", "w = 1\n")
+    manifest = build_manifest([str(project / "main.py")], str(project))
+
+    report = check_freshness_scoped(str(project), manifest, deselected=["skip me.py", "tests/"])
+
+    assert report.added == ["new.py"]

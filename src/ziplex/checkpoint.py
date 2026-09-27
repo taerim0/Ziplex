@@ -19,6 +19,7 @@ from pathlib import Path
 from .file.textutil import relative_key as _rel_key
 from .paths import REPO_ROOT
 from .progress_i18n import pick
+from . import llm
 
 # Per-user, next to settings.json -- always writable. The old location,
 # REPO_ROOT / "checkpoint", sits under the *install* directory: for a
@@ -286,6 +287,9 @@ def handle_llm_failure(
     choice = input(pick("  Choice: ", "  선택: ")).strip()
 
     if choice == "1":
+        # A deliberate retry (key swapped, quota reset) must reach the
+        # provider, not bounce off a still-open circuit breaker.
+        llm.reset_circuit()
         return None
     elif choice == "2":
         return input(pick(f"  Enter {field}: ", f"  {field} 직접 입력: ")).strip()
@@ -293,6 +297,8 @@ def handle_llm_failure(
         save_checkpoint(root_path, current_aif)
         return "EXIT"
 
+    # Any other input is treated as a retry, same as "1".
+    llm.reset_circuit()
     return None
 
 

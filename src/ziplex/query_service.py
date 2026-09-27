@@ -182,8 +182,8 @@ def _stale_warning(project_path: str | None, aif_path: str) -> dict | None:
     # correctly the first time) caught up and corrected the badge a moment
     # later. check_freshness_scoped() (freshness.py) now centralizes this
     # exact sequence so a third missed call site can't happen again.
-    extra_include, extra_ignore = load_pack_scope(aif_path)
-    report = check_freshness_scoped(project_path, manifest, extra_include, extra_ignore)
+    extra_include, extra_ignore, deselected = load_pack_scope(aif_path)
+    report = check_freshness_scoped(project_path, manifest, extra_include, extra_ignore, deselected)
     warning = None
     if report.is_stale:
         warning = {"is_stale": True, "changed": report.changed, "added": report.added, "removed": report.removed}
@@ -534,8 +534,8 @@ def check_freshness(project_path: str, aif_path: str) -> dict:
     """
     _require_project_dir(project_path)
     manifest = _load_json(str(_cache_path(aif_path)))
-    extra_include, extra_ignore = load_pack_scope(aif_path)
-    report = check_freshness_scoped(project_path, manifest, extra_include, extra_ignore)
+    extra_include, extra_ignore, deselected = load_pack_scope(aif_path)
+    report = check_freshness_scoped(project_path, manifest, extra_include, extra_ignore, deselected)
     return {
         "is_stale": report.is_stale,
         "changed": report.changed,
@@ -604,7 +604,10 @@ def search_project(
     narrow `pattern` (or raise max_results) and call again rather than
     assuming "matches" is the complete picture.
     """
-    extra_include, extra_ignore = load_pack_scope(aif_path) if aif_path else (None, None)
+    # deselected is deliberately dropped: it's a freshness fact, not a
+    # scope rule -- a file left unchecked at pack time still exists on disk
+    # and is still searchable.
+    extra_include, extra_ignore, _deselected = load_pack_scope(aif_path) if aif_path else (None, None, None)
     safe_files = collect_and_scan(project_path, extra_include, extra_ignore)["safe"]
     if max_results is None:
         raw_matches = search_files(safe_files, project_path, pattern, context_lines, ignore_case)

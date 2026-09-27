@@ -438,6 +438,34 @@ def _select_files(
     return selected, dangerous, included_anyway, safe_files
 
 
+def _collapse_deselected(deselected: list[str], selected: list[str]) -> list[str]:
+    """`project.scope.deselected` for aif.json: each left-unchecked file,
+    collapsed to its topmost folder ("tests/") when nothing under that
+    folder was selected. Uncollapsed, picking 25 files out of a 4,000-file
+    repo wrote ~3,975 paths into aif.json -- an artifact meant to be
+    token-reduced, returned whole by get_overview(). A folder entry also
+    means a file created there later isn't reported as "added" by
+    freshness (freshness.is_deselected()) -- the folder was left out as a
+    whole, so that's the intended reading.
+    """
+    selected_dirs = set()
+    for key in selected:
+        parts = key.split("/")[:-1]
+        for i in range(1, len(parts) + 1):
+            selected_dirs.add("/".join(parts[:i]) + "/")
+    result = set()
+    for key in deselected:
+        parts = key.split("/")[:-1]
+        entry = key
+        for i in range(1, len(parts) + 1):
+            folder = "/".join(parts[:i]) + "/"
+            if folder not in selected_dirs:
+                entry = folder
+                break
+        result.add(entry)
+    return sorted(result)
+
+
 def _extract_rules(
     files_data: dict, signatures_map: dict, root: Path, root_path: str, lang: str,
     use_llm: bool, carried_rules: list[str] | None, interactive: bool,
@@ -506,7 +534,14 @@ def _extract_rules(
             # exit" sentinel -- so the run stopped silently with no
             # checkpoint and every paid summary was lost. A non-list value
             # is a failed call like any other.
-            if isinstance(rules_data, dict) and isinstance(rules_data.get("rules"), list):
+            # Items checked too: `{"rules": [{"rule": "..."}]}` (also small
+            # local models) otherwise shipped as "{'rule': ...}" in exports
+            # and "[object Object]" in the GUI.
+            if (
+                isinstance(rules_data, dict)
+                and isinstance(rules_data.get("rules"), list)
+                and all(isinstance(r, str) for r in rules_data["rules"])
+            ):
                 # The "rules" key being present at all -- even paired with
                 # an empty list -- means this is a real answer (a trivial
                 # project can legitimately have no inferable coding rules),
@@ -574,7 +609,11 @@ def _generate_prompt(
             except json.JSONDecodeError:
                 prompt_data = None
 
-            if prompt_data is not None and "prompt" in prompt_data:
+            # isinstance, same as the rules check above: a bare JSON string
+            # made `"prompt" in prompt_data` a substring test, and
+            # `prompt_data["prompt"]` then raised TypeError -- crashing
+            # pack() after every summary was paid for, with no checkpoint.
+            if isinstance(prompt_data, dict) and isinstance(prompt_data.get("prompt"), str):
                 # Same "key present, even if its value is falsy, means a
                 # real answer" distinction rules extraction above needs --
                 # see that block's comment. Less likely in practice for a
@@ -701,8 +740,9 @@ def _assemble_aif(
             # file tree and reporting every out-of-scope file as spuriously
             # "added"/"removed".
             # `deselected`: safe files a human left unchecked (GUI picker,
-            # interactive select_files()) -- present only when there are
-            # any. Without it every one of them showed up as "added" in
+            # interactive select_files()), collapsed to folders where
+            # possible (_collapse_deselected()) -- present only when there
+            # are any. Without it every one of them showed up as "added" in
             # every later freshness check, so a partial pack was stale
             # forever (CI gate always failing, a permanent GUI badge).
             "scope": {
@@ -1023,7 +1063,10 @@ def pack(
         root_path, root, include, ignore, auto, interactive, preselected,
     )
     selected_set = set(selected)
-    deselected = sorted(_rel_key(f, root) for f in safe_files if f not in selected_set)
+    deselected = _collapse_deselected(
+        [_rel_key(f, root) for f in safe_files if f not in selected_set],
+        [_rel_key(f, root) for f in selected],
+    )
 
     if not selected:
         print(pick("No files selected.", "선택된 파일 없음."))

@@ -729,3 +729,95 @@ def test_an_unknown_llm_provider_env_value_is_ignored_not_fatal(monkeypatch, tmp
     assert llm._env_provider_name() is None
     monkeypatch.setenv("LLM_PROVIDER", " Mock ")
     assert llm._env_provider_name() == "mock"
+
+
+def _exhaust_once(provider):
+    """One generate() call where every attempt is a 503."""
+    return provider.generate("prompt", retry=1)
+
+
+def test_circuit_breaker_opens_after_repeated_exhaustion_then_half_opens_after_cooldown(monkeypatch):
+    # A latched breaker could never close (no request sent, so no success
+    # recorded) -- a brief 503 blip placeholdered the whole rest of a pack.
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(llm.time, "monotonic", lambda: clock["t"])
+    state = {"calls": 0, "healthy": False}
+
+    def fake_post(url, json, timeout=None):
+        state["calls"] += 1
+        if state["healthy"]:
+            return _FakeResponse({"candidates": [{"content": {"parts": [{"text": '{"summary": "ok"}'}]}}]})
+        return _FakeResponse({"error": {"code": 503, "message": "overloaded"}})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.GeminiProvider(api_key="x")
+
+    for _ in range(llm.CIRCUIT_BREAKER_THRESHOLD):
+        assert _exhaust_once(provider) == "{}"
+    sent = state["calls"]
+
+    # Open: no request at all, reported as exhausted.
+    assert provider.generate("prompt", retry=3) == "{}"
+    assert state["calls"] == sent
+    assert llm.last_call_exhausted() is True
+
+    # Cooled down and the provider recovered: one probe goes through and
+    # closes the breaker for every call after it.
+    clock["t"] += llm.CIRCUIT_BREAKER_COOLDOWN_SECONDS + 1
+    state["healthy"] = True
+    assert provider.generate("prompt", retry=3) == '{"summary": "ok"}'
+    assert provider.generate("prompt", retry=3) == '{"summary": "ok"}'
+    assert state["calls"] == sent + 2
+
+
+def test_circuit_breaker_probe_that_fails_reopens_for_a_fresh_cooldown(monkeypatch):
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(llm.time, "monotonic", lambda: clock["t"])
+    calls = {"n": 0}
+
+    def fake_post(url, json, timeout=None):
+        calls["n"] += 1
+        return _FakeResponse({"error": {"code": 503, "message": "overloaded"}})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.GeminiProvider(api_key="x")
+    for _ in range(llm.CIRCUIT_BREAKER_THRESHOLD):
+        _exhaust_once(provider)
+
+    clock["t"] += llm.CIRCUIT_BREAKER_COOLDOWN_SECONDS + 1
+    _exhaust_once(provider)  # the probe, which fails too
+    sent = calls["n"]
+    assert provider.generate("prompt", retry=1) == "{}"
+    assert calls["n"] == sent  # open again, no request
+
+
+def test_reset_circuit_lets_the_next_call_through_immediately(monkeypatch):
+    monkeypatch.setattr(llm.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def fake_post(url, json, timeout=None):
+        calls["n"] += 1
+        return _FakeResponse({"error": {"code": 503, "message": "overloaded"}})
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    provider = llm.GeminiProvider(api_key="x")
+    for _ in range(llm.CIRCUIT_BREAKER_THRESHOLD):
+        _exhaust_once(provider)
+    sent = calls["n"]
+
+    llm.reset_circuit()
+    _exhaust_once(provider)
+    assert calls["n"] == sent + 1
+
+
+def test_generate_clears_a_stale_exhausted_flag_for_a_provider_that_bypasses_the_retry_loop(monkeypatch):
+    # MockProvider never goes through _retry_loop(), so the flag has to be
+    # cleared at the shared generate() entry point.
+    llm._call_state.exhausted = True
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+
+    llm.generate('{"summary"}')
+
+    assert llm.last_call_exhausted() is False

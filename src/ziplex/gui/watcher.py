@@ -178,8 +178,8 @@ def start_watch(project_path: str, aif_path: str) -> None:
     def recompute():
         try:
             manifest = _load_manifest(aif_path)
-            extra_include, extra_ignore = load_pack_scope(aif_path)
-            report = check_freshness_scoped(project_path, manifest, extra_include, extra_ignore)
+            extra_include, extra_ignore, deselected = load_pack_scope(aif_path)
+            report = check_freshness_scoped(project_path, manifest, extra_include, extra_ignore, deselected)
             with _watchers_lock:
                 entry = _watchers.get(key)
                 if entry is not None and entry.get("token") is token:

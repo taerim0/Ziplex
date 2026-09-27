@@ -324,3 +324,16 @@ def test_a_checkpoint_left_in_the_legacy_folder_is_still_resumed_listed_and_clea
     assert [c["project_name"] for c in ckpt.list_checkpoints()] == ["proj"]
     ckpt.delete_checkpoint(str(project))
     assert not legacy.exists()
+
+
+def test_handle_llm_failure_retry_closes_the_circuit_breaker(monkeypatch):
+    # With the breaker still open, "retry" failed instantly without
+    # sending anything -- the user was asked the same question forever.
+    from ziplex import llm
+    for _ in range(llm.CIRCUIT_BREAKER_THRESHOLD):
+        llm._circuit.record(exhausted=True)
+    assert llm._circuit.allow_request() is False
+    monkeypatch.setattr(builtins, "input", lambda *a, **k: "1")
+
+    assert checkpoint.handle_llm_failure("x", "rules", {}, "proj", interactive=True) is None
+    assert llm._circuit.allow_request() is True

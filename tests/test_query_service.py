@@ -431,3 +431,17 @@ def test_list_files_accepts_a_leading_dot_slash_folder(tmp_path):
 
     assert list(query_service.list_files(str(aif), folder="./src")) == ["src/a.py"]
     assert list(query_service.list_files(str(aif), folder="./")) == ["b.py"]
+
+
+def test_search_project_still_finds_files_left_unchecked_at_pack_time(tmp_path):
+    # `deselected` is a freshness fact, not a scope rule: an unchecked file
+    # is still on disk and still searchable.
+    project = tmp_path / "project"
+    _write(project / "src" / "main.py", "TARGET_TOKEN = 1\n")
+    _write(project / "tests" / "test_main.py", "TARGET_TOKEN = 2\n")
+    aif_path = tmp_path / "out.json"
+    _write(aif_path, json.dumps({"project": {"scope": {"include": [], "ignore": [], "deselected": ["tests/"]}}}))
+
+    result = query_service.search_project(str(project), "TARGET_TOKEN", aif_path=str(aif_path))
+
+    assert any("test_main.py" in r["file"] for r in result["matches"])
