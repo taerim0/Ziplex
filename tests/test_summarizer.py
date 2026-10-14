@@ -358,3 +358,26 @@ def test_request_batch_summaries_sends_each_files_header(monkeypatch):
     summarizer.request_batch_summaries(batch)
 
     assert seen[0]["header"] == "Does A."
+
+
+def test_summary_workers_inherit_the_progress_language(tmp_path, monkeypatch):
+    # ThreadPoolExecutor doesn't copy contextvars on submit; without an
+    # explicit copy, worker progress lines fell back to the default language.
+    import contextvars
+    from ziplex import progress_i18n, summarizer as summ
+
+    seen = []
+
+    def fake_batch(batch, lang):
+        seen.append(progress_i18n.current())
+        return {name: "s" for name, _data in batch}
+
+    monkeypatch.setattr(summ, "request_batch_summaries", fake_batch)
+
+    def run():
+        progress_i18n.set_current("en")
+        pending = {str(tmp_path / "a.py"): {"signatures": [], "dependencies": []}}
+        summ.generate_summaries(pending, tmp_path)
+
+    contextvars.copy_context().run(run)
+    assert seen and set(seen) == {"en"}

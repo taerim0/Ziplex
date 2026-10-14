@@ -16,11 +16,9 @@ A `contextvars.ContextVar`, not a plain module global or `threading.local`:
 parallel via a `ThreadPoolExecutor`, and only a `ContextVar`'s value (set
 once, here, at `pack()`'s own entry, on whichever thread is actually
 running it -- the CLI's main thread, or one of `pack_service.py`'s GUI job
-threads) is automatically captured into a worker thread `.submit()`'d from
-that same thread (`concurrent.futures` copies the caller's context on
-submit) -- a `threading.local()` would leave every worker thread seeing
-only the default, since a plain thread inherits nothing from the one that
-started it.
+threads) can be carried into a worker thread. `concurrent.futures` does NOT copy
+the caller's context on submit (Python 3.11), so every pool submit in the
+pipeline wraps its callable in `contextvars.copy_context().run`.
 
 `pack()`'s own `progress_lang: str = "ko"` parameter (defaulting to today's
 existing CLI behavior) is the pipeline's own entry point for this -- every

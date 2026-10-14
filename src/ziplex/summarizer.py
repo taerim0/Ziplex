@@ -22,6 +22,7 @@ since deciding what still counts as "fresh" is squarely that module's own
 subject, not a concern of the LLM-call batching this module actually owns.
 """
 
+import contextvars
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import json
@@ -281,7 +282,7 @@ def generate_summaries(pending: dict[str, dict], root: Path, lang: str = "en") -
     results = {}
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {
-            executor.submit(request_batch_summaries, batch, lang): batch
+            executor.submit(contextvars.copy_context().run, request_batch_summaries, batch, lang): batch
             for batch in batches
         }
         for future in as_completed(futures):
