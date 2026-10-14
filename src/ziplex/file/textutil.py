@@ -23,6 +23,13 @@ def relative_key(file_path: str, root) -> str:
     silently letting the last one overwrite the earlier ones. A relative-path
     key avoids that.
     """
+    # String fast path for the common case (an already-normalized path under
+    # root); anything unusual falls through to pathlib's lexical semantics.
+    root_str = str(root).replace("\\", "/").rstrip("/")
+    path_str = str(file_path).replace("\\", "/")
+    if root_str and path_str.startswith(root_str + "/") and "/./" not in path_str and "//" not in path_str[len(root_str):]:
+        return path_str[len(root_str) + 1:]
+
     from pathlib import Path
 
     root = Path(root)
