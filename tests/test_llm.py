@@ -853,3 +853,70 @@ def test_analyze_rules_gets_file_summaries_and_asks_for_more_than_naming_style(m
     llm.analyze_rules({"main.py": ["add()"]}, summaries=["cli.py: Dispatches subcommands."])
     assert "cli.py: Dispatches subcommands." in captured[0]
     assert "Skip generic naming/formatting style" in captured[0]
+
+
+def test_request_timeout_scales_with_prompt_size():
+    assert llm.request_timeout("") == llm.REQUEST_TIMEOUT
+    assert llm.request_timeout("x" * 50_000) == llm.REQUEST_TIMEOUT + 30
+    assert llm.request_timeout("x" * 250_000) == llm.REQUEST_TIMEOUT + 150
+
+
+def test_every_provider_sends_the_size_scaled_timeout(monkeypatch):
+    timeouts = []
+    bodies = {
+        "gemini": {"candidates": [{"content": {"parts": [{"text": "{}"}]}}]},
+        "openai": {"choices": [{"message": {"content": "{}"}}]},
+        "claude": {"content": [{"text": "{}"}]},
+    }
+    current = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        timeouts.append(timeout)
+        return _FakeResponse(bodies[current["name"]])
+
+    monkeypatch.setattr(llm.requests, "post", fake_post)
+    prompt = "x" * 100_000
+    for name, cls in (("gemini", llm.GeminiProvider), ("openai", llm.OpenAIProvider), ("claude", llm.ClaudeProvider)):
+        current["name"] = name
+        cls(api_key="k").generate(prompt)
+
+    assert timeouts == [llm.request_timeout(prompt)] * 3
+    assert timeouts[0] > llm.REQUEST_TIMEOUT
+
+
+def test_analyze_rules_prompt_is_capped_one_line_per_file_in_caller_order(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    signatures_map = {
+        f"pkg/mod_{i:04d}.py": [f"def function_number_{k}_of_file_{i}(arg_one, arg_two)" for k in range(20)]
+        for i in range(2000)
+    }
+    summaries = [f"pkg/mod_{i:04d}.py: Handles request processing #{i}." for i in range(2000)]
+
+    llm.analyze_rules(signatures_map, summaries=summaries)
+
+    prompt = captured[0]
+    assert len(prompt) <= llm.RULES_PROMPT_MAX_CHARS
+    assert "{'" not in prompt  # no dict repr
+    assert "\npkg/mod_0000.py: def function_number_0_of_file_0(arg_one, arg_two) | " in prompt
+    assert "\npkg/mod_0000.py: Handles" in prompt
+    assert "more)" in prompt and "mod_1999.py" not in prompt
+    # Caller order kept: an earlier file is never dropped for a later one.
+    assert prompt.index("pkg/mod_0001.py: def") < prompt.index("pkg/mod_0002.py: def")
+
+
+def test_analyze_rules_is_deterministic(monkeypatch):
+    captured = _capture_generate(monkeypatch)
+    signatures_map = {f"f{i}.py": [f"def g{i}()"] * 30 for i in range(500)}
+    llm.analyze_rules(signatures_map, summaries=["a.py: x"])
+    llm.analyze_rules(signatures_map, summaries=["a.py: x"])
+    assert captured[0] == captured[1]
+
+
+def test_format_folder_block_caps_listed_entries():
+    entries = [f"f{i}.py: " + "word " * 100 for i in range(100)]
+    block = llm.format_folder_block("src", entries)
+    lines = block.splitlines()
+    assert lines[:2] == ["Folder: src", "Files:"]
+    assert len(lines) == 2 + llm.MAX_FOLDER_ENTRIES_LISTED + 1
+    assert lines[-1] == f"- (+{100 - llm.MAX_FOLDER_ENTRIES_LISTED} more)"
+    assert all(len(line) <= llm.MAX_FOLDER_ENTRY_CHARS + 2 for line in lines[2:])

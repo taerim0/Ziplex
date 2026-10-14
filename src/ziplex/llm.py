@@ -27,6 +27,18 @@ load_dotenv()
 # RequestException subclass, so raising it here needs no new except clause
 # -- it flows straight into the existing transient-failure retry below.
 REQUEST_TIMEOUT = 60
+# Extra read time per prompt size: a large prompt (rules, folder chunks)
+# takes longer to process, and a flat 60s turned slow-but-valid calls into
+# timeout retries. See request_timeout().
+TIMEOUT_EXTRA_SECONDS = 30
+TIMEOUT_EXTRA_PER_CHARS = 50_000
+
+
+def request_timeout(prompt: str) -> float:
+    """Per-request timeout for `prompt`: REQUEST_TIMEOUT plus
+    TIMEOUT_EXTRA_SECONDS per TIMEOUT_EXTRA_PER_CHARS of prompt text.
+    Every provider's request goes through this."""
+    return REQUEST_TIMEOUT + TIMEOUT_EXTRA_SECONDS * len(prompt) / TIMEOUT_EXTRA_PER_CHARS
 
 # One requests.Session per worker thread, for HTTP Keep-Alive connection
 # pooling across the several calls each summarizer thread makes over its
@@ -641,7 +653,7 @@ class GeminiProvider:
                     "thinkingConfig": {"thinkingBudget": 0},
                     "responseMimeType": "application/json",
                 },
-            }, timeout=REQUEST_TIMEOUT)
+            }, timeout=request_timeout(prompt))
 
         def interpret(data, response):
             if "candidates" in data:
@@ -732,7 +744,7 @@ class OpenAIProvider:
         prefix = _label_prefix(label)
 
         def make_request():
-            return _post(f"{self.base_url}/chat/completions", headers=headers, json=body, timeout=REQUEST_TIMEOUT)
+            return _post(f"{self.base_url}/chat/completions", headers=headers, json=body, timeout=request_timeout(prompt))
 
         def interpret(data, response):
             if response.status_code == 200 and "choices" in data:
@@ -802,7 +814,7 @@ class ClaudeProvider:
         prefix = _label_prefix(label)
 
         def make_request():
-            return _post(self.API_URL, headers=headers, json=body, timeout=REQUEST_TIMEOUT)
+            return _post(self.API_URL, headers=headers, json=body, timeout=request_timeout(prompt))
 
         def interpret(data, response):
             if response.status_code == 200 and "content" in data:
@@ -1061,14 +1073,39 @@ Respond with JSON only, nothing else.
     return generate(prompt, label=", ".join(names))
 
 
-def analyze_rules(signatures_map: dict, lang: str = "en", summaries: list[str] | None = None) -> str:
-    """`summaries` ("file: summary" lines, packager._build_architecture_
-    summary()'s shape) is what lets the model see how the project is put
-    together. From signatures alone every rule it could infer was naming
-    style -- all 7 on Ziplex's own pack were underscore prefixes, type
-    hints and test names, which an AI sees for itself in any one file."""
-    summary_block = "\n".join(summaries or [])
-    prompt = f"""
+# Hard cap on the whole analyze_rules() prompt. Callers pass files in
+# priority order; lines past the budget are dropped with a "+N more" note.
+RULES_PROMPT_MAX_CHARS = 15_000
+# Share of the post-template budget the "file: summary" block may use; the
+# signature block gets the rest (plus whatever summaries leave unused).
+RULES_SUMMARY_SHARE = 0.5
+# Per-line cap for either block, so one huge file can't take the budget.
+RULES_MAX_LINE_CHARS = 400
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _fit_lines(lines: list[str], budget: int) -> list[str]:
+    """Leading `lines` that fit in `budget` chars (newline-joined), plus a
+    "... (+N more)" line when any were dropped. Order is preserved."""
+    kept: list[str] = []
+    used = 0
+    for i, line in enumerate(lines):
+        more = f"... (+{len(lines) - i - 1} more)" if i < len(lines) - 1 else ""
+        cost = len(line) + 1
+        # Keep room for the trailing note if more lines follow.
+        if used + cost + (len(more) + 1 if more else 0) > budget:
+            kept.append(f"... (+{len(lines) - i} more)")
+            return kept
+        kept.append(line)
+        used += cost
+    return kept
+
+
+def _rules_prompt(summary_block: str, signature_block: str, lang: str) -> str:
+    return f"""
 From the project below, extract the 3-7 conventions an AI editing this
 code must follow and would NOT notice from reading one file: where each
 kind of logic belongs, which module owns what, how errors/fallbacks are
@@ -1083,12 +1120,29 @@ Respond with JSON only, nothing else.
 File summaries:
 {summary_block}
 
-Signature sample:
-{signatures_map}
+Signature sample (one file per line):
+{signature_block}
 
 {{"rules": ["...", "...", "..."]}}
 """
-    return generate(prompt, label="코딩 룰")
+
+
+def analyze_rules(signatures_map: dict, lang: str = "en", summaries: list[str] | None = None) -> str:
+    """`signatures_map` ({file: [signature, ...]}) and `summaries` ("file:
+    summary" lines) are both taken in the caller's priority order and cut
+    to fit RULES_PROMPT_MAX_CHARS. Signatures go one file per line
+    ("file: sig | sig"), not a dict repr. Summaries are what let the model
+    see how the project is put together; from signatures alone every rule
+    was naming style."""
+    sig_lines = [
+        _clip(f"{name}: {' | '.join(sigs)}" if sigs else f"{name}:", RULES_MAX_LINE_CHARS)
+        for name, sigs in signatures_map.items()
+    ]
+    summary_lines = [_clip(line, RULES_MAX_LINE_CHARS) for line in (summaries or [])]
+    budget = RULES_PROMPT_MAX_CHARS - len(_rules_prompt("", "", lang))
+    summary_block = "\n".join(_fit_lines(summary_lines, int(budget * RULES_SUMMARY_SHARE)))
+    signature_block = "\n".join(_fit_lines(sig_lines, budget - len(summary_block)))
+    return generate(_rules_prompt(summary_block, signature_block, lang), label="코딩 룰")
 
 
 def analyze_prompt(project_name: str, architecture: list[str], rules: list[str], lang: str = "en") -> str:
@@ -1115,29 +1169,23 @@ Coding rules (style/naming only, secondary context): {rules}
     return generate(prompt, label="AI 가이드")
 
 
-def analyze_folder_summaries(folders: dict[str, list[str]], lang: str = "en") -> str:
-    """folders: {folder path: ["filename: summary", ...]} -- every file
-    directly inside that folder (not recursive/nested subfolders) paired
-    with its own already-generated summary, so the model can describe each
-    folder's role without re-reading any file content itself. One call
-    covers every folder in the project at once (a project's folder count is
-    always far smaller than its file count, so this never needs the
-    batching/chunking summarizer.py's own per-file summaries need).
+# Per-folder caps in a folder-summary prompt: at most this many file
+# entries listed (the rest as "+N more"), each clipped to this length.
+MAX_FOLDER_ENTRIES_LISTED = 25
+MAX_FOLDER_ENTRY_CHARS = 200
 
-    Built as an explicit "Folder: <path>" text block per folder (same
-    convention analyze_batch_summaries() uses for its own per-item blocks),
-    not a raw dict repr -- both so a real folder path containing characters
-    that would look odd mid-Python-repr renders cleanly, and so
-    MockProvider can regex-extract the same real folder-path keys a batch
-    summary's "File: <name>" lines already let it extract for files.
-    """
-    parts = [
-        "Folder: {}\nFiles:\n{}".format(folder, "\n".join(f"- {entry}" for entry in entries))
-        for folder, entries in folders.items()
-    ]
-    joined = "\n\n".join(parts)
 
-    prompt = f"""
+def format_folder_block(folder: str, entries: list[str]) -> str:
+    """One folder's "Folder: <path>" block, capped per the constants above.
+    folder_summary.py sizes its chunks with this exact text."""
+    shown = [f"- {_clip(entry, MAX_FOLDER_ENTRY_CHARS)}" for entry in entries[:MAX_FOLDER_ENTRIES_LISTED]]
+    if len(entries) > len(shown):
+        shown.append(f"- (+{len(entries) - len(shown)} more)")
+    return "Folder: {}\nFiles:\n{}".format(folder, "\n".join(shown))
+
+
+def _folder_prompt(joined: str, lang: str) -> str:
+    return f"""
 Based on the folders below (each folder's directly-contained files and
 their own one-line summaries), write ONE short sentence per folder
 describing that folder's role in the project -- what kind of code lives
@@ -1149,4 +1197,17 @@ Respond with JSON only, nothing else.
 
 {{"<folder path>": "...", "<another folder path>": "..."}}
 """
-    return generate(prompt, label="폴더 요약")
+
+
+# Template size around the folder blocks, for any supported language.
+FOLDER_PROMPT_OVERHEAD_CHARS = max(len(_folder_prompt("", lang)) for lang in LANGUAGE_NAMES)
+
+
+def analyze_folder_summaries(folders: dict[str, list[str]], lang: str = "en") -> str:
+    """folders: {folder path: ["filename: summary", ...]} -- one chunk of a
+    project's folders (folder_summary.py does the chunking), each with its
+    directly-contained files. One "Folder: <path>" block per folder
+    (format_folder_block()); MockProvider echoes those keys back. Returns
+    the raw response text: {folder path: summary}."""
+    joined = "\n\n".join(format_folder_block(folder, entries) for folder, entries in folders.items())
+    return generate(_folder_prompt(joined, lang), label="폴더 요약")

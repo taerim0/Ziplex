@@ -1919,8 +1919,30 @@ def test_rules_prompt_uses_relative_paths_and_caps_signatures_per_file(tmp_path,
 
     rules_prompt = next(p for p in captured if '"rules"' in p)
     assert "secret_client_folder" not in rules_prompt
-    assert "'big.py'" in rules_prompt
+    assert "\nbig.py: " in rules_prompt
     assert "(+20 more)" in rules_prompt and "f39(" not in rules_prompt
+
+
+def test_rules_prompt_lists_files_with_most_signatures_first(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    captured = []
+
+    class _Capturing(llm.MockProvider):
+        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
+            captured.append(prompt)
+            return super().generate(prompt, retry)
+
+    monkeypatch.setattr(llm, "_provider", _Capturing())
+    project = tmp_path / "project"
+    _write(project / "a_small.py", "def one(x):\n    return x\n")
+    _write(project / "z_big.py", "".join(f"def f{i}(x):\n    return x\n\n" for i in range(5)))
+    _write(project / "m_mid.py", "".join(f"def g{i}(x):\n    return x\n\n" for i in range(3)))
+
+    packager.pack(str(project), auto=True, interactive=False)
+
+    rules_prompt = next(p for p in captured if '"rules"' in p)
+    sig_block = rules_prompt.split("Signature sample", 1)[1]
+    assert sig_block.index("z_big.py:") < sig_block.index("m_mid.py:") < sig_block.index("a_small.py:")
 
 
 def test_collapse_deselected_folds_fully_unchecked_folders():

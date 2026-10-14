@@ -8,8 +8,7 @@ Deliberately much lighter-weight than summarizer.py's own machinery:
 - One folder is never re-summarized across packs the way an unchanged
   file's summary is (freshness.load_previous_summaries()) -- a folder has
   no content hash of its own to compare against, and the cost of always
-  regenerating is bounded by folder count, not file count (see
-  generate_folder_summaries()'s own docstring for why this is cheap).
+  regenerating is bounded by folder count, not file count.
 - A folder-summary failure is NOT wired into checkpoint.handle_llm_failure()
   the way rules/prompt/every per-file summary are. Rules/prompt/summaries
   feed confidence scoring and the human review flow directly -- losing
@@ -17,7 +16,7 @@ Deliberately much lighter-weight than summarizer.py's own machinery:
   checkpoint. A folder summary is a pure orientation aid layered on top of
   already-generated file summaries -- editable via the same corrector.py/
   edits.py review flow as per-file summaries (edits.set_folder_summary());
-  falling back to a free structural sentence for just the folders a single
+  falling back to a free structural sentence for just the folders a chunked
   LLM call happened to miss is an acceptable degrade that keeps this
   feature from growing its own checkpoint-schema footprint for a
   comparatively low-stakes step.
@@ -29,11 +28,22 @@ against anything), just the average of what per-file confidence already
 knows about the folder's members, surfaced one level up.
 """
 
+import contextvars
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Callable
 
 from .file.textutil import parent_folder
-from .llm import analyze_folder_summaries
+from .llm import analyze_folder_summaries, format_folder_block, FOLDER_PROMPT_OVERHEAD_CHARS
+
+# One analyze_folder_summaries() call covers at most this many folders and
+# this many prompt chars (template included). A single uncapped call was
+# ~255K chars on django -- far past what fits a request timeout.
+FOLDER_CHUNK_MAX_FOLDERS = 40
+FOLDER_PROMPT_MAX_CHARS = 30_000
+# Chunks run concurrently on this many threads.
+FOLDER_MAX_WORKERS = 4
 
 # Cap on how many files a structural (--no-llm) folder summary lists by
 # name before collapsing the rest into "+N more" -- same reasoning and
@@ -136,46 +146,74 @@ def generate_structural_folder_summaries(files_data: dict, lang: str = "en") -> 
     }
 
 
-def generate_folder_summaries(files_data: dict, lang: str = "en") -> dict[str, str]:
-    """One LLM call describing every folder in the project at once (a
-    project's folder count is always far smaller than its file count, so
-    this never needs summarizer.py's own batching/chunking/thread-pool
-    machinery -- one call, synchronous, same shape as analyze_rules()/
-    analyze_prompt()). Falls back to a free structural sentence (see
-    _structural_folder_summary()) for any folder the response didn't
-    cover -- missing entirely, a JSON parse failure for the whole
-    response, or the model not echoing the exact key -- rather than a
-    retry loop or checkpoint escalation; see this module's own docstring
-    for why that's an acceptable trade-off here specifically.
+def chunk_folders(folders: dict[str, list[str]]) -> list[dict[str, list[str]]]:
+    """Splits `folders` (insertion order kept) into chunks of at most
+    FOLDER_CHUNK_MAX_FOLDERS folders whose analyze_folder_summaries()
+    prompt stays within FOLDER_PROMPT_MAX_CHARS. Deterministic."""
+    budget = FOLDER_PROMPT_MAX_CHARS - FOLDER_PROMPT_OVERHEAD_CHARS
+    chunks: list[dict[str, list[str]]] = []
+    current: dict[str, list[str]] = {}
+    used = 0
+    for folder, entries in folders.items():
+        # +2 for the blank line joining blocks.
+        cost = len(format_folder_block(folder, entries)) + 2
+        if current and (len(current) >= FOLDER_CHUNK_MAX_FOLDERS or used + cost > budget):
+            chunks.append(current)
+            current, used = {}, 0
+        current[folder] = entries
+        used += cost
+    if current:
+        chunks.append(current)
+    return chunks
 
-    The except clause is deliberately broad (`Exception`, not just
-    `json.JSONDecodeError`) -- code review caught that a narrower one
-    would leave this module's own "best-effort, never blocks the run"
-    promise unmet for anything else `analyze_folder_summaries()` could
-    raise (an unexpected response shape, a future provider that raises
-    instead of returning `"{}"` on a non-retryable error, ...). Unlike
-    rules/prompt, a failure here has no checkpoint safety net at all --
-    letting it propagate would abort the whole `pack()` run and lose
-    every already-completed (and already paid for) file summary too.
-    """
+
+def _describe_chunk(chunk: dict[str, list[str]], lang: str, should_stop: Callable[[], bool] | None) -> dict:
+    """One chunk's {folder: summary} from the LLM; {} on any failure or
+    when `should_stop()` is already true. Never raises -- a failure here
+    must not abort pack() and lose the already-paid file summaries."""
+    if should_stop is not None and should_stop():
+        return {}
+    try:
+        result = json.loads(analyze_folder_summaries(chunk, lang=lang))
+    except Exception:
+        return {}
+    if not isinstance(result, dict):
+        return {}
+    return {folder: summary for folder, summary in result.items() if folder in chunk and isinstance(summary, str)}
+
+
+def generate_folder_summaries(
+    files_data: dict, lang: str = "en", should_stop: Callable[[], bool] | None = None,
+) -> dict[str, str]:
+    """{folder: summary} for every folder in `files_data`. Multi-file
+    folders are described by the LLM in chunks (chunk_folders()) run on a
+    FOLDER_MAX_WORKERS thread pool; any folder a chunk didn't cover (call
+    failed, bad JSON, key not echoed, or `should_stop()` true before the
+    chunk started) and every one-file folder gets the free structural
+    sentence instead -- no retry loop, no checkpoint (see module
+    docstring). Output order follows group_files_by_folder()."""
     folder_files = group_files_by_folder(files_data)
     if not folder_files:
         return {}
 
     # packager._assemble_aif() drops one-file folders (their summary would
-    # just restate the file's own), so paying the LLM to describe them was
-    # pure waste -- they still get the free structural sentence below.
+    # just restate the file's own), so they never go to the LLM.
     to_describe = {folder: entries for folder, entries in folder_files.items() if len(entries) > 1}
-    if not to_describe:
-        return {folder: _structural_folder_summary(entries, lang) for folder, entries in folder_files.items()}
+    chunks = chunk_folders(to_describe)
 
-    try:
-        response = analyze_folder_summaries(to_describe, lang=lang)
-        folder_summaries = json.loads(response)
-        if not isinstance(folder_summaries, dict):
-            folder_summaries = {}
-    except Exception:
-        folder_summaries = {}
+    folder_summaries: dict[str, str] = {}
+    if len(chunks) == 1:
+        folder_summaries = _describe_chunk(chunks[0], lang, should_stop)
+    elif chunks:
+        # copy_context() per chunk: worker threads don't inherit the
+        # caller's ContextVars (progress_i18n's log language) on their own.
+        with ThreadPoolExecutor(max_workers=min(FOLDER_MAX_WORKERS, len(chunks))) as pool:
+            futures = [
+                pool.submit(contextvars.copy_context().run, _describe_chunk, chunk, lang, should_stop)
+                for chunk in chunks
+            ]
+            for future in futures:
+                folder_summaries.update(future.result())
 
     return {
         folder: folder_summaries.get(folder) or _structural_folder_summary(entries, lang)
