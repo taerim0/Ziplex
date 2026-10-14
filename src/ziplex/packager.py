@@ -11,7 +11,7 @@ from .file.selector import select_files, review_dangerous_files
 from .file.media import classify_media_file, media_summary
 from .file.textutil import relative_key as _rel_key, cached_reads
 from .extract.code.extractor import extract_all
-from .text_references import merge_text_references
+from .core.text_references import merge_text_references
 from .core.graph import GraphBuilder, code_dependencies_of
 from .tokenizer import analyze_tokens_with_payload, count_tokens_for_model
 from .aif_io import detach_weak_edges, dumps_aif, write_aif, WEAK_KEY

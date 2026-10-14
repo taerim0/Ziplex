@@ -23,8 +23,8 @@ of the importing file is tried as one, nearest first.
 import posixpath
 from functools import lru_cache
 
-from .extract.code.languages import PY_FROM_IMPORT_SEP
-from .file.relationship import _resolve_python_relative
+from ..extract.code.languages import PY_FROM_IMPORT_SEP
+from ..file.relationship import _resolve_python_relative
 
 PY_SOURCE_EXTENSIONS = (".py", ".pyi")
 

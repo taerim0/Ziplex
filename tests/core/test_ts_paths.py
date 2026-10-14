@@ -1,7 +1,7 @@
 import json
 
-from ziplex.import_context import resolve_import_context, expand_file_dependencies
-from ziplex.ts_paths import _strip_jsonc, load_compiler_paths, resolve_ts_context
+from ziplex.core.import_context import resolve_import_context, expand_file_dependencies
+from ziplex.core.ts_paths import _strip_jsonc, load_compiler_paths, resolve_ts_context
 
 
 def _write(root, rel, text):

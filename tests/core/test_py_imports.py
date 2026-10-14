@@ -1,5 +1,5 @@
 from ziplex.extract.code.extractor import extract_dependencies
-from ziplex.py_imports import resolve_python_module, rewrite_python_imports
+from ziplex.core.py_imports import resolve_python_module, rewrite_python_imports
 
 
 FASTAPI_LIKE = {

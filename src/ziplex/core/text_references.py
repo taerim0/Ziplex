@@ -47,8 +47,8 @@ by hand again.
 import re
 from pathlib import Path
 
-from .extract.code.languages import get_language_config
-from .file.textutil import read_text
+from ..extract.code.languages import get_language_config
+from ..file.textutil import read_text
 
 
 def find_text_references_for_file(

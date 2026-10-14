@@ -1,4 +1,4 @@
-from ziplex.text_references import (
+from ziplex.core.text_references import (
     TextRefIndex, find_text_references, find_text_references_for_file, merge_text_references, _contains_token,
 )
 

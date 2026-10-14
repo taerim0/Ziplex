@@ -26,7 +26,7 @@ None, at which point expand_go_dependencies() is never worth calling at all
 
 from pathlib import Path
 
-from .file.textutil import parent_folder, read_text as _read_text
+from ..file.textutil import parent_folder, read_text as _read_text
 
 
 def read_go_module_path(root_path: str) -> str | None:

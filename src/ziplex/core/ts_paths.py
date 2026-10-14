@@ -26,8 +26,8 @@ import json
 import posixpath
 from pathlib import Path
 
-from .file.relationship import resolve_module_path
-from .file.textutil import read_text
+from ..file.relationship import resolve_module_path
+from ..file.textutil import read_text
 
 _CONFIG_NAMES = ("tsconfig.json", "jsconfig.json")
 TS_SOURCE_EXTENSIONS = (".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte")

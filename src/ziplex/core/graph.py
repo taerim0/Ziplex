@@ -10,8 +10,8 @@ from ..extract.code.extractor import extract_dependencies
 from ..file.media import classify_media_file
 from ..file.relationship import build_tree
 from ..file.textutil import relative_key
-from ..import_context import expand_file_dependencies, resolve_import_context
-from ..text_references import TextRefIndex, find_text_references_for_file, merge_text_references
+from .import_context import expand_file_dependencies, resolve_import_context
+from .text_references import TextRefIndex, find_text_references_for_file, merge_text_references
 
 
 class GraphBuilder:
