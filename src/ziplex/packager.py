@@ -9,7 +9,7 @@ from .file.collector import collect_files
 from .file.scanner import scan_files
 from .file.selector import select_files, review_dangerous_files
 from .file.media import classify_media_file, media_summary
-from .file.textutil import relative_key as _rel_key
+from .file.textutil import relative_key as _rel_key, cached_reads
 from .extract.code.extractor import extract_all
 from .text_references import merge_text_references
 from .core.graph import GraphBuilder, code_dependencies_of
@@ -895,6 +895,7 @@ def _assemble_aif(
     }
 
 
+@cached_reads
 def pack(
     root_path: str,
     auto: bool = False,

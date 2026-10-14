@@ -17,3 +17,19 @@ def test_relative_key_fast_path_matches_pathlib(fp, root):
     except ValueError:
         expected = Path(fp).name
     assert relative_key(fp, root) == expected
+
+
+def test_cached_reads_memoizes_only_inside_the_call(tmp_path):
+    from ziplex.file.textutil import cached_reads, read_text
+
+    f = tmp_path / "a.txt"
+    f.write_text("one", encoding="utf-8")
+
+    @cached_reads
+    def read_twice():
+        first = read_text(str(f))
+        f.write_text("two", encoding="utf-8")
+        return first, read_text(str(f))
+
+    assert read_twice() == ("one", "one")
+    assert read_text(str(f)) == "two"

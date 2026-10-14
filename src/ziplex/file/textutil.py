@@ -1,3 +1,40 @@
+import contextvars
+import functools
+import threading
+
+# Within one pack() every stage (collection, hashing, extraction, text refs,
+# token counts) used to re-read and re-decode the same files 6-7 times.
+# read_cache() memoizes read_text() for the duration of a call, bounded by a
+# character budget; outside it read_text() always hits the disk.
+_cache: contextvars.ContextVar["_ReadCache | None"] = contextvars.ContextVar("ziplex_read_cache", default=None)
+
+READ_CACHE_MAX_CHARS = 256 * 1024 * 1024
+
+
+class _ReadCache:
+    def __init__(self, max_chars: int):
+        self.entries: dict[str, str | None] = {}
+        self.chars = 0
+        self.max_chars = max_chars
+        self.lock = threading.Lock()
+
+
+def cached_reads(fn):
+    """Runs `fn` with read_text() memoized (see the comment above _cache).
+    Nested use shares the outer cache. Worker threads see it only when
+    submitted through contextvars.copy_context().run."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if _cache.get() is not None:
+            return fn(*args, **kwargs)
+        token = _cache.set(_ReadCache(READ_CACHE_MAX_CHARS))
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _cache.reset(token)
+    return wrapper
+
+
 def read_text(file_path: str) -> str | None:
     """Safely reads a file as UTF-8 text.
 
@@ -6,11 +43,24 @@ def read_text(file_path: str) -> str | None:
     entry point that keeps the pipeline from crashing on projects with
     non-text files mixed in (game assets like images, sound, etc.).
     """
+    cache = _cache.get()
+    if cache is not None:
+        key = str(file_path)
+        with cache.lock:
+            if key in cache.entries:
+                return cache.entries[key]
     try:
         with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
+            text = f.read()
     except (UnicodeDecodeError, OSError):
-        return None
+        text = None
+    if cache is not None:
+        size = len(text) if text else 0
+        with cache.lock:
+            if cache.chars + size <= cache.max_chars:
+                cache.entries[key] = text
+                cache.chars += size
+    return text
 
 
 def relative_key(file_path: str, root) -> str:
