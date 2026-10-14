@@ -23,11 +23,11 @@ venv\Scripts\activate
 pip install -e .                 # editable install: reads pyproject.toml, registers ziplex/ziplex-gui/ziplex-mcp
 pip install -e ".[dev]"          # + pytest
 ```
-`pip install -r requirement.txt` (no "s") is a lighter-weight alternative that skips packaging (no console scripts) — subcommands then run as `python src/cli.py ...`.
+`pip install -r requirement.txt` (no "s") is a lighter-weight alternative that skips packaging (no console scripts) — subcommands then run as `PYTHONPATH=src python -m ziplex.cli ...`.
 
 Requires a `.env` with `GEMINI_API_KEY=...` (via `python-dotenv`, `src/ziplex/llm.py`); optionally `GEMINI_MODEL=...` to override the default model.
 
-Run any subcommand from repo root (`ziplex ...` after `pip install -e .`; `python src/cli.py ...` works either way):
+Run any subcommand from repo root (`ziplex ...` after `pip install -e .`; otherwise `PYTHONPATH=src python -m ziplex.cli ...`):
 ```
 ziplex pack <project_path>                              # full pipeline, interactive file selection + correction
 ziplex pack <project_path> --auto                       # skip interactive selection, include all safe files
