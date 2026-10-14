@@ -138,7 +138,11 @@ def collect_files(root_path: str, include: list[str] | None = None, ignore: list
 
     collected = []
     for dirpath, dirnames, filenames in os.walk(root):
-        rel_dir = Path(dirpath).relative_to(root).as_posix()
+        # String paths per directory, not pathlib per file (pathlib parsing
+        # was most of the walk's cost on large trees).
+        dir_obj = Path(dirpath)
+        rel_dir = dir_obj.relative_to(root).as_posix()
+        rel_prefix = "" if rel_dir == "." else rel_dir + "/"
         if rel_dir != "." and ".gitignore" in filenames:
             nested_content = read_text(str(Path(dirpath) / ".gitignore"))
             if nested_content is not None:
@@ -149,13 +153,11 @@ def collect_files(root_path: str, include: list[str] | None = None, ignore: list
         # skip walking into excluded directories entirely
         dirnames[:] = [
             d for d in dirnames
-            if not is_ignored((Path(dirpath).relative_to(root) / d).as_posix() + "/")
+            if not is_ignored(rel_prefix + d + "/")
         ]
 
         for filename in filenames:
-            file_path = Path(dirpath) / filename
-            relative = file_path.relative_to(root)
-            relative_posix = relative.as_posix()
+            relative_posix = rel_prefix + filename
             if is_ignored(relative_posix):
                 continue
             if include_spec is not None and not include_spec.match_file(relative_posix):
@@ -182,10 +184,11 @@ def collect_files(root_path: str, include: list[str] | None = None, ignore: list
             # especially) that a plain extension check already answers for
             # free; only a file collect_files() doesn't already recognize as
             # media needs the real read_text() check at all.
-            if is_media_file(str(file_path)) is None and read_text(str(file_path)) is None:
+            file_path = str(dir_obj / filename)
+            if is_media_file(file_path) is None and read_text(file_path) is None:
                 continue
 
-            collected.append(str(file_path))
+            collected.append(file_path)
 
     return sorted(collected)
 
