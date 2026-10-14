@@ -23,6 +23,7 @@ subject, not a concern of the LLM-call batching this module actually owns.
 """
 
 import contextvars
+from .core.graph import code_dependencies_of
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import json
@@ -113,11 +114,12 @@ def request_summary(file_path: str, data: dict, lang: str = "en") -> str:
     (Network retries are already handled inside llm.generate(), so this only
     tries once — whether to involve the user is up to the caller.)
     """
-    if data["signatures"] or data["dependencies"]:
+    code_deps = code_dependencies_of(data)
+    if data["signatures"] or code_deps:
         response = analyze_file_summary(
             file_path,
             data["signatures"],
-            data["dependencies"],
+            code_deps,
             lang=lang,
             header=leading_doc(data.get("compressed", "")),
         )
@@ -199,7 +201,7 @@ def request_batch_summaries(batch: list[tuple[str, dict]], lang: str = "en", _re
         {
             "file": name,
             "signatures": data["signatures"],
-            "dependencies": data["dependencies"],
+            "dependencies": code_dependencies_of(data),
             "content": data.get("compressed", ""),
             "header": leading_doc(data.get("compressed", "")),
         }
@@ -357,7 +359,7 @@ def _structural_summary(data: dict, lang: str = "en") -> str:
             shown += f", +{len(sigs) - _STRUCTURAL_SUMMARY_SHOWN} more"
         return f"{labels['defines']}: {shown}"
 
-    deps = data.get("dependencies") or []
+    deps = code_dependencies_of(data)
     if deps:
         shown = ", ".join(deps[:_STRUCTURAL_SUMMARY_SHOWN])
         if len(deps) > _STRUCTURAL_SUMMARY_SHOWN:

@@ -10,9 +10,9 @@ from .file.scanner import scan_files
 from .file.selector import select_files, review_dangerous_files
 from .file.media import classify_media_file, media_summary
 from .file.textutil import relative_key as _rel_key
-from .extract.code.extractor import extract_all, extract_dependencies
-from .text_references import TextRefIndex, find_text_references_for_file, merge_text_references
-from .import_context import resolve_import_context, expand_file_dependencies
+from .extract.code.extractor import extract_all
+from .text_references import merge_text_references
+from .core.graph import GraphBuilder, code_dependencies_of
 from .tokenizer import analyze_tokens_with_payload, count_tokens_for_model
 from .aif_io import detach_weak_edges, dumps_aif, write_aif, WEAK_KEY
 from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES, reset_usage, get_usage
@@ -739,16 +739,14 @@ FLAGGED_SUMMARY = {
 
 
 def _graph_only_entries(
-    graph_only: list[str], root: Path, import_ctx, current_manifest: dict[str, str], lang: str,
+    graph_only: list[str], root: Path, graph: GraphBuilder, current_manifest: dict[str, str], lang: str,
 ) -> dict:
     """files_data entries for flagged files excluded from the pack: resolved
     import edges plus a fixed placeholder summary, never any content."""
     entries = {}
     for file_path in graph_only:
         name = _rel_key(file_path, root)
-        deps = [] if classify_media_file(file_path) else expand_file_dependencies(
-            file_path, name, extract_dependencies(file_path), import_ctx,
-        )
+        deps = [] if classify_media_file(file_path) else graph.code_dependencies(file_path)
         entries[file_path] = {
             "signatures": [],
             "dependencies": deps,
@@ -1187,49 +1185,19 @@ def pack(
     files_data = {}
     signatures_map = {}
 
-    # All selected files' relative keys, computed once -- text_references.
-    # find_text_references_for_file() needs the real candidate list to
-    # match a non-code file's content against, not just file_path itself.
-    all_names = [_rel_key(fp, root) for fp in selected + graph_only]
-
-    # Project-level import resolution (Go packages via go.mod, TS/JS path
-    # aliases via tsconfig -- see import_context.py). Resolved once per
-    # pack(), not per file; a project with no go.mod / no TS files pays
-    # nothing, every raw import string passing through untouched below.
-    import_ctx = resolve_import_context(root_path, all_names)
-    text_ref_index = TextRefIndex(all_names)
-
-    # Text-reference matches (see text_references.py), kept separate from
-    # files_data[fp]["dependencies"] until *after* step 5's LLM summary
-    # loop below, not merged in here -- summarizer.request_summary()/
-    # analyze_batch_summaries() both switch a file's summary prompt from
-    # content-based to signature/dependency-based the moment `dependencies`
-    # is non-empty. Merging immediately would silently swap a text file's
-    # (README, .tscn, ...) content-based prompt for a signatures=[]/
-    # dependencies=[the very refs just found]-only one the instant it
-    # picked up any text reference -- Gemini would summarize it having
-    # never seen its actual content. Computed for every file regardless of
-    # checkpoint-restore, so a run resumed mid-way still gets it.
-    text_refs_by_path: dict[str, list[str]] = {}
+    # One resolution context for every file whose edges enter the graph
+    # (core/graph.py), graph-only flagged files included so imports of them
+    # resolve too.
+    graph = GraphBuilder(root_path, selected + graph_only)
 
     for file_path in selected:
         if _maybe_stop(check_cancelled, root_path, root, files_data, carried_rules, restored_prompt, lang):
             return {}
 
         name = _rel_key(file_path, root)
-        # classify_media_file() computed once here and reused below (the
-        # media-branch check further down) rather than called twice --
-        # extension *and* content confirmed (see media.py's own docstring
-        # for why extension alone isn't enough), which means it costs a
-        # read_text() attempt for anything with a media extension. A
-        # confirmed media file has no text content to scan for references
-        # in the first place, so find_text_references_for_file() (which
-        # would otherwise pay its own separate, redundant read_text()
-        # attempt only to find nothing) is skipped for it outright.
+        # Media files have no text to scan; classified once, reused below.
         media_kind = classify_media_file(file_path)
-        text_refs_by_path[file_path] = (
-            [] if media_kind else find_text_references_for_file(file_path, name, all_names, index=text_ref_index)
-        )
+        text_refs = [] if media_kind else graph.text_references(file_path)
 
         # restore from checkpoint -- unless the file changed since that
         # checkpoint was written: restoring it would ship the old summary/
@@ -1246,6 +1214,9 @@ def pack(
         elif name in restored_files_data:
             print(pick(f"  ✅ {name} (restored from checkpoint)", f"  ✅ {name} (체크포인트에서 복원)"))
             files_data[file_path] = dict(restored_files_data[name])
+            files_data[file_path]["dependencies"], files_data[file_path]["text_dependencies"] = merge_text_references(
+                code_dependencies_of(files_data[file_path]), text_refs,
+            )
             if summarizer.is_summary_failed_placeholder(files_data[file_path].get("summary", "")):
                 # A failure placeholder is unfinished work, not a result --
                 # left in place, `pending` below would skip it and a resume
@@ -1268,7 +1239,7 @@ def pack(
             # made the inferred coding rules depend on whether a run
             # happened to get interrupted and resumed, for an otherwise
             # identical pack.
-            if files_data[file_path].get("signatures") or files_data[file_path].get("dependencies"):
+            if files_data[file_path].get("signatures") or code_dependencies_of(files_data[file_path]):
                 signatures_map[file_path] = files_data[file_path].get("signatures", [])
             continue
 
@@ -1307,7 +1278,8 @@ def pack(
         # review (see extract_all()'s own docstring).
         extracted = extract_all(file_path)
         sigs = extracted["signatures"]
-        deps = expand_file_dependencies(file_path, name, extracted["dependencies"], import_ctx)
+        code_deps = graph.code_dependencies(file_path, extracted["dependencies"])
+        deps, text_deps = merge_text_references(code_deps, text_refs)
         apis = extracted["api"]
         compressed = extracted["compressed"]
         reused_summary = previous_summaries.get(name, "")
@@ -1315,6 +1287,7 @@ def pack(
         files_data[file_path] = {
             "signatures": sigs,
             "dependencies": deps,
+            "text_dependencies": text_deps,
             "api": apis,
             "compressed": compressed,
             "summary": reused_summary,
@@ -1324,7 +1297,7 @@ def pack(
             "content_hash": current_manifest.get(name),
         }
 
-        if sigs or deps:
+        if sigs or code_deps:
             signatures_map[file_path] = sigs
 
         if reused_summary:
@@ -1358,26 +1331,6 @@ def pack(
         ))
         for fp, summary in summarizer.generate_structural_summaries(pending, root, lang=lang).items():
             files_data[fp]["summary"] = summary
-
-    # Only now -- after every summary prompt has already been built from
-    # code-only `dependencies` above -- fold in the free text-reference
-    # matches computed earlier. `relationships` (built later, from this
-    # same `dependencies` field) is meant to include them; the LLM summary
-    # step just needed to not see them yet. See text_refs_by_path's own
-    # comment above for why the ordering matters.
-    for fp, data in files_data.items():
-        if text_refs_by_path.get(fp):
-            # merge_text_references() -- the same shared merge step cli.py's
-            # `tree` subcommand routes through -- assigns rather than
-            # appends: this loop can re-run its merge against an already-
-            # merged `dependencies` restored from a checkpoint saved past
-            # this same step (see text_refs_by_path's comment above), and a
-            # plain reassignment stays correct either way, unlike appending
-            # twice into `dependencies` itself -- a pre-existing, harmless
-            # duplicate build_tree() already dedupes.
-            data["dependencies"], data["text_dependencies"] = merge_text_references(
-                data["dependencies"], text_refs_by_path[fp]
-            )
 
     # Confidence signal for every summary (reused, checkpoint-restored, or
     # freshly generated) -- free, no LLM call: just how much of the file's
@@ -1442,7 +1395,7 @@ def pack(
 
     # Added after every checkpoint/summary/rules/folder step, so graph-only
     # entries never reach an LLM prompt or a checkpoint's restored file set.
-    files_data.update(_graph_only_entries(graph_only, root, import_ctx, current_manifest, lang))
+    files_data.update(_graph_only_entries(graph_only, root, graph, current_manifest, lang))
 
     # 6. Token counting
     # Compares raw project text against the actual per-file aif.json payload

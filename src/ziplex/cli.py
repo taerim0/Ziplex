@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+from .core.graph import build_graph
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -11,8 +12,6 @@ from .file.collector import collect_files, print_tree as print_file_tree
 from .file.scanner import scan_files
 from .file.media import classify_media_file
 from .file.textutil import relative_key as _rel_key, normalize_path
-from .text_references import TextRefIndex, find_text_references_for_file, merge_text_references
-from .import_context import resolve_import_context, expand_file_dependencies
 from .tokenizer import analyze_tokens_with_compression
 from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider, get_usage
 from .packager import pack, save_aif, resolve_output_path
@@ -20,7 +19,7 @@ from . import summarizer
 from .corrector import correct_aif
 from .edits import finalize_aif, set_file_summary, set_folder_summary
 from .file.relationship import (
-    build_tree, print_tree as print_dependency_tree, add_relationship, remove_relationship, CycleError,
+    print_tree as print_dependency_tree, add_relationship, remove_relationship, CycleError,
 )
 from .aif_io import save_relationships_edit, write_aif
 from .search import search_files, read_detail_range
@@ -728,41 +727,7 @@ def _cmd_pack(args) -> None:
 def _cmd_tree(args) -> None:
     _require_dir_or_exit(args.path)
     safe_files = _collect_and_scan(args.path)["safe"]
-
-    # Keyed by relative_key(), not the raw file_path collect_files()
-    # returns -- matching packager.py's own convention (and required
-    # for the text-reference matching below: find_text_references_for_
-    # file() returns entries straight from this same relative-key list,
-    # which only resolve correctly against a stem_map built from those
-    # same keys; see resolve_dependency()'s exact-key-match branch).
-    all_names = [_rel_key(fp, args.path) for fp in safe_files]
-
-    # Go packages / TS path aliases -- see import_context.py.
-    # resolve_import_context()/expand_file_dependencies() are the same two
-    # calls packager.py's pack() makes -- both routing through them is what
-    # keeps this command and pack() from silently disagreeing on the
-    # same feature's output (exactly what happened to the text-reference
-    # merge below before it was fixed).
-    import_ctx = resolve_import_context(args.path, all_names)
-    text_ref_index = TextRefIndex(all_names)
-
-    files_data = {}
-    for file_path in safe_files:
-        name = _rel_key(file_path, args.path)
-        deps = expand_file_dependencies(file_path, name, extract_dependencies(file_path), import_ctx)
-        text_refs = find_text_references_for_file(file_path, name, all_names, index=text_ref_index)
-        # merge_text_references() -- the same shared merge step packager.py's
-        # per-file loop routes through -- is what lets build_tree() tag a
-        # text reference apart from a real import as internal_text_refs
-        # instead of always coming back empty for this command.
-        merged_deps, text_deps = merge_text_references(deps, text_refs)
-        files_data[name] = {
-            "dependencies": merged_deps,
-            "text_dependencies": text_deps,
-        }
-
-    tree = build_tree(files_data)
-    print_dependency_tree(tree)
+    print_dependency_tree(build_graph(args.path, safe_files))
 
 
 def _cmd_search(args) -> None:
