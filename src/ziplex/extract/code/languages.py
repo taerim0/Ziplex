@@ -285,12 +285,7 @@ def _is_stdlib_import(text: str) -> bool:
 
 
 def _append_if_not_stdlib(text: str, results: list) -> None:
-    """Shared by both import shapes _py_dependency_handler recognizes below
-    -- factored out so the "decode, check stdlib, append" pattern lives in
-    exactly one place, not duplicated identically in both branches (a
-    future change to the filtering condition would otherwise risk the two
-    copies drifting apart from each other).
-    """
+    """Appends an `import a.b.c` module path unless it is standard library."""
     if not _is_stdlib_import(text):
         results.append(text)
 
@@ -311,52 +306,41 @@ def _normalize_field_value_text(node: Node) -> str:
     return " ".join(node.text.decode().split())
 
 
+# Joins a from-import's module and one imported name: `from P import a`
+# -> `P::a`. Only the file system can tell whether `a` is a submodule file
+# or a symbol, so py_imports.rewrite_python_imports() decides per entry and
+# returns plain strings; this marker never leaves the Python rewrite step.
+PY_FROM_IMPORT_SEP = "::"
+
+
 def _py_dependency_handler(node: Node, results: list) -> bool:
     if node.type == "import_from_statement":
         module = node.child_by_field_name("module_name")
         if module:
             module_text = module.text.decode()
-            # `from . import settings as app_settings` / `from .. import
-            # checkpoint` -- a bare relative prefix with no dotted_name
-            # component at all (module_text is only dots, e.g. "."/"..").
-            # module_text alone can never resolve to a file there, but this
-            # repo's own convention (see AGENTS.md: "Internal imports are
-            # package-relative") uses exactly this shape to import a
-            # *sibling module*, not a symbol inside one -- the real target
-            # is one of the names actually being imported. Every other
-            # shape (`from .paths import REPO_ROOT`) already carries the
-            # real submodule in module_text itself (".paths"), where the
-            # imported names are genuine symbols, not files -- skipping
-            # this branch there avoids treating a symbol like "REPO_ROOT"
-            # as a spurious candidate file name. Mutually exclusive with the
-            # plain append below -- appending both left a bogus bare "."/
-            # ".." entry in `results` alongside the real per-name ones.
+            if _is_stdlib_import(module_text):
+                return True
+            # One `P::name` entry per imported name, self-contained so no
+            # other statement in the file can change how it resolves. A
+            # bare relative module (`from . import x`) carries its names as
+            # plain `dotted_name`/`aliased_import` children; every other
+            # shape carries them under the `name` field.
             if module.type == "relative_import" and not any(
                 c.type == "dotted_name" for c in module.children
             ):
-                for child in node.children:
-                    if child.type == "dotted_name":
-                        name_node = child
-                    elif child.type == "aliased_import":
-                        name_node = child.child_by_field_name("name")
-                    else:
-                        continue
-                    if name_node is not None:
-                        _append_if_not_stdlib(module_text + name_node.text.decode(), results)
+                name_nodes = [c for c in node.children if c.type in ("dotted_name", "aliased_import")]
             else:
-                _append_if_not_stdlib(module_text, results)
-                # `from app.api.routes import items, login` imports two
-                # submodule *files*; `from app.core.config import settings`
-                # imports a symbol. Only the file system can tell, so each
-                # name is emitted as a `P.name` candidate too --
-                # py_imports.py keeps the ones that resolve to a module
-                # file and drops the rest (found packing
-                # fastapi/full-stack-fastapi-template: 51/79 edges missing).
-                for name_node in node.children_by_field_name("name"):
-                    if name_node.type == "aliased_import":
-                        name_node = name_node.child_by_field_name("name")
-                    if name_node is not None:
-                        _append_if_not_stdlib(f"{module_text}.{name_node.text.decode()}", results)
+                name_nodes = node.children_by_field_name("name")
+            names = []
+            for name_node in name_nodes:
+                if name_node.type == "aliased_import":
+                    name_node = name_node.child_by_field_name("name")
+                if name_node is not None:
+                    names.append(name_node.text.decode())
+            if names:
+                results.extend(f"{module_text}{PY_FROM_IMPORT_SEP}{n}" for n in names)
+            else:
+                results.append(module_text)  # `from P import *`
         return True
 
     if node.type == "import_statement":

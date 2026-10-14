@@ -284,7 +284,7 @@ def test_extract_dependencies_from_python_file(tmp_path):
 
     deps = extract_dependencies(str(file_path))
     assert "requests" in deps
-    assert "mypackage.utils" in deps
+    assert "mypackage.utils::helper" in deps
 
 
 def test_extract_dependencies_excludes_stdlib_imports(tmp_path):
@@ -334,7 +334,7 @@ def test_extract_dependencies_keeps_relative_imports_named_like_stdlib(tmp_path)
     file_path = tmp_path / "mod.py"
     file_path.write_text("from .json import compress_json\n", encoding="utf-8")
 
-    assert ".json" in extract_dependencies(str(file_path))
+    assert ".json::compress_json" in extract_dependencies(str(file_path))
 
 
 def test_extract_dependencies_from_bare_relative_import(tmp_path):
@@ -349,8 +349,8 @@ def test_extract_dependencies_from_bare_relative_import(tmp_path):
     # entirely: only "." was ever appended, and resolve_dependency()'s
     # last-dotted-segment fallback on "." produces an empty string, matching
     # nothing. Each imported name (plain or aliased via "as") must now also
-    # be captured, qualified by the same dot prefix, so it resolves exactly
-    # like a direct `from .settings import X` would.
+    # be captured as a `<dots>::<name>` entry, which py_imports.py resolves
+    # to the sibling module file.
     file_path = tmp_path / "mod.py"
     file_path.write_text(
         "from . import settings as app_settings\n"
@@ -359,8 +359,7 @@ def test_extract_dependencies_from_bare_relative_import(tmp_path):
     )
 
     deps = extract_dependencies(str(file_path))
-    assert ".settings" in deps
-    assert "..checkpoint" in deps
+    assert deps == [".::settings", "..::checkpoint"]
 
 
 def test_extract_signatures_from_lua_file(tmp_path):

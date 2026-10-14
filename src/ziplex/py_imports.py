@@ -23,6 +23,7 @@ of the importing file is tried as one, nearest first.
 import posixpath
 from functools import lru_cache
 
+from .extract.code.languages import PY_FROM_IMPORT_SEP
 from .file.relationship import _resolve_python_relative
 
 PY_SOURCE_EXTENSIONS = (".py", ".pyi")
@@ -75,51 +76,43 @@ def resolve_python_module(dep: str, source_name: str, all_names) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def _parent(dep: str) -> str | None:
-    """`app.core.config.settings` -> `app.core.config`; `.paths.X` ->
-    `.paths`; None when there's no name after the module part."""
-    stripped = dep.lstrip(".")
-    if "." not in stripped:
-        return None
-    return dep.rsplit(".", 1)[0]
+def _join(module: str, name: str) -> str:
+    """`app.core` + `config` -> `app.core.config`; `..` + `x` -> `..x`."""
+    return module + name if not module.strip(".") else f"{module}.{name}"
 
 
 def rewrite_python_imports(name: str, deps: list[str], all_names: set) -> list[str]:
     """deps with each import that lands on a collected file replaced by that
-    file's name. A `P.name` candidate that doesn't resolve is a symbol, not
-    a module, and is dropped (only when `P` itself is also in deps, i.e. it
-    came from `from P import name`). A package's own `__init__.py` edge is
-    dropped when a submodule of it resolved from the same statement -- the
-    import names that submodule, not the package. A relative symbol import
-    (`from . import __version__`) becomes an edge to the package's own
-    `__init__.py`. Anything else unresolved passes through untouched."""
+    file's name, deduplicated, never naming `name` itself.
+
+    A `P::a` entry (`from P import a`) becomes P/a's file when `a` is a
+    submodule, else P's own file (`P.py` or `P/__init__.py`) -- `a` is a
+    symbol defined or re-exported there. When neither resolves, P passes
+    through as an external dependency, except a bare relative P (`.`/`..`),
+    which is dropped. A plain entry (`import a.b`, `from P import *`)
+    becomes its file, or passes through untouched."""
     if not name.endswith(PY_SOURCE_EXTENSIONS):
         return deps
-    present = set(deps)
-    resolved = {d: resolve_python_module(d, name, all_names) for d in present}
-    covered_packages = {
-        parent for d, hit in resolved.items()
-        if hit and (parent := _parent(d)) in present and (resolved.get(parent) or "").endswith("__init__.py")
-    }
-    parents = {_parent(d) for d in present}
-    out = []
+    out: list[str] = []
+    memo: dict[str, str | None] = {}
+
+    def resolve(module: str) -> str | None:
+        if module not in memo:
+            memo[module] = resolve_python_module(module, name, all_names)
+        return memo[module]
+
+    def add(item: str) -> None:
+        if item != name and item not in out:
+            out.append(item)
+
     for dep in deps:
-        hit = resolved[dep]
+        module, sep, imported = dep.partition(PY_FROM_IMPORT_SEP)
+        if not sep:
+            add(resolve(dep) or dep)
+            continue
+        hit = resolve(_join(module, imported)) or resolve(module)
         if hit:
-            if dep not in covered_packages:
-                out.append(hit)
-        elif dep.startswith(".") and dep not in parents:
-            # `from . import __version__` / `from ..pkg import name` where
-            # `name` is a symbol: the edge is to the package it lives in. It
-            # used to pass through as a bogus ".__version__" external
-            # dependency. (`dep not in parents`: `.mod` from
-            # `from .mod import X` names a module that just wasn't
-            # collected, so it keeps passing through as before.)
-            package = _parent(dep) or dep[: len(dep) - len(dep.lstrip("."))]
-            if package not in present:
-                package_hit = resolve_python_module(package, name, all_names)
-                if package_hit and package_hit not in out:
-                    out.append(package_hit)
-        elif _parent(dep) not in present:
-            out.append(dep)
+            add(hit)
+        elif module.strip("."):
+            add(module)
     return out
