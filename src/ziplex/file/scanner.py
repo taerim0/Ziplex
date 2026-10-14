@@ -1,4 +1,6 @@
+import bisect
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -8,8 +10,9 @@ import threading
 from pathlib import Path
 
 from ..file.textutil import read_text
-from ..progress_i18n import current as _progress_lang, pick
-from .media import classify_media_file
+from ..progress_i18n import pick
+from . import scan_cache
+from .media import classify_media_file, is_media_file
 
 # fallback keyword/pattern pairs used when secretlint fails/isn't
 # available. Each pattern captures just the plausible *value* token right
@@ -301,16 +304,11 @@ def _scan_with_secretlint(file_path: str, cwd: str | None = None, cmd: str = "se
         # actually reported something, aborting the whole scan.
         loc = first.get("loc")
         line = loc.get("start", {}).get("line") if isinstance(loc, dict) else None
-        # first["message"] is secretlint's own output -- always English,
-        # out of this project's control -- so the pick() below only ever
-        # actually localizes the *fallback* half (no message present at
-        # all), not full en/ko parity with the pattern-fallback path below.
-        # Still worth doing: a Korean-display-language GUI user hitting this
-        # exact fallback (secretlint ran, matched a rule, but reported no
-        # message text) shouldn't see English leak in from here alone.
-        reason = first.get("message") or pick("secretlint rule triggered", "secretlint 규칙 위반")
+        # secretlint's own message is always English and kept verbatim;
+        # only the no-message fallback is localized (see _render()).
         return {
-            "reason": reason,
+            "code": "secretlint",
+            "message": first.get("message") or None,
             "line": line,
             "matched_text": _line_at(file_path, line),
         }
@@ -329,8 +327,61 @@ _ENV_SENSITIVE_RES = [
 ]
 
 
-def _scan_with_pattern(file_path: str) -> dict | None:
-    content = read_text(file_path)
+# Necessary-condition prefilters: every _SECRET_SHAPES regex contains one of
+# these literals, and every SENSITIVE_PATTERNS keyword family contains one
+# of these words (same IGNORECASE semantics). A line -- or a whole file --
+# with no hit can't match anything, so it skips the per-pattern loop.
+# Keep in sync when adding a shape or keyword family.
+_SHAPE_PREFILTER = re.compile(
+    r"PRIVATE KEY-----|gh[pousr]_|github_pat_|AKIA|ASIA|xox[abprs]-|AIza|[sr]k_live_|sk-|hf_|npm_"
+)
+_KEYWORD_PREFILTER = re.compile(
+    r"API_?KEY|PASSWORD|PASSWD|SECRET|TOKEN|PRIVATE_KEY|DATABASE_URL", re.IGNORECASE
+)
+# Whole-file versions of the same conditions as plain substring searches
+# (several times faster than a regex alternation over a whole file). None
+# of these literals contains a line break, so each hit lies on one line.
+_SHAPE_LITERALS = (
+    "PRIVATE KEY-----", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "AKIA", "ASIA",
+    "xox", "AIza", "k_live_", "sk-", "hf_", "npm_",
+)
+_KEYWORD_LITERALS = ("api_key", "apikey", "password", "passwd", "secret", "token", "private_key", "database_url")
+
+
+def _literal_offsets(text: str, literals) -> list[int]:
+    hits = []
+    for lit in literals:
+        i = text.find(lit)
+        while i != -1:
+            hits.append(i)
+            i = text.find(lit, i + 1)
+    return hits
+
+
+# The only non-ASCII characters re.IGNORECASE matches against an ASCII
+# letter (checked over every code point in the test suite): İ ı ſ K.
+_CASE_FOLD_EXTRAS = ("İ", "ı", "ſ", "K")
+
+
+def _keyword_offsets(content: str) -> list[int]:
+    """Offsets covering every _KEYWORD_PREFILTER hit (each line holding one
+    has at least one offset; extra offsets are harmless). Uses lower() +
+    find, which is exactly IGNORECASE unless the text holds one of
+    _CASE_FOLD_EXTRAS or lower() changes its length (offsets would shift);
+    then the regex itself."""
+    if content.isascii() or not any(ch in content for ch in _CASE_FOLD_EXTRAS):
+        lowered = content.lower()
+        if len(lowered) == len(content):
+            return _literal_offsets(lowered, _KEYWORD_LITERALS)
+    return [m.start() for m in _KEYWORD_PREFILTER.finditer(content)]
+
+
+def _scan_with_pattern(file_path: str, content=None) -> dict | None:
+    """Language-neutral result ({"code": "shape"|"pattern", ...}, see
+    _render()) or None. `content` is the file's read_text()-equivalent text
+    when the caller already has it."""
+    if content is None:
+        content = read_text(file_path)
     if content is None:
         return None
 
@@ -350,11 +401,25 @@ def _scan_with_pattern(file_path: str) -> dict | None:
     # earlier in SENSITIVE_PATTERNS. A human reading "why was this flagged"
     # expects the earliest suspicious line in the file, not whichever
     # pattern this list happened to check first across the whole file.
-    for lineno, line in enumerate(content.splitlines(), 1):
-        for label, shape in _SECRET_SHAPES:
-            if shape.search(line):
-                reason = pick(f"Looks like a {label}", f"{label} 형식으로 보임")
-                return {"reason": reason, "line": lineno, "matched_text": line}
+    # Only lines holding a prefilter hit can match; visit just those, in
+    # file order (a line without one fails both per-line checks below).
+    shape_offsets = _literal_offsets(content, _SHAPE_LITERALS)
+    keyword_offsets = _keyword_offsets(content) if patterns else []
+    if not (shape_offsets or keyword_offsets):
+        return None
+    shapes_possible = bool(shape_offsets)
+    keywords_possible = bool(keyword_offsets)
+    ends = list(itertools.accumulate(map(len, content.splitlines(keepends=True))))
+    lines = content.splitlines()
+    candidates = sorted({bisect.bisect_right(ends, pos) for pos in shape_offsets + keyword_offsets})
+    for index in candidates:
+        lineno, line = index + 1, lines[index]
+        if shapes_possible and _SHAPE_PREFILTER.search(line):
+            for label, shape in _SECRET_SHAPES:
+                if shape.search(line):
+                    return {"code": "shape", "label": label, "line": lineno, "matched_text": line}
+        if not (keywords_possible and _KEYWORD_PREFILTER.search(line)):
+            continue
         for pattern in patterns:
             # Every match on the line, not just the first: in
             # `API_KEY: str = "sk-live-..."` the first hit is the type
@@ -364,13 +429,31 @@ def _scan_with_pattern(file_path: str) -> dict | None:
                 if _counts_as_a_secret(match, line, code_file, yaml_file, env_file, prose_file):
                     # The matched field name, not the raw regex -- a human
                     # reviewing "why was this flagged" reads this.
-                    key = match.group("key")
-                    reason = pick(
-                        f"Pattern match: {key} is assigned a literal value",
-                        f"패턴 일치: {key}에 리터럴 값이 할당됨",
-                    )
-                    return {"reason": reason, "line": lineno, "matched_text": line}
+                    return {"code": "pattern", "key": match.group("key"), "line": lineno, "matched_text": line}
     return None
+
+
+def _render(result) -> dict | None:
+    """Neutral scan result -> the public {"reason", "line", "matched_text"}
+    shape, with `reason` localized via progress_i18n at call time. A dict
+    without "code" passes through unchanged."""
+    if not result:
+        return None
+    code = result.get("code")
+    if code is None:
+        return result
+    if code == "shape":
+        label = result["label"]
+        reason = pick(f"Looks like a {label}", f"{label} 형식으로 보임")
+    elif code == "pattern":
+        key = result["key"]
+        reason = pick(
+            f"Pattern match: {key} is assigned a literal value",
+            f"패턴 일치: {key}에 리터럴 값이 할당됨",
+        )
+    else:
+        reason = result.get("message") or pick("secretlint rule triggered", "secretlint 규칙 위반")
+    return {"reason": reason, "line": result.get("line"), "matched_text": result.get("matched_text")}
 
 
 def _counts_as_a_secret(
@@ -404,7 +487,25 @@ def _counts_as_a_secret(
     return _looks_like_a_real_secret(value, key, literal_context=env_file)
 
 
+
+
 _AUTO = object()
+
+
+def _scan_neutral(file_path: str, root: str | None, cmd: str | None, content=None) -> dict | None:
+    """scan_file()'s logic, returning the language-neutral result that
+    scan_files() caches. `content`: read_text()-equivalent text if the
+    caller already read it."""
+    if classify_media_file(file_path) is not None:
+        return None
+
+    result = _scan_with_secretlint(file_path, cwd=root, cmd=cmd) if cmd else None
+
+    # pattern-based fallback if secretlint failed to run at all
+    if result is None:
+        return _scan_with_pattern(file_path, content)
+
+    return result or None  # False (secretlint ran, found nothing) -> None
 
 
 def scan_file(file_path: str, root: str | None = None, secretlint_cmd=_AUTO) -> dict | None:
@@ -412,56 +513,94 @@ def scan_file(file_path: str, root: str | None = None, secretlint_cmd=_AUTO) -> 
     was flagged -- {"reason": ..., "line": 1-based line number or None,
     "matched_text": that line's own text or None} -- enough for a human to
     judge a false positive (see file/selector.py's review_dangerous_files())
-    without needing to go open the file themselves.
+    without needing to go open the file themselves. `reason` follows the
+    current progress_i18n language.
 
     A recognized media asset -- file/media.py's classify_media_file(),
     extension *and* content both confirmed, not extension alone (see that
     function's own docstring for the real gap extension-alone had) -- always
     scans as safe, with neither secretlint nor the pattern fallback ever
-    actually run on it. A genuine binary media file still costs only one
-    read_text() call here (which fails fast) instead of a real secretlint
-    process spawn -- the real, if smaller, win this exists for.
+    actually run on it.
     """
-    if classify_media_file(file_path) is not None:
-        return None
-
     cmd = _secretlint_command(root) if secretlint_cmd is _AUTO else secretlint_cmd
-    result = _scan_with_secretlint(file_path, cwd=root, cmd=cmd) if cmd else None
-
-    # 2. pattern-based fallback if secretlint failed to run at all
-    if result is None:
-        return _scan_with_pattern(file_path)
-
-    return result or None  # False (secretlint ran, found nothing) -> None
+    return _render(_scan_neutral(file_path, root, cmd))
 
 
-# Per-process scan results keyed by content, so a freshness check (CLI,
-# every MCP call's stale check, the GUI watcher's recompute after each
-# save) rescans only what changed: the full scan was ~10ms per file, 1.5s
-# of a 1.5s freshness check on Ziplex's own 153 files -- ~40s at 4,000.
-_scan_cache: dict[tuple, dict | None] = {}
+# Bump whenever a rule change can alter any file's result: persisted
+# entries from an older version are then never read again.
+SCANNER_VERSION = 1
+
+# Two cache layers, both holding language-neutral results keyed by
+# _cache_key(): a per-process dict (repeated freshness checks in one MCP/GUI
+# process) and file/scan_cache.py's SQLite store (every later process).
+_scan_cache: dict[str, dict | None] = {}
 _scan_cache_lock = threading.Lock()
 _SCAN_CACHE_MAX = 50_000
-# Above this, key on (size, mtime) instead of hashing the whole file --
+# Above this, key on (path, size, mtime) instead of hashing the whole file --
 # large files here are media/binaries, and hashing a video per check would
 # cost more than the scan it saves.
 _HASH_LIMIT_BYTES = 1_000_000
+# Files fingerprinted, looked up, and scanned per batch (bounds memory held
+# for already-read content).
+_BATCH = 256
 
 
-def _scan_cache_key(file_path: str, lang: str, cmd: str | None) -> tuple | None:
-    """Everything scan_file()'s result depends on: the path (file type
-    rules), content, the reason-text language, and whether secretlint ran.
-    None (don't cache) if the file can't be read."""
+def _secretlint_marker(cmd: str | None, root: str | None) -> str:
+    """"-" without secretlint; otherwise a digest of the command, project
+    root and its .secretlintrc* contents (secretlint's result depends on
+    all three)."""
+    if not cmd:
+        return "-"
+    base = Path(root) if root else Path.cwd()
+    h = hashlib.blake2b(digest_size=8)
+    h.update(f"{cmd}\0{base.resolve()}".encode("utf-8", "surrogatepass"))
+    for name in _SECRETLINT_CONFIGS:
+        try:
+            h.update(b"\0" + name.encode() + b"\0" + (base / name).read_bytes())
+        except OSError:
+            pass
+    return h.hexdigest()
+
+
+def _file_kind(file_path: str) -> str:
+    """The path-derived inputs to the scan rules, as a short flag string."""
+    flags = (
+        _is_env_template(file_path), _is_env_file(file_path), _is_yaml_file(file_path),
+        _is_code_file(file_path), file_path.lower().endswith((".md", ".mdx", ".rst")),
+        is_media_file(file_path),
+    )
+    return "".join("1" if f else "0" for f in flags)
+
+
+def _decode_like_read_text(data: bytes) -> str | None:
+    """read_text()'s result for these bytes: strict UTF-8, universal newlines."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _cache_key(file_path: str, marker: str) -> tuple[str | None, object]:
+    """(key, content). key is None (don't cache) when the file can't be
+    read. content is the decoded text (None if undecodable) when the file
+    was read for hashing, or _AUTO when it wasn't (large files)."""
     try:
         st = os.stat(file_path)
         if st.st_size > _HASH_LIMIT_BYTES:
-            fingerprint = ("stat", st.st_size, st.st_mtime_ns)
+            fingerprint = f"stat:{os.path.abspath(file_path)}:{st.st_size}:{st.st_mtime_ns}"
+            content = _AUTO
         else:
             with open(file_path, "rb") as f:
-                fingerprint = hashlib.blake2b(f.read(), digest_size=16).digest()
+                data = f.read()
+            fingerprint = hashlib.blake2b(data, digest_size=16).hexdigest()
+            content = _decode_like_read_text(data)
     except OSError:
-        return None
-    return (os.path.abspath(file_path), fingerprint, lang, cmd)
+        return None, _AUTO
+    if marker != "-":
+        # secretlint's result can depend on the path (config ignores).
+        fingerprint += ":" + os.path.abspath(file_path)
+    return f"{SCANNER_VERSION}|{marker}|{_file_kind(file_path)}|{fingerprint}", content
 
 
 def scan_files(file_paths: list[str], root: str | None = None) -> dict:
@@ -471,24 +610,53 @@ def scan_files(file_paths: list[str], root: str | None = None) -> dict:
     it, rather than a bare path list, so a caller (file/selector.py's
     terminal review, or the GUI's file-selection screen) can show a human
     *why* without a second scan_file() call per file.
+
+    Results are cached in-process and across processes (see SCANNER_VERSION);
+    an unusable persistent cache only means scanning.
     """
     results = {"safe": [], "dangerous": []}
     cmd = _secretlint_command(root)
-    lang = _progress_lang()
-    for file_path in file_paths:
-        key = _scan_cache_key(file_path, lang, cmd)
-        with _scan_cache_lock:
-            cached = _scan_cache.get(key, _AUTO) if key else _AUTO
-        if cached is _AUTO:
-            cached = scan_file(file_path, root=root, secretlint_cmd=cmd)
-            if key:
-                with _scan_cache_lock:
-                    if len(_scan_cache) >= _SCAN_CACHE_MAX:
-                        _scan_cache.clear()
-                    _scan_cache[key] = cached
-        reason = cached
-        if reason:
-            results["dangerous"].append({"file": file_path, **reason})
-        else:
-            results["safe"].append(file_path)
+    marker = _secretlint_marker(cmd, root)
+    store = scan_cache.open_store()
+    try:
+        for start in range(0, len(file_paths), _BATCH):
+            batch = [(p, *_cache_key(p, marker)) for p in file_paths[start:start + _BATCH]]
+            known: dict = {}
+            with _scan_cache_lock:
+                for _, key, _ in batch:
+                    if key and key in _scan_cache:
+                        known[key] = _scan_cache[key]
+            missing = list({key for _, key, _ in batch if key and key not in known})
+            if store and missing:
+                loaded = store.get_many(missing)
+                known.update(loaded)
+                _remember(loaded)
+            fresh: dict = {}
+            for file_path, key, content in batch:
+                if key and key in known:
+                    neutral = known[key]
+                else:
+                    neutral = _scan_neutral(file_path, root, cmd, None if content is _AUTO else content)
+                    if key:
+                        known[key] = fresh[key] = neutral
+                reason = _render(neutral)
+                if reason:
+                    results["dangerous"].append({"file": file_path, **reason})
+                else:
+                    results["safe"].append(file_path)
+            _remember(fresh)
+            if store:
+                store.put_many(fresh)
+    finally:
+        if store:
+            store.close()
     return results
+
+
+def _remember(items: dict) -> None:
+    if not items:
+        return
+    with _scan_cache_lock:
+        if len(_scan_cache) + len(items) > _SCAN_CACHE_MAX:
+            _scan_cache.clear()
+        _scan_cache.update(items)
