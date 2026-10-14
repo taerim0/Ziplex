@@ -23,10 +23,12 @@ def _reset_llm_call_state():
 
 
 @pytest.fixture(autouse=True)
-def _reset_scan_cache():
-    """file/scanner.py caches scan results per process; a test that
-    monkeypatches the scanner must not see (or leave) another's results."""
-    from ziplex.file import scanner
+def _reset_scan_cache(tmp_path, monkeypatch):
+    """file/scanner.py caches scan results per process and in a persistent
+    store; a test that monkeypatches the scanner must not see (or leave)
+    another's results, and must never touch the real ~/.ziplex store."""
+    from ziplex.file import scan_cache, scanner
+    monkeypatch.setattr(scan_cache, "SCAN_CACHE_PATH", tmp_path / ".ziplex-test-scan-cache.db")
     scanner._scan_cache.clear()
     yield
     scanner._scan_cache.clear()

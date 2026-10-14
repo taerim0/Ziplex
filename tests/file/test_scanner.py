@@ -4,6 +4,8 @@ Windows, see _scan_with_secretlint()'s own docstring) never actually runs;
 every real invocation in this suite exercises the fallback path.
 """
 
+import re
+
 from ziplex import progress_i18n
 from ziplex.file.scanner import scan_file, scan_files, _looks_like_a_real_secret
 
@@ -434,12 +436,16 @@ def test_secretlint_is_skipped_without_a_config_and_resolved_with_one(tmp_path, 
     assert scanner._secretlint_command(str(tmp_path)) == "/npm/secretlint.cmd"
 
 
-def test_scan_files_reuses_results_for_unchanged_content_only(tmp_path, monkeypatch):
+def _count_scans(monkeypatch):
     from ziplex.file import scanner
     calls = []
-    real = scanner.scan_file
-    monkeypatch.setattr(scanner, "scan_file", lambda *a, **k: calls.append(a[0]) or real(*a, **k))
-    monkeypatch.setattr(scanner, "_scan_cache", {})
+    real = scanner._scan_neutral
+    monkeypatch.setattr(scanner, "_scan_neutral", lambda *a, **k: calls.append(a[0]) or real(*a, **k))
+    return calls
+
+
+def test_scan_files_reuses_results_for_unchanged_content_only(tmp_path, monkeypatch):
+    calls = _count_scans(monkeypatch)
     path = tmp_path / "config.py"
     _write(path, "x = 1\n")
 
@@ -452,15 +458,206 @@ def test_scan_files_reuses_results_for_unchanged_content_only(tmp_path, monkeypa
     assert len(calls) == 2
 
 
-def test_scan_files_cache_follows_progress_lang(tmp_path, monkeypatch):
-    # The reason text is localized, so a cached entry must not leak across
-    # languages.
-    from ziplex.file import scanner
-    monkeypatch.setattr(scanner, "_scan_cache", {})
+def test_scan_files_cache_is_language_neutral(tmp_path, monkeypatch):
+    # One scan; the reason is localized when rendered, not when cached.
+    calls = _count_scans(monkeypatch)
     path = tmp_path / "config.py"
     _write(path, 'API_KEY = "sk-live-9f8e7d6c5b4a"\n')
     progress_i18n.set_current("en")
     en = scan_files([str(path)], root=str(tmp_path))["dangerous"][0]["reason"]
     progress_i18n.set_current("ko")
     ko = scan_files([str(path)], root=str(tmp_path))["dangerous"][0]["reason"]
-    assert en != ko
+    assert en.startswith("Pattern match:") and ko.startswith("패턴 일치:")
+    assert len(calls) == 1
+
+
+def test_scan_files_persists_results_across_processes(tmp_path, monkeypatch):
+    from ziplex.file import scanner
+    calls = _count_scans(monkeypatch)
+    _write(tmp_path / "a.yaml", "db:\n  password: hunter2secret\n")
+    _write(tmp_path / "b.txt", "nothing here\n")
+    files = [str(tmp_path / "a.yaml"), str(tmp_path / "b.txt")]
+
+    first = scan_files(files, root=str(tmp_path))
+    scanner._scan_cache.clear()  # a new process: only the persistent store remains
+    progress_i18n.set_current("en")
+    second = scan_files(files, root=str(tmp_path))
+    assert len(calls) == 2
+    assert second["safe"] == first["safe"] == [files[1]]
+    assert second["dangerous"][0]["line"] == first["dangerous"][0]["line"] == 2
+    assert second["dangerous"][0]["reason"].startswith("Pattern match: password")
+
+
+def test_scan_cache_key_separates_file_kind_and_scanner_version(tmp_path, monkeypatch):
+    # Same content, different rules: unquoted `password: x` counts in YAML
+    # but not in Python, so the path's kind must be part of the key.
+    from ziplex.file import scanner
+    calls = _count_scans(monkeypatch)
+    for name in ("a.yaml", "a.py"):
+        _write(tmp_path / name, "password: hunter2secret\n")
+    result = scan_files([str(tmp_path / "a.yaml"), str(tmp_path / "a.py")], root=str(tmp_path))
+    assert [d["file"] for d in result["dangerous"]] == [str(tmp_path / "a.yaml")]
+    assert len(calls) == 2
+
+    scanner._scan_cache.clear()
+    monkeypatch.setattr(scanner, "SCANNER_VERSION", scanner.SCANNER_VERSION + 1)
+    scan_files([str(tmp_path / "a.yaml")], root=str(tmp_path))
+    assert len(calls) == 3
+
+
+def test_scan_files_survives_a_corrupt_or_unavailable_store(tmp_path, monkeypatch):
+    from ziplex.file import scan_cache, scanner
+    path = tmp_path / "s.env"
+    _write(path, "PASSWORD=MyPassword!2024\n")
+
+    scan_cache.cache_path().write_bytes(b"not a sqlite database at all" * 100)
+    assert len(scan_files([str(path)], root=str(tmp_path))["dangerous"]) == 1
+    scanner._scan_cache.clear()
+    calls = _count_scans(monkeypatch)
+    assert len(scan_files([str(path)], root=str(tmp_path))["dangerous"]) == 1
+    assert calls == []  # the corrupt file was replaced by a working store
+
+    monkeypatch.setattr(scan_cache, "open_store", lambda: None)
+    scanner._scan_cache.clear()
+    assert len(scan_files([str(path)], root=str(tmp_path))["dangerous"]) == 1
+
+
+def test_scan_cache_location_follows_ziplex_home(tmp_path, monkeypatch):
+    from ziplex.file import scan_cache
+    monkeypatch.setattr(scan_cache, "SCAN_CACHE_PATH", None)
+    monkeypatch.setenv("ZIPLEX_HOME", str(tmp_path / "zh"))
+    assert scan_cache.cache_path() == tmp_path / "zh" / "scan_cache.db"
+
+
+# --- parity: the prefiltered scan must match the plain line x pattern loop
+
+
+def _reference_scan(file_path, content):
+    """The scanner's line-outer/pattern-inner loop without any prefilter."""
+    from ziplex.file import scanner
+
+    if content is None:
+        return None
+    env_template = scanner._is_env_template(file_path)
+    env_file = scanner._is_env_file(file_path) and not env_template
+    yaml_file = scanner._is_yaml_file(file_path)
+    code_file = scanner._is_code_file(file_path)
+    prose_file = file_path.lower().endswith((".md", ".mdx", ".rst"))
+    patterns = [] if env_template else scanner._SENSITIVE_RES
+    if env_file:
+        patterns = scanner._ENV_SENSITIVE_RES
+    for lineno, line in enumerate(content.splitlines(), 1):
+        for label, shape in scanner._SECRET_SHAPES:
+            if shape.search(line):
+                return {"code": "shape", "label": label, "line": lineno, "matched_text": line}
+        for pattern in patterns:
+            for match in pattern.finditer(line):
+                if scanner._counts_as_a_secret(match, line, code_file, yaml_file, env_file, prose_file):
+                    return {"code": "pattern", "key": match.group("key"), "line": lineno, "matched_text": line}
+    return None
+
+
+def _repo_files():
+    import os
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    files = [str(p) for p in repo.iterdir() if p.is_file()]
+    for top in ("src", "tests", "docs"):
+        for dirpath, dirnames, filenames in os.walk(repo / top):
+            dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+            files += [os.path.join(dirpath, f) for f in filenames]
+    return files
+
+
+def _parity_corpus():
+    """(path, content) pairs: this repo's own files, plus every line of this
+    test module (full of fake credentials) as its own one-line file under
+    every file kind the rules distinguish."""
+    from pathlib import Path
+    from ziplex.file.textutil import read_text
+
+    corpus = [(p, read_text(p)) for p in _repo_files()]
+    rich = Path(__file__).read_text(encoding="utf-8")
+    kinds = ("x/.env", "x/.env.example", "x/c.yaml", "x/c.json", "x/c.md", "x/c.txt",
+             "x/c.sh", "x/c.ts", "x/c.py", "x/.npmrc", "x/.env.local", "x/c.rst")
+    for name in kinds:
+        corpus.append((name, rich))
+        corpus += [(name, line) for line in rich.splitlines()]
+    return corpus
+
+
+def test_prefiltered_scan_matches_the_unfiltered_reference():
+    from ziplex.file import scanner
+
+    flagged = 0
+    for path, content in _parity_corpus():
+        expected = _reference_scan(path, content)
+        if content is not None:
+            assert scanner._scan_with_pattern(path, content) == expected, (path, content[:200])
+        flagged += expected is not None
+    assert flagged > 200  # the corpus exercises both rule families, not just clean files
+
+
+def test_whole_file_prefilters_agree_with_the_line_prefilters():
+    from ziplex.file import scanner
+
+    samples = [c for _, c in _parity_corpus() if c is not None] + [
+        'API_KEY = "abcdefgh"',  # KELVIN SIGN: matches k only via Unicode IGNORECASE
+        'paſsword = "abcdefgh"',  # LONG S ~ s
+        "Token: été", "nothing at all", "",
+    ]
+    for content in samples:
+        keyword_hits = sorted(scanner._keyword_offsets(content))
+        shape_hits = sorted(scanner._literal_offsets(content, scanner._SHAPE_LITERALS))
+        start = 0
+        for raw in content.splitlines(keepends=True):
+            # every line the per-line prefilter accepts holds a whole-file hit
+            line, end = raw.splitlines()[0] if raw.splitlines() else "", start + len(raw)
+            if scanner._KEYWORD_PREFILTER.search(line):
+                assert any(start <= o < end for o in keyword_hits), line
+            if scanner._SHAPE_PREFILTER.search(line):
+                assert any(start <= o < end for o in shape_hits), line
+            start = end
+    assert scanner._keyword_offsets('API_KEY = "abcdefgh"') == [0]
+    assert scanner._keyword_offsets('é TOKEN') == [2]
+
+
+def test_case_fold_extras_are_complete():
+    import sys
+    from ziplex.file import scanner
+
+    letters = re.compile("[a-z_]", re.IGNORECASE)
+    folded = [chr(c) for c in range(128, sys.maxunicode + 1) if letters.fullmatch(chr(c))]
+    assert tuple(folded) == scanner._CASE_FOLD_EXTRAS
+
+
+def test_cache_key_content_matches_read_text():
+    # scan_files() scans the bytes it hashed; decoding them must give
+    # exactly what read_text() would (universal newlines, BOM kept).
+    from ziplex.file import scanner
+    from ziplex.file.textutil import read_text
+
+    for path in _repo_files():
+        _, content = scanner._cache_key(path, "-")
+        if content is not scanner._AUTO:
+            assert content == read_text(path), path
+    assert scanner._decode_like_read_text("﻿a\r\nb\rc\n".encode("utf-8")) == "﻿a\nb\nc\n"
+    assert scanner._decode_like_read_text(b"\xff\xfe") is None
+
+
+def test_scan_files_matches_scan_file_cold_and_cached(tmp_path):
+    files = _repo_files()
+    for name, content in (("a/.env", "PASSWORD=MyPassword!2024\n"), ("a/k.pem", "-----BEGIN RSA PRIVATE KEY-----\n")):
+        _write(tmp_path / name, content)
+        files.append(str(tmp_path / name))
+    progress_i18n.set_current("en")
+    expected = {p: scan_file(p) for p in files}
+    assert any(expected.values())
+    for _ in range(2):  # cold, then from the cache
+        result = scan_files(files, root=str(tmp_path))
+        got = {d.pop("file"): d for d in result["dangerous"]}
+        got.update({p: None for p in result["safe"]})
+        assert got == expected
+
+
