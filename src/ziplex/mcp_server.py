@@ -1,35 +1,12 @@
-"""Ziplex MCP server: exposes an already-packed project (`aif.json` plus its
-sibling `<name>.detail.json`) as MCP tools, plus project-wide search.
+"""Ziplex MCP server: read-only tools over an already-packed project
+(`aif.json` + sibling `<name>.detail.json`/`<name>.cache.json`).
 
-Read-only by design -- this serves a human-curated pack (see edits.py /
-corrector.py), it never re-packs or re-corrects a project on its own. That's
-a deliberate choice, not a missing feature: Ziplex's identity is "a human
-curates once, this serves that curated result," and letting an agent
-silently trigger a fresh (uncorrected) pack would undercut the reason the
-correction step exists. See the `ziplex-roadmap` memory for the full
-benchmarking against repomix's MCP server this design is based on.
+Each tool wraps the matching `query_service` function; the wrapper only makes
+`aif_path`/`project_path` optional, defaulting to `--aif`/`--project` from
+main(). Descriptions come from TOOL_DESCRIPTIONS and must be assigned before
+`mcp.tool()` registers the wrapper (it reads `__doc__` at registration).
 
-Every tool below wraps `query_service`'s matching function -- the wrapper
-exists only to make `aif_path`/`project_path` optional, defaulting to
-whatever `--aif`/`--project` this server was started with (see main()),
-since a real session is almost always one Claude Code project talking to
-one already-packed project, and re-typing the same absolute path on every
-single call is both friction and a real place for a typo to silently point
-at the wrong file. Each wrapper's docstring is assigned from the matching
-query_service function's own `__doc__` (`wrapper.__doc__ = query_service.
-fn.__doc__`, set *before* `mcp.tool()` registers it -- the decorator reads
-`__doc__` at registration time, so setting it after would be too late)
-rather than retyped, so the actual text -- what the MCP SDK reads as the
-tool description -- still only lives in query_service.py; nothing here is a
-second copy that could drift out of sync with it. Every other parameter
-(file, folder, pattern, ...) passes straight through untouched.
-
-Run directly (after `pip install -e .`):
-    ziplex-mcp
     ziplex-mcp --aif .ziplex/Ziplex.json --project .
-    python -m ziplex.mcp_server
-Add to Claude Code -- typically one registration per project, so the paths
-are baked into the registration itself rather than re-typed on every call:
     claude mcp add ziplex -- ziplex-mcp --aif .ziplex/Ziplex.json --project .
 """
 
@@ -40,29 +17,34 @@ from mcp.server import MCPServer
 from . import query_service
 from . import __version__
 
-# Sent to the client once at connect time. EXPERIMENTS #10 found an agent
-# offered the graph as an optional resource ignored it and hand-rolled a
-# regex import scanner instead -- so tell it up front which questions the
-# graph already answers, instead of leaving that to tool-description luck.
-INSTRUCTIONS = """\
-Ziplex serves an already-packed snapshot of one project: per-file summaries, \
-a resolved dependency graph, and compressed source.
+# Sent once at connect. Agents ignore an optional graph unless told which
+# questions it answers (EXPERIMENTS #10), so say so up front -- briefly, since
+# every token here is paid in every session.
+INSTRUCTIONS = """Ziplex serves a packed snapshot of this project with import resolution already done (relative/index files, tsconfig aliases, workspace packages, Python packages, Go packages). For dependency questions use it instead of grepping imports: get_dependents / get_blast_radius (who imports X, what breaks if X changes), get_relationships (what X imports), get_graph_summary (hubs, cycles, folder layering). Use Grep/Read for text search and reading code. A "_stale" field lists files changed since packing."""
 
-For structural questions answer from the graph first: get_graph_summary for \
-whole-graph questions (most-depended-on files, cycles, unused files, layering \
-between folders), get_dependents / get_blast_radius for who imports X and what \
-breaks if X changes, get_relationships for what specific files depend on. \
-Import resolution is already done (relative paths, index files, package \
-imports); don't rebuild it by grepping import statements or writing a \
-scanner script.
-
-To orient in an unfamiliar project, start with get_overview, then \
-get_folders / list_files; read get_detail (bodies elided) or raw files only \
-for the few files that turn out to matter.
-
-The pack is a snapshot: a "stale" field on get_overview / list_files, or \
-check_freshness, tells you which files changed on disk since packing -- \
-verify those against the real source before trusting their entries."""
+# Tool descriptions are the MCP-facing contract, kept short on purpose: the
+# full tool list is sent to the client in every session. query_service's own
+# docstrings stay the developer documentation.
+TOOL_DESCRIPTIONS = {
+    "get_overview": "Project name, AI guide, rules, tech stack, file/folder counts. "
+    "With project_path, adds `_stale` if files changed since packing.",
+    "list_files": "Per-file summaries. Scope with folder= (\".\" for root) or "
+    "confidence_below=; unscoped output is large on big projects.",
+    "get_folders": "One-line summary and file count per multi-file folder.",
+    "get_relationships": "What the given files import: {file: {internal, external}}. "
+    "Pass files= to scope; unscoped output is large.",
+    "get_graph_summary": "Whole-graph facts: most-depended-on files, files with most "
+    "dependencies, import cycles, orphans, folder->folder edges.",
+    "get_dependents": "Files that directly import `file`. include_text_refs=true also "
+    "counts prose mentions (READMEs, configs).",
+    "get_blast_radius": "Every file affected by changing `file`, transitively "
+    "(reverse dependencies). include_text_refs as in get_dependents.",
+    "get_detail": "Compressed source of one file (bodies elided), optionally a line "
+    "range. Line numbers do not match the original; Read the real file to edit.",
+    "check_freshness": "Which packed files changed/were added/removed on disk since packing.",
+    "search_project": "Regex search over the project's original files. Prefer Grep "
+    "when available.",
+}
 
 mcp = MCPServer("ziplex", instructions=INSTRUCTIONS)
 
@@ -118,7 +100,7 @@ def get_overview(*, aif_path: str | None = None, project_path: str | None = None
     return query_service.get_overview(_resolve_aif(aif_path), _resolve_project_optional(project_path))
 
 
-get_overview.__doc__ = query_service.get_overview.__doc__
+get_overview.__doc__ = TOOL_DESCRIPTIONS["get_overview"]
 mcp.tool()(get_overview)
 
 
@@ -134,7 +116,7 @@ def list_files(
     )
 
 
-list_files.__doc__ = query_service.list_files.__doc__
+list_files.__doc__ = TOOL_DESCRIPTIONS["list_files"]
 mcp.tool()(list_files)
 
 
@@ -142,7 +124,7 @@ def get_folders(*, aif_path: str | None = None) -> dict:
     return query_service.get_folders(_resolve_aif(aif_path))
 
 
-get_folders.__doc__ = query_service.get_folders.__doc__
+get_folders.__doc__ = TOOL_DESCRIPTIONS["get_folders"]
 mcp.tool()(get_folders)
 
 
@@ -152,7 +134,7 @@ def get_relationships(
     return query_service.get_relationships(_resolve_aif(aif_path), files, include_text_refs=include_text_refs)
 
 
-get_relationships.__doc__ = query_service.get_relationships.__doc__
+get_relationships.__doc__ = TOOL_DESCRIPTIONS["get_relationships"]
 mcp.tool()(get_relationships)
 
 
@@ -164,23 +146,23 @@ def get_graph_summary(
     )
 
 
-get_graph_summary.__doc__ = query_service.get_graph_summary.__doc__
+get_graph_summary.__doc__ = TOOL_DESCRIPTIONS["get_graph_summary"]
 mcp.tool()(get_graph_summary)
 
 
-def get_dependents(*, aif_path: str | None = None, file: str, include_text_refs: bool = True) -> list[str]:
+def get_dependents(*, aif_path: str | None = None, file: str, include_text_refs: bool = False) -> list[str]:
     return query_service.get_dependents(_resolve_aif(aif_path), file, include_text_refs=include_text_refs)
 
 
-get_dependents.__doc__ = query_service.get_dependents.__doc__
+get_dependents.__doc__ = TOOL_DESCRIPTIONS["get_dependents"]
 mcp.tool()(get_dependents)
 
 
-def get_blast_radius(*, aif_path: str | None = None, file: str, include_text_refs: bool = True) -> list[str]:
+def get_blast_radius(*, aif_path: str | None = None, file: str, include_text_refs: bool = False) -> list[str]:
     return query_service.get_blast_radius(_resolve_aif(aif_path), file, include_text_refs=include_text_refs)
 
 
-get_blast_radius.__doc__ = query_service.get_blast_radius.__doc__
+get_blast_radius.__doc__ = TOOL_DESCRIPTIONS["get_blast_radius"]
 mcp.tool()(get_blast_radius)
 
 
@@ -194,7 +176,7 @@ def get_detail(
     return query_service.get_detail(_resolve_aif(aif_path), file, start_line, end_line)
 
 
-get_detail.__doc__ = query_service.get_detail.__doc__
+get_detail.__doc__ = TOOL_DESCRIPTIONS["get_detail"]
 mcp.tool()(get_detail)
 
 
@@ -202,7 +184,7 @@ def check_freshness(*, project_path: str | None = None, aif_path: str | None = N
     return query_service.check_freshness(_resolve_project_required(project_path), _resolve_aif(aif_path))
 
 
-check_freshness.__doc__ = query_service.check_freshness.__doc__
+check_freshness.__doc__ = TOOL_DESCRIPTIONS["check_freshness"]
 mcp.tool()(check_freshness)
 
 
@@ -225,7 +207,7 @@ def search_project(
     )
 
 
-search_project.__doc__ = query_service.search_project.__doc__
+search_project.__doc__ = TOOL_DESCRIPTIONS["search_project"]
 mcp.tool()(search_project)
 
 

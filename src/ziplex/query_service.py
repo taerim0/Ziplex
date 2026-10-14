@@ -445,7 +445,7 @@ def get_graph_summary(aif_path: str, include_text_refs: bool = False, top_n: int
     )
 
 
-def get_dependents(aif_path: str, file: str, include_text_refs: bool = True) -> list[str]:
+def get_dependents(aif_path: str, file: str, include_text_refs: bool = False) -> list[str]:
     """Files that directly depend on `file` -- who would need a second look
     if `file` changes. `file` is a key from list_files()'s result. Paths use
     '/' regardless of OS; a raw Windows-style '\\' path is normalized before
@@ -454,8 +454,8 @@ def get_dependents(aif_path: str, file: str, include_text_refs: bool = True) -> 
     "not found" (see _require_known_file()'s docstring for why that
     distinction matters).
 
-    include_text_refs=False excludes a dependent whose only link to `file`
-    is a filename mentioned in prose (a README, a config value) rather than
+    include_text_refs=True (default False) also counts a dependent whose only
+    link to `file` is a filename mentioned in prose (a README, a config value) rather than
     an actual import or a structural reference (e.g. a Godot scene's
     ext_resource path) -- see file/relationship.py's `get_dependents()` and
     text_references.py for what counts as which.
@@ -465,7 +465,7 @@ def get_dependents(aif_path: str, file: str, include_text_refs: bool = True) -> 
     return _get_dependents(relationships, file, include_text_refs=include_text_refs)
 
 
-def get_blast_radius(aif_path: str, file: str, include_text_refs: bool = True) -> list[str]:
+def get_blast_radius(aif_path: str, file: str, include_text_refs: bool = False) -> list[str]:
     """Every file affected by a change to `file`, directly or transitively --
     the full impact set, not just its immediate dependents. Built on the
     same human-corrected dependency graph as get_dependents(), which is why

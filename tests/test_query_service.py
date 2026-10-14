@@ -445,3 +445,25 @@ def test_search_project_still_finds_files_left_unchecked_at_pack_time(tmp_path):
     result = query_service.search_project(str(project), "TARGET_TOKEN", aif_path=str(aif_path))
 
     assert any("test_main.py" in r["file"] for r in result["matches"])
+
+
+def _write_aif_with_a_prose_mention(tmp_path):
+    aif_path = tmp_path / "mention.json"
+    aif_path.write_text(json.dumps({
+        "project": {"name": "mention"},
+        "files": {"a.py": {"summary": "a"}, "b.py": {"summary": "b"}, "README.md": {"summary": "r"}},
+        "relationships": {
+            "a.py": {"internal": [], "external": []},
+            "b.py": {"internal": ["a.py"], "external": []},
+            "README.md": {"internal": ["a.py"], "external": [], "internal_text_refs": ["a.py"]},
+        },
+    }), encoding="utf-8")
+    return str(aif_path)
+
+
+def test_dependents_and_blast_radius_exclude_prose_mentions_by_default(tmp_path):
+    aif_path = _write_aif_with_a_prose_mention(tmp_path)
+
+    assert query_service.get_dependents(aif_path, "a.py") == ["b.py"]
+    assert query_service.get_blast_radius(aif_path, "a.py") == ["b.py"]
+    assert sorted(query_service.get_dependents(aif_path, "a.py", include_text_refs=True)) == ["README.md", "b.py"]

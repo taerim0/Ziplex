@@ -43,14 +43,23 @@ def test_all_tools_are_registered():
 def test_server_instructions_point_structural_questions_at_the_graph_tools():
     # EXPERIMENTS #10: an agent not told to use the graph rebuilt it by script
     instructions = mcp_server.mcp.instructions
-    for tool in ("get_dependents", "get_blast_radius", "get_relationships", "get_overview"):
+    for tool in ("get_dependents", "get_blast_radius", "get_relationships", "get_graph_summary"):
         assert tool in instructions
 
 
-def test_tool_descriptions_come_from_docstrings():
+def test_tool_descriptions_come_from_the_short_mcp_table():
     tools = {t.name: t for t in asyncio.run(mcp_server.mcp.list_tools())}
-    assert "always-affordable" in tools["get_overview"].description
-    assert "don't already know which file" in tools["search_project"].description
+    assert set(tools) == set(mcp_server.TOOL_DESCRIPTIONS)
+    for name, tool in tools.items():
+        assert tool.description == mcp_server.TOOL_DESCRIPTIONS[name]
+
+
+def test_tool_list_stays_within_its_context_budget():
+    # The whole tool list is sent to the client in every session.
+    tools = asyncio.run(mcp_server.mcp.list_tools())
+    payload = json.dumps([t.model_dump(exclude_none=True) for t in tools])
+    assert len(payload) < 7000
+    assert len(mcp_server.INSTRUCTIONS) < 700
 
 
 def _write_sample_aif(tmp_path):
