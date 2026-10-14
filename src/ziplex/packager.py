@@ -1,4 +1,7 @@
+import contextvars
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
@@ -517,17 +520,26 @@ def _extract_rules(
         # `C:\Users\<name>\<client>\...` went to a third-party API and
         # cost tokens on every key) and capped per file -- a class with
         # hundreds of methods sent all of them.
+        # Most informative first (most signatures, then path -- deterministic),
+        # since analyze_rules() drops whatever overflows its char budget.
+        ranked = sorted(
+            ((_rel_key(fp, root), sigs) for fp, sigs in signatures_map.items()),
+            key=lambda item: (-len(item[1]), item[0]),
+        )
         scoped_signatures_map = {}
-        for fp, sigs in list(signatures_map.items())[:MAX_RULES_FILES]:
+        for rel, sigs in ranked[:MAX_RULES_FILES]:
             shown = list(sigs[:MAX_RULES_SIGNATURES_PER_FILE])
             if len(sigs) > MAX_RULES_SIGNATURES_PER_FILE:
                 shown.append(f"(+{len(sigs) - MAX_RULES_SIGNATURES_PER_FILE} more)")
-            scoped_signatures_map[_rel_key(fp, root)] = shown
-        # Same capped "file: summary" lines analyze_prompt() gets -- see
-        # analyze_rules()'s docstring for why signatures alone weren't enough.
-        rules_summaries = _build_architecture_summary(
-            {_rel_key(fp, root): data for fp, data in files_data.items()}, [],
+            scoped_signatures_map[rel] = shown
+        # Same capped "file: summary" lines analyze_prompt() gets, in the same
+        # priority order -- see analyze_rules()'s docstring for why
+        # signatures alone weren't enough.
+        rel_data = sorted(
+            ((_rel_key(fp, root), data) for fp, data in files_data.items()),
+            key=lambda item: (-len(item[1].get("signatures") or []), item[0]),
         )
+        rules_summaries = _build_architecture_summary(dict(rel_data), [])
         while not rules:
             rules_response = analyze_rules(scoped_signatures_map, lang=lang, summaries=rules_summaries)
             try:
@@ -650,19 +662,29 @@ def _generate_prompt(
     return prompt
 
 
-def _generate_folders(rel_files_data: dict, lang: str, use_llm: bool) -> tuple[dict, dict, dict]:
-    """Per-folder summaries + their aggregate confidence + how many files
-    each one directly contains -- see folder_summary.py's own module
-    docstring for why the summary step is a single best-effort call
-    (structural fallback per folder on any failure), not wired into the
-    checkpoint/resume system rules/prompt/per-file summaries all get.
-    """
+def _announce_folders(use_llm: bool) -> None:
+    """_generate_folders()'s progress line, printed on pack()'s own thread
+    before the side thread starts so it never interleaves mid-line."""
     print(pick("  🗂️  Generating folder summaries...", "  🗂️  폴더 요약 생성 중...") if use_llm else pick(
         "  🗂️  Generating folder summaries (structural info only)...",
         "  🗂️  폴더 요약 생성 중 (구조 정보 기반)...",
     ))
+
+
+def _generate_folders(
+    rel_files_data: dict, lang: str, use_llm: bool, should_stop: Callable[[], bool] | None = None,
+) -> tuple[dict, dict, dict]:
+    """Per-folder summaries + their aggregate confidence + how many files
+    each one directly contains -- see folder_summary.py's own module
+    docstring for why the summary step is best-effort (structural fallback
+    per folder on any failure), not wired into the checkpoint/resume system
+    rules/prompt/per-file summaries all get. Read-only on rel_files_data, so
+    pack() runs it on a side thread alongside rules -> prompt; `should_stop`
+    skips LLM chunks not yet started once pack() is exiting early. Prints
+    nothing itself (see _announce_folders()).
+    """
     folders = (
-        folder_summary.generate_folder_summaries(rel_files_data, lang=lang)
+        folder_summary.generate_folder_summaries(rel_files_data, lang=lang, should_stop=should_stop)
         if use_llm
         else folder_summary.generate_structural_folder_summaries(rel_files_data, lang=lang)
     )
@@ -1387,22 +1409,36 @@ def pack(
     # local absolute filesystem path.
     rel_files_data = {_rel_key(fp, root): data for fp, data in files_data.items()}
 
-    # extract rules (restored from checkpoint if available)
-    rules = _extract_rules(files_data, signatures_map, root, root_path, lang, use_llm, carried_rules, interactive)
-    if rules is None:
-        return {}
-
-    # generate prompt (restored from checkpoint if available)
-    prompt = _generate_prompt(
-        files_data, root, root_path, lang, use_llm,
-        project_name, rel_files_data, tech_stack, rules,
-        restored_prompt, lang_matches, interactive,
+    # Per-folder summaries run on a side thread while rules -> prompt run
+    # here: folders depend on neither, never checkpoint, and only read
+    # rel_files_data. An early exit sets folders_stop so unstarted chunks
+    # are skipped instead of billed.
+    _announce_folders(use_llm)
+    folders_stop = threading.Event()
+    folders_pool = ThreadPoolExecutor(max_workers=1)
+    folders_future = folders_pool.submit(
+        contextvars.copy_context().run,  # keep progress_i18n's log language
+        _generate_folders, rel_files_data, lang, use_llm, folders_stop.is_set,
     )
-    if prompt is None:
-        return {}
+    try:
+        # extract rules (restored from checkpoint if available)
+        rules = _extract_rules(files_data, signatures_map, root, root_path, lang, use_llm, carried_rules, interactive)
+        if rules is None:
+            return {}
 
-    # Per-folder summaries
-    folders, folder_confidences, folder_file_counts = _generate_folders(rel_files_data, lang, use_llm)
+        # generate prompt (restored from checkpoint if available)
+        prompt = _generate_prompt(
+            files_data, root, root_path, lang, use_llm,
+            project_name, rel_files_data, tech_stack, rules,
+            restored_prompt, lang_matches, interactive,
+        )
+        if prompt is None:
+            return {}
+
+        folders, folder_confidences, folder_file_counts = folders_future.result()
+    finally:
+        folders_stop.set()
+        folders_pool.shutdown(wait=False)
 
     # Added after every checkpoint/summary/rules/folder step, so graph-only
     # entries never reach an LLM prompt or a checkpoint's restored file set.

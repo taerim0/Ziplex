@@ -5,7 +5,7 @@ llm.MockProvider).
 
 import json
 
-from ziplex import folder_summary
+from ziplex import folder_summary, llm
 
 
 def test_group_files_by_folder_groups_by_direct_parent_only():
@@ -162,3 +162,94 @@ def test_group_confidence_by_folder_skips_files_with_no_confidence_yet():
 
 def test_group_confidence_by_folder_returns_empty_dict_for_no_scored_files():
     assert folder_summary.group_confidence_by_folder({"src/a.py": {}}) == {}
+
+
+def _big_project(folders=600, files_per_folder=9):
+    return {
+        f"pkg{f // 30}/mod{f}/file_{f}_{i}.py": {
+            "summary": f"Handles widget request processing number {i} for module {f} via handle_widget_request.",
+        }
+        for f in range(folders)
+        for i in range(files_per_folder)
+    }
+
+
+def _recording_generate(monkeypatch, fail_folder=None):
+    """Fake llm.generate(): records each real folder prompt and answers
+    every folder in it (or returns bad JSON for the chunk holding
+    `fail_folder`)."""
+    prompts = []
+
+    def fake_generate(prompt, retry=5, label=""):
+        prompts.append(prompt)
+        folders = [line[len("Folder: "):] for line in prompt.splitlines() if line.startswith("Folder: ")]
+        if fail_folder in folders:
+            return "not json"
+        return json.dumps({folder: f"LLM: {folder}" for folder in folders})
+
+    monkeypatch.setattr(llm, "generate", fake_generate)
+    return prompts
+
+
+def test_generate_folder_summaries_chunks_a_large_project_under_the_caps(monkeypatch):
+    prompts = _recording_generate(monkeypatch)
+    files_data = _big_project()
+
+    result = folder_summary.generate_folder_summaries(files_data)
+
+    assert len(prompts) > 1
+    for prompt in prompts:
+        assert len(prompt) <= folder_summary.FOLDER_PROMPT_MAX_CHARS
+        assert prompt.count("\nFolder: ") <= folder_summary.FOLDER_CHUNK_MAX_FOLDERS
+    assert set(result) == set(folder_summary.group_files_by_folder(files_data))
+    assert all(summary == f"LLM: {folder}" for folder, summary in result.items())
+    sent = [line for prompt in prompts for line in prompt.splitlines() if line.startswith("Folder: ")]
+    assert len(sent) == len(set(sent)) == 600
+
+
+def test_generate_folder_summaries_falls_back_per_failed_chunk_only(monkeypatch):
+    _recording_generate(monkeypatch, fail_folder="pkg0/mod0")
+    files_data = _big_project()
+
+    result = folder_summary.generate_folder_summaries(files_data)
+
+    first_chunk = folder_summary.chunk_folders(folder_summary.group_files_by_folder(files_data))[0]
+    assert "pkg0/mod0" in first_chunk
+    for folder, summary in result.items():
+        if folder in first_chunk:
+            assert summary.startswith("Contains 9 file(s)")
+        else:
+            assert summary == f"LLM: {folder}"
+
+
+def test_generate_folder_summaries_is_deterministic(monkeypatch):
+    _recording_generate(monkeypatch)
+    files_data = _big_project(folders=200)
+    first = folder_summary.generate_folder_summaries(files_data)
+    second = folder_summary.generate_folder_summaries(files_data)
+    assert first == second
+    assert list(first) == list(folder_summary.group_files_by_folder(files_data))
+
+
+def test_chunk_folders_keeps_order_and_respects_both_caps():
+    folders = {f"f{i}": [f"a{i}.py: x", f"b{i}.py: y"] for i in range(100)}
+    chunks = folder_summary.chunk_folders(folders)
+    assert [folder for chunk in chunks for folder in chunk] == list(folders)
+    assert all(len(chunk) <= folder_summary.FOLDER_CHUNK_MAX_FOLDERS for chunk in chunks)
+
+    wide = {f"f{i}": [f"file{k}.py: " + "z" * 300 for k in range(25)] for i in range(20)}
+    wide_chunks = folder_summary.chunk_folders(wide)
+    assert len(wide_chunks) > 1
+    for chunk in wide_chunks:
+        joined = "\n\n".join(llm.format_folder_block(f, e) for f, e in chunk.items())
+        assert len(joined) + llm.FOLDER_PROMPT_OVERHEAD_CHARS <= folder_summary.FOLDER_PROMPT_MAX_CHARS
+
+
+def test_generate_folder_summaries_should_stop_skips_llm_calls(monkeypatch):
+    prompts = _recording_generate(monkeypatch)
+    files_data = _big_project(folders=100)
+
+    result = folder_summary.generate_folder_summaries(files_data, should_stop=lambda: True)
+
+    assert prompts == []
+    assert all(summary.startswith("Contains 9 file(s)") for summary in result.values())
