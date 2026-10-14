@@ -18,7 +18,23 @@ DEFAULT_IGNORE = [
     "dist/",
     "build/",
     "*.log",
+    # Lockfiles and minified/source-map build output: large, generated, and
+    # summarize to nothing useful. Manifests (package.json, pnpm-workspace.yaml,
+    # go.mod, ...) stay collected. "*.lock" covers yarn/Cargo/poetry/Gemfile/
+    # composer/Pipfile/flake lockfiles.
     "*.lock",
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "pnpm-lock.yaml",
+    "bun.lockb",
+    "go.sum",
+    "*.min.js",
+    "*.min.css",
+    "*.js.map",
+    "*.mjs.map",
+    "*.cjs.map",
+    "*.css.map",
+    "*.d.ts.map",
     ".env",
     # .env.local/.env.production/... carry the same real secrets .env does
     # and used to be collected (and scan as safe more often than not); the

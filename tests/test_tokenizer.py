@@ -116,3 +116,41 @@ def test_count_tokens_treats_special_token_text_as_ordinary_text():
     # LLM call of a pack was already paid for.
     assert count_tokens("before <|endoftext|> after", "o200k_base") > 0
     assert count_tokens("before <|endoftext|> after", "cl100k_base") > 0
+
+
+def test_unloadable_encoding_falls_back_to_the_char_estimate(tmp_path, monkeypatch):
+    # tiktoken downloads an encoding on a cold cache; offline that raises.
+    import tiktoken
+    from ziplex import tokenizer
+
+    def _offline(name):
+        raise ConnectionError("no network")
+
+    tokenizer._get_encoding.cache_clear()
+    monkeypatch.setattr(tiktoken, "get_encoding", _offline)
+    try:
+        text = "hello world " * 10
+        assert count_tokens(text, "o200k_base") == len(text) // tokenizer.APPROX_CHARS_PER_TOKEN
+        assert is_approx_model("GPT-4o") is True
+
+        file_path = tmp_path / "a.py"
+        file_path.write_text("x = 1\n" * 20, encoding="utf-8")
+        results, _ = analyze_tokens_with_payload([str(file_path)], {str(file_path): {"summary": "s"}})
+        assert results["GPT-4o"]["approx"] is True
+        assert results["GPT-4o"]["original"] == results["Claude"]["original"]
+    finally:
+        tokenizer._get_encoding.cache_clear()
+
+
+def test_analyze_tokens_joins_files_in_order(tmp_path):
+    from ziplex.tokenizer import analyze_tokens
+
+    paths = []
+    for i in range(3):
+        p = tmp_path / f"f{i}.txt"
+        p.write_text(f"body{i}", encoding="utf-8")
+        paths.append(str(p))
+
+    _, combined = analyze_tokens(paths)
+
+    assert combined == "".join(f"\n### {p}\nbody{i}\n" for i, p in enumerate(paths))

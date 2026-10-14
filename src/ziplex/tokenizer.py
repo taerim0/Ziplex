@@ -1,6 +1,5 @@
+import functools
 import json
-
-import tiktoken
 
 from .extract.code.compressor import compress_file
 from .file.textutil import read_text
@@ -25,24 +24,40 @@ MODEL_MAX_TOKENS = {
     "Gemini":  1_000_000,
 }
 
+@functools.lru_cache(maxsize=None)
+def _get_encoding(encoding_name: str):
+    """The tiktoken encoding, or None when it can't be loaded (on a cold
+    cache tiktoken downloads it, which fails offline). Cached either way, so
+    a failed load is attempted once per process."""
+    try:
+        import tiktoken
+        return tiktoken.get_encoding(encoding_name)
+    except Exception:
+        return None
+
+
 def count_tokens(text: str, encoding_name: str) -> int:
-    enc = tiktoken.get_encoding(encoding_name)
+    """Exact tiktoken count, or the APPROX_CHARS_PER_TOKEN estimate when the
+    encoding is unavailable (see _get_encoding())."""
+    enc = _get_encoding(encoding_name)
+    if enc is None:
+        return len(text) // APPROX_CHARS_PER_TOKEN
     # disallowed_special=(): count special-token text like "<|endoftext|>"
     # as ordinary text. tiktoken raises ValueError on it by default, and
-    # pack() counts tokens only after every LLM call is paid for -- a source
-    # file merely mentioning that string (tokenizer code, LLM docs) crashed
-    # the pack and lost all of it before anything was saved.
+    # pack() counts tokens only after every LLM call is paid for.
     return len(enc.encode(text, disallowed_special=()))
 
 
 def is_approx_model(model: str) -> bool:
     """True for a model in MODEL_MAX_TOKENS with no tiktoken encoding of its
-    own (Claude, Gemini) -- its token count is a character-based estimate,
-    not an exact one. Exposed so a caller (cli.py's printer, a future GUI
-    label) can mark an approximate figure as such instead of presenting it
-    with the same confidence as a real tiktoken count.
+    own (Claude, Gemini), or whose encoding failed to load -- its token
+    count is a character-based estimate, not an exact one. Exposed so a
+    caller (cli.py's printer, a future GUI label) can mark an approximate
+    figure as such instead of presenting it with the same confidence as a
+    real tiktoken count.
     """
-    return model not in MODEL_ENCODINGS
+    encoding = MODEL_ENCODINGS.get(model)
+    return encoding is None or _get_encoding(encoding) is None
 
 
 def _count_for_model(text: str, model: str) -> int:
@@ -62,12 +77,13 @@ def count_tokens_for_model(text: str, model: str) -> int:
 
 
 def analyze_tokens(file_paths: list[str]) -> tuple:
-    combined = ""
+    parts = []
     for file_path in file_paths:
         content = read_text(file_path)
         if content is None:
             continue
-        combined += f"\n### {file_path}\n{content}\n"
+        parts.append(f"\n### {file_path}\n{content}\n")
+    combined = "".join(parts)
 
     results = {}
     for model, max_tokens in MODEL_MAX_TOKENS.items():
@@ -87,17 +103,20 @@ def analyze_tokens(file_paths: list[str]) -> tuple:
     return results, combined
 
 def analyze_tokens_with_compression(file_paths: list[str]) -> tuple:
-    original_text = ""
-    compressed_text = ""
+    original_parts = []
+    compressed_parts = []
 
     for file_path in file_paths:
         content = read_text(file_path)
         if content is None:
             continue
-        original_text += f"\n### {file_path}\n{content}\n"
+        original_parts.append(f"\n### {file_path}\n{content}\n")
 
         compressed = compress_file(file_path)
-        compressed_text += f"\n### {file_path}\n{compressed}\n"
+        compressed_parts.append(f"\n### {file_path}\n{compressed}\n")
+
+    original_text = "".join(original_parts)
+    compressed_text = "".join(compressed_parts)
 
     results = {}
     for model, max_tokens in MODEL_MAX_TOKENS.items():
@@ -153,19 +172,22 @@ def analyze_tokens_with_payload(file_paths: list[str], files_data: dict[str, dic
     `--max-tokens` CI guard checks against -- a project with several media
     assets could exceed its real token budget while the guard still passed.
     """
-    original_text = ""
-    payload_text = ""
+    original_parts = []
+    payload_parts = []
 
     for file_path in file_paths:
         data = files_data.get(file_path, {})
         payload = {
             "summary": data.get("summary", ""),
         }
-        payload_text += f"\n### {file_path}\n{json.dumps(payload, ensure_ascii=False)}\n"
+        payload_parts.append(f"\n### {file_path}\n{json.dumps(payload, ensure_ascii=False)}\n")
 
         content = read_text(file_path)
         if content is not None:
-            original_text += f"\n### {file_path}\n{content}\n"
+            original_parts.append(f"\n### {file_path}\n{content}\n")
+
+    original_text = "".join(original_parts)
+    payload_text = "".join(payload_parts)
 
     results = {}
     for model, max_tokens in MODEL_MAX_TOKENS.items():
