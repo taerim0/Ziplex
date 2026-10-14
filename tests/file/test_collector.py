@@ -125,3 +125,22 @@ def test_respects_nested_gitignore_scoped_to_its_own_folder(tmp_path):
     collected = sorted(Path(p).relative_to(tmp_path).as_posix() for p in collect_files(str(tmp_path)))
 
     assert collected == ["other/secret.txt", "svc/.gitignore", "svc/keep.txt"]
+
+
+def test_skips_lockfiles_and_generated_build_artifacts_but_keeps_manifests(tmp_path):
+    noise = (
+        "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "bun.lockb",
+        "yarn.lock", "Cargo.lock", "poetry.lock", "Gemfile.lock", "composer.lock",
+        "go.sum", "web/vendor.min.js", "web/site.min.css", "web/app.js.map",
+        "web/site.css.map", "web/types.d.ts.map",
+    )
+    kept = (
+        "package.json", "pnpm-workspace.yaml", "go.mod", "Cargo.toml",
+        "pyproject.toml", "composer.json", "web/app.js", "web/site.css", "levels/start.map",
+    )
+    for rel in noise + kept:
+        _write(tmp_path / rel, "x\n")
+
+    collected = {Path(f).relative_to(tmp_path).as_posix() for f in collect_files(str(tmp_path))}
+
+    assert collected == set(kept)
