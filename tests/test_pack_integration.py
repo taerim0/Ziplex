@@ -791,8 +791,41 @@ def test_pack_excludes_a_dangerous_file_non_interactively_with_no_prompt(tmp_pat
 
     aif = packager.pack(str(project), auto=True, interactive=False)
 
-    assert set(aif["files"].keys()) == {"main.py"}  # secret.env stays excluded, no prompt raised
+    # secret.env's content stays excluded (no prompt raised); it only appears
+    # as a graph node with a fixed placeholder summary.
+    assert set(aif["files"].keys()) == {"main.py", "secret.env"}
+    assert aif["files"]["secret.env"]["summary"] in packager.FLAGGED_SUMMARY.values()
     assert aif["project"]["security_scan"] == {"flagged": 1, "included_anyway": 0, "excluded": 1}
+
+
+def test_pack_keeps_a_flagged_files_imports_in_the_graph_without_its_content(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "app.py", "def run():\n    return 1\n")
+    _write(project / "test_app.py", 'import app\nAPI_KEY = "abc123def456"\n\ndef test_run():\n    assert app.run()\n')
+
+    from ziplex.edits import finalize_aif
+    aif = finalize_aif(packager.pack(str(project), auto=True, interactive=False, use_llm=False))
+    out = tmp_path / "out" / "demo.json"
+    packager.save_aif(aif, str(out))
+
+    assert aif["project"]["security_scan"]["excluded"] == 1
+    assert "app.py" in aif["relationships"]["test_app.py"]["internal"]
+    detail = json.loads((tmp_path / "out" / "demo.detail.json").read_text(encoding="utf-8"))
+    assert not detail.get("test_app.py", {}).get("compressed")
+    assert "abc123def456" not in out.read_text(encoding="utf-8")
+
+
+def test_pack_can_drop_flagged_files_from_the_graph_via_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
+    project = tmp_path / "project"
+    _write(project / "app.py", "def run():\n    return 1\n")
+    _write(project / "test_app.py", 'import app\nAPI_KEY = "abc123def456"\n')
+    _write(project / ".ziplex.json", '{"exclude_flagged_from_graph": true}')
+
+    aif = packager.pack(str(project), auto=True, interactive=False, use_llm=False)
+
+    assert "test_app.py" not in aif["files"]
 
 
 def test_pack_interactive_review_includes_a_dangerous_file_when_chosen(tmp_path, monkeypatch):
@@ -829,7 +862,8 @@ def test_pack_interactive_review_declines_by_default_on_blank_input(tmp_path, mo
 
     aif = packager.pack(str(project), auto=True, interactive=True)
 
-    assert set(aif["files"].keys()) == {"main.py"}
+    assert set(aif["files"].keys()) == {"main.py", "secret.env"}
+    assert aif["files"]["secret.env"]["summary"] in packager.FLAGGED_SUMMARY.values()
 
 
 def test_pack_preselected_can_name_a_dangerous_file_directly(tmp_path, monkeypatch):

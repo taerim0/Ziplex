@@ -27,6 +27,9 @@ CONFIG_FILENAME = ".ziplex.json"
 DEFAULT_CONFIG = {
     "include": [],
     "ignore": [],
+    # True drops security-flagged files from the dependency graph entirely,
+    # not just their content (see packager._graph_only_entries()).
+    "exclude_flagged_from_graph": False,
 }
 
 
@@ -57,7 +60,10 @@ def load_config(project_path: str) -> dict:
     if isinstance(loaded, dict):
         for key in DEFAULT_CONFIG:
             value = loaded.get(key)
-            if isinstance(value, list) and all(isinstance(item, str) for item in value):
+            if isinstance(DEFAULT_CONFIG[key], bool):
+                if isinstance(value, bool):
+                    config[key] = value
+            elif isinstance(value, list) and all(isinstance(item, str) for item in value):
                 config[key] = value
     return config
 

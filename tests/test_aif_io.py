@@ -104,8 +104,8 @@ def test_save_aif_writes_only_certain_edges_and_puts_weak_ones_in_detail(tmp_pat
 def test_query_service_sees_weak_edges_again_after_a_save(tmp_path):
     out = _save(tmp_path)
 
-    assert query_service.get_dependents(str(out), "a.py") == ["README.md", "b.py"]
-    assert query_service.get_dependents(str(out), "a.py", include_text_refs=False) == ["b.py"]
+    assert query_service.get_dependents(str(out), "a.py", include_text_refs=True) == ["README.md", "b.py"]
+    assert query_service.get_dependents(str(out), "a.py") == ["b.py"]
     assert query_service.get_relationships(str(out), include_text_refs=True)["README.md"]["internal_text_refs"] == ["a.py"]
     # an isolated file is still a recognized file, not "not found"
     assert query_service.get_dependents(str(out), "c.py") == []
@@ -160,8 +160,8 @@ def test_a_pre_slim_aif_json_still_loads_and_queries(tmp_path):
     out = tmp_path / "old.json"
     out.write_text(json.dumps(_aif_with(_full())), encoding="utf-8")
 
-    assert query_service.get_dependents(str(out), "a.py", include_text_refs=False) == ["b.py"]
-    assert query_service.get_dependents(str(out), "a.py") == ["README.md", "b.py"]
+    assert query_service.get_dependents(str(out), "a.py") == ["b.py"]
+    assert query_service.get_dependents(str(out), "a.py", include_text_refs=True) == ["README.md", "b.py"]
 
 
 # --- on-disk layout -------------------------------------------------------

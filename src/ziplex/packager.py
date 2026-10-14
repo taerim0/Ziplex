@@ -7,7 +7,7 @@ from .file.scanner import scan_files
 from .file.selector import select_files, review_dangerous_files
 from .file.media import classify_media_file, media_summary
 from .file.textutil import relative_key as _rel_key
-from .extract.code.extractor import extract_all
+from .extract.code.extractor import extract_all, extract_dependencies
 from .text_references import find_text_references_for_file, merge_text_references
 from .import_context import resolve_import_context, expand_file_dependencies
 from .tokenizer import analyze_tokens_with_payload, count_tokens_for_model
@@ -15,7 +15,7 @@ from .aif_io import detach_weak_edges, dumps_aif, write_aif, WEAK_KEY
 from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES, reset_usage, get_usage
 from .freshness import build_manifest, load_previous_summaries
 from .confidence import estimate_confidence, REVIEW_THRESHOLD
-from .config import collection_kwargs
+from .config import collection_kwargs, load_config
 from .tech_stack import detect_tech_stack
 from .paths import REPO_ROOT
 from .progress_i18n import pick, set_current as _set_progress_lang
@@ -709,6 +709,35 @@ def _compute_security_scan(dangerous: list[dict], selected: list[str], root: Pat
     }
 
 
+FLAGGED_SUMMARY = {
+    "en": "[content withheld: flagged by the security scan; imports kept for the dependency graph]",
+    "ko": "[내용 제외: 보안 스캔에 걸린 파일. 의존성 그래프용 import만 유지]",
+}
+
+
+def _graph_only_entries(
+    graph_only: list[str], root: Path, import_ctx, current_manifest: dict[str, str], lang: str,
+) -> dict:
+    """files_data entries for flagged files excluded from the pack: resolved
+    import edges plus a fixed placeholder summary, never any content."""
+    entries = {}
+    for file_path in graph_only:
+        name = _rel_key(file_path, root)
+        deps = [] if classify_media_file(file_path) else expand_file_dependencies(
+            file_path, name, extract_dependencies(file_path), import_ctx,
+        )
+        entries[file_path] = {
+            "signatures": [],
+            "dependencies": deps,
+            "api": [],
+            "compressed": "",
+            "summary": FLAGGED_SUMMARY.get(lang, FLAGGED_SUMMARY["en"]),
+            "confidence": 1.0,
+            "content_hash": current_manifest.get(name),
+        }
+    return entries
+
+
 def _assemble_aif(
     project_name: str, prompt: str, tech_stack: list[dict], security_scan: dict,
     include: list[str] | None, ignore: list[str] | None, lang: str, rules: list[str],
@@ -1077,13 +1106,21 @@ def pack(
         print(pick("No files selected.", "선택된 파일 없음."))
         return {}
 
+    # Flagged files left out of the pack still contribute their imports to
+    # the graph: paths and module names aren't secrets, and dropping them
+    # lost 17% of Ziplex's own Python edges. Their content never reaches a
+    # summary, detail.json, a text-reference scan, or an LLM prompt.
+    graph_only = [] if load_config(root_path).get("exclude_flagged_from_graph") else [
+        d["file"] for d in dangerous if d["file"] not in selected_set
+    ]
+
     # Hashed once here and threaded through to both load_previous_summaries()
     # (staleness stage 2, just below) and _assemble_aif()'s own final
     # `_manifest` (step 7) -- both used to independently re-hash every
     # selected file's content, a real gap found by code review: identical
     # work done twice per pack run for zero behavioral difference, since
     # neither call mutates `selected` in between.
-    current_manifest = build_manifest(selected, root_path)
+    current_manifest = build_manifest(selected + graph_only, root_path)
 
     # incremental reuse (staleness stage 2): {relative key: summary} for
     # files whose content hasn't changed since the last successful pack
@@ -1126,7 +1163,7 @@ def pack(
     # All selected files' relative keys, computed once -- text_references.
     # find_text_references_for_file() needs the real candidate list to
     # match a non-code file's content against, not just file_path itself.
-    all_names = [_rel_key(fp, root) for fp in selected]
+    all_names = [_rel_key(fp, root) for fp in selected + graph_only]
 
     # Project-level import resolution (Go packages via go.mod, TS/JS path
     # aliases via tsconfig -- see import_context.py). Resolved once per
@@ -1360,6 +1397,10 @@ def pack(
 
     # Per-folder summaries
     folders, folder_confidences, folder_file_counts = _generate_folders(rel_files_data, lang, use_llm)
+
+    # Added after every checkpoint/summary/rules/folder step, so graph-only
+    # entries never reach an LLM prompt or a checkpoint's restored file set.
+    files_data.update(_graph_only_entries(graph_only, root, import_ctx, current_manifest, lang))
 
     # 6. Token counting
     # Compares raw project text against the actual per-file aif.json payload
