@@ -44,17 +44,13 @@ def extract_all(file_path: str) -> dict:
     name_prefixes = config.name_prefixes if config else {}
     zero_arg_types = config.zero_arg_types if config else frozenset()
     field_handler = config.field_handler if config else None
-    signatures = []
-    _traverse_signatures(tree.root_node, signatures, node_types, implicit_names, name_prefixes, zero_arg_types, None, field_handler)
-
-    dependencies = []
-    if config:
-        _traverse_dependencies(tree.root_node, dependencies, config.dependency_handler)
-
-    api = []
-    handler = config.api_handler if config else None
-    if handler is not None:
-        _traverse_api(tree.root_node, api, handler)
+    signatures, dependencies, api = [], [], []
+    _walk_all(
+        tree.root_node, None,
+        (node_types, implicit_names, name_prefixes, zero_arg_types, field_handler), signatures,
+        config.dependency_handler if config else None, dependencies,
+        config.api_handler if config else None, api,
+    )
 
     compressed = compress_from_tree(code, ext, tree)
 
@@ -215,66 +211,71 @@ def _pointer_suffix(node) -> str:
     return suffix
 
 
+def _append_signature(node, parent, results: list, implicit_names: dict, name_prefixes: dict, zero_arg_types: frozenset) -> None:
+    """Appends `node`'s signature (a function_types node) to results, if readable."""
+    sig_node = _unwrap_declarator(node)
+    name   = _resolve_signature_name(sig_node, parent, implicit_names)
+    if name and node.type in name_prefixes:
+        # A real "name" field that's still not the full readable name --
+        # C#'s destructor_declaration is the motivating case: its own
+        # "name" field is just the bare identifier ("Widget"), with the
+        # "~" that actually distinguishes it from a same-named
+        # constructor tokenized as a separate, unnamed sibling child
+        # instead of being part of the field. Without this, a class
+        # defining both a constructor and destructor would produce two
+        # identical-looking "Widget()" signatures. Keyed by node.type
+        # (not sig_node.type -- irrelevant here since C# never unwraps a
+        # declarator), unlike implicit_names this only ever applies on
+        # top of a name that was actually found, never as a substitute
+        # for a missing one.
+        name = name_prefixes[node.type] + name
+    params = sig_node.child_by_field_name("parameters")
+    # "return_type" covers Python/TS/GDScript's own field name for this;
+    # Go's grammar names the equivalent field "result" instead, and
+    # C#'s names it "returns" instead again. Read off `node` (not
+    # `sig_node`): the return type sits on the outer definition node
+    # even for C++, never on the inner declarator.
+    ret = (node.child_by_field_name("return_type")
+           or node.child_by_field_name("result")
+           or node.child_by_field_name("returns"))
+    if sig_node is not node:
+        # "type" is C++'s own name for this field -- but it is NOT
+        # checked unconditionally the way "return_type"/"result" are:
+        # Java's method_declaration also has a field literally named
+        # "type" (its return type), and Java's node is never unwrapped
+        # (it has no "declarator" field, so _unwrap_declarator() always
+        # returns it unchanged) -- checking "type" unconditionally
+        # silently changed every Java signature from "add(int a, int
+        # b)" to "add(int a, int b) -> int", an unrelated, undocumented
+        # behavior change caught by code review before merge. Gating
+        # this on sig_node being an actually-unwrapped declarator
+        # (currently only ever true for C++'s function_declarator)
+        # scopes "type" to the grammar that actually needs it.
+        ret = ret or node.child_by_field_name("type")
+
+    # params being None normally means "nothing readable was found"
+    # (TS/JS's bare single-param arrow, a genuinely unresolved case --
+    # see zero_arg_types' own docstring). zero_arg_types is the
+    # opt-in exception: for a node type listed there, a missing
+    # "parameters" field is structurally guaranteed to mean a real
+    # zero-argument function (Ruby's parens-less `def foo`), so an
+    # empty "()" is substituted rather than dropping the signature.
+    if name and (params or node.type in zero_arg_types):
+        param_text = params.text.decode() if params else "()"
+        sig = f"{name}{param_text}"
+        if ret:
+            # TS/JS's return_type is a type_annotation whose text keeps
+            # its leading ": " -- rendered as "-> : number" otherwise.
+            ret_text = ret.text.decode().lstrip(":").strip()
+            if sig_node is not node:
+                ret_text += _pointer_suffix(node)
+            sig += f" -> {ret_text}"
+        results.append(sig)
+
+
 def _traverse_signatures(node, results: list, node_types: list, implicit_names: dict, name_prefixes: dict, zero_arg_types: frozenset, parent, field_handler=None):
     if node.type in node_types:
-        sig_node = _unwrap_declarator(node)
-        name   = _resolve_signature_name(sig_node, parent, implicit_names)
-        if name and node.type in name_prefixes:
-            # A real "name" field that's still not the full readable name --
-            # C#'s destructor_declaration is the motivating case: its own
-            # "name" field is just the bare identifier ("Widget"), with the
-            # "~" that actually distinguishes it from a same-named
-            # constructor tokenized as a separate, unnamed sibling child
-            # instead of being part of the field. Without this, a class
-            # defining both a constructor and destructor would produce two
-            # identical-looking "Widget()" signatures. Keyed by node.type
-            # (not sig_node.type -- irrelevant here since C# never unwraps a
-            # declarator), unlike implicit_names this only ever applies on
-            # top of a name that was actually found, never as a substitute
-            # for a missing one.
-            name = name_prefixes[node.type] + name
-        params = sig_node.child_by_field_name("parameters")
-        # "return_type" covers Python/TS/GDScript's own field name for this;
-        # Go's grammar names the equivalent field "result" instead, and
-        # C#'s names it "returns" instead again. Read off `node` (not
-        # `sig_node`): the return type sits on the outer definition node
-        # even for C++, never on the inner declarator.
-        ret = (node.child_by_field_name("return_type")
-               or node.child_by_field_name("result")
-               or node.child_by_field_name("returns"))
-        if sig_node is not node:
-            # "type" is C++'s own name for this field -- but it is NOT
-            # checked unconditionally the way "return_type"/"result" are:
-            # Java's method_declaration also has a field literally named
-            # "type" (its return type), and Java's node is never unwrapped
-            # (it has no "declarator" field, so _unwrap_declarator() always
-            # returns it unchanged) -- checking "type" unconditionally
-            # silently changed every Java signature from "add(int a, int
-            # b)" to "add(int a, int b) -> int", an unrelated, undocumented
-            # behavior change caught by code review before merge. Gating
-            # this on sig_node being an actually-unwrapped declarator
-            # (currently only ever true for C++'s function_declarator)
-            # scopes "type" to the grammar that actually needs it.
-            ret = ret or node.child_by_field_name("type")
-
-        # params being None normally means "nothing readable was found"
-        # (TS/JS's bare single-param arrow, a genuinely unresolved case --
-        # see zero_arg_types' own docstring). zero_arg_types is the
-        # opt-in exception: for a node type listed there, a missing
-        # "parameters" field is structurally guaranteed to mean a real
-        # zero-argument function (Ruby's parens-less `def foo`), so an
-        # empty "()" is substituted rather than dropping the signature.
-        if name and (params or node.type in zero_arg_types):
-            param_text = params.text.decode() if params else "()"
-            sig = f"{name}{param_text}"
-            if ret:
-                # TS/JS's return_type is a type_annotation whose text keeps
-                # its leading ": " -- rendered as "-> : number" otherwise.
-                ret_text = ret.text.decode().lstrip(":").strip()
-                if sig_node is not node:
-                    ret_text += _pointer_suffix(node)
-                sig += f" -> {ret_text}"
-            results.append(sig)
+        _append_signature(node, parent, results, implicit_names, name_prefixes, zero_arg_types)
         return
 
     if field_handler is not None:
@@ -299,6 +300,32 @@ def _traverse_signatures(node, results: list, node_types: list, implicit_names: 
 
     for child in node.children:
         _traverse_signatures(child, results, node_types, implicit_names, name_prefixes, zero_arg_types, node, field_handler)
+
+
+def _walk_all(node, parent, sig_args, signatures, dep_handler, dependencies, api_handler, api):
+    """One pre-order pass doing what _traverse_signatures/_traverse_dependencies/
+    _traverse_api do separately -- each list ends up in the same order, and each
+    visitor stops descending exactly where its own traversal would. Creating
+    tree-sitter child nodes is the expensive part, so this walks them once."""
+    node_types, implicit_names, name_prefixes, zero_arg_types, field_handler = sig_args
+    want_sig = node_types is not None
+    if want_sig:
+        if node.type in node_types:
+            _append_signature(node, parent, signatures, implicit_names, name_prefixes, zero_arg_types)
+            want_sig = False
+        elif field_handler is not None:
+            field_handler(node, signatures)
+    want_dep = dep_handler is not None and not dep_handler(node, dependencies)
+    want_api = api_handler is not None and not api_handler(node, api)
+    if not (want_sig or want_dep or want_api):
+        return
+    child_sig_args = sig_args if want_sig else (None,) * 5
+    for child in node.children:
+        _walk_all(
+            child, node, child_sig_args, signatures,
+            dep_handler if want_dep else None, dependencies,
+            api_handler if want_api else None, api,
+        )
 
 
 def _traverse_dependencies(node, results: list, handler):
