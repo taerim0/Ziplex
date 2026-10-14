@@ -1,5 +1,6 @@
 import functools
 import json
+import os
 
 from .extract.code.compressor import compress_file
 from .file.textutil import read_text
@@ -36,10 +37,16 @@ def _get_encoding(encoding_name: str):
         return None
 
 
-def count_tokens(text: str, encoding_name: str) -> int:
+def count_tokens(text: str | list[str], encoding_name: str) -> int:
     """Exact tiktoken count, or the APPROX_CHARS_PER_TOKEN estimate when the
-    encoding is unavailable (see _get_encoding())."""
+    encoding is unavailable (see _get_encoding()). A list is counted part by
+    part on tiktoken's thread pool (a large project's text is tens of MB);
+    its total can differ from the joined text's by a token per boundary."""
     enc = _get_encoding(encoding_name)
+    if isinstance(text, list):
+        if enc is None:
+            return sum(len(part) for part in text) // APPROX_CHARS_PER_TOKEN
+        return sum(len(t) for t in enc.encode_ordinary_batch(text, num_threads=os.cpu_count() or 4))
     if enc is None:
         return len(text) // APPROX_CHARS_PER_TOKEN
     # disallowed_special=(): count special-token text like "<|endoftext|>"
@@ -60,14 +67,15 @@ def is_approx_model(model: str) -> bool:
     return encoding is None or _get_encoding(encoding) is None
 
 
-def _count_for_model(text: str, model: str) -> int:
+def _count_for_model(text: str | list[str], model: str) -> int:
     """Token count for `model` -- an exact tiktoken count when one of its
     own encodings exists (MODEL_ENCODINGS), otherwise APPROX_CHARS_PER_TOKEN
     applied to `text`'s length (see that constant's own comment for why)."""
     encoding = MODEL_ENCODINGS.get(model)
     if encoding is not None:
         return count_tokens(text, encoding)
-    return len(text) // APPROX_CHARS_PER_TOKEN
+    length = sum(len(part) for part in text) if isinstance(text, list) else len(text)
+    return length // APPROX_CHARS_PER_TOKEN
 
 
 def count_tokens_for_model(text: str, model: str) -> int:
@@ -87,7 +95,7 @@ def analyze_tokens(file_paths: list[str]) -> tuple:
 
     results = {}
     for model, max_tokens in MODEL_MAX_TOKENS.items():
-        token_count = _count_for_model(combined, model)
+        token_count = _count_for_model(parts, model)
         percentage = (token_count / max_tokens) * 100
         filled = int(percentage / 10)
         bar = "█" * filled + "░" * (10 - filled)
@@ -120,8 +128,8 @@ def analyze_tokens_with_compression(file_paths: list[str]) -> tuple:
 
     results = {}
     for model, max_tokens in MODEL_MAX_TOKENS.items():
-        original_count = _count_for_model(original_text, model)
-        compressed_count = _count_for_model(compressed_text, model)
+        original_count = _count_for_model(original_parts, model)
+        compressed_count = _count_for_model(compressed_parts, model)
 
         saved = original_count - compressed_count
         saved_pct = round((saved / original_count) * 100, 1) if original_count > 0 else 0
@@ -186,12 +194,11 @@ def analyze_tokens_with_payload(file_paths: list[str], files_data: dict[str, dic
         if content is not None:
             original_parts.append(f"\n### {file_path}\n{content}\n")
 
-    original_text = "".join(original_parts)
     payload_text = "".join(payload_parts)
 
     results = {}
     for model, max_tokens in MODEL_MAX_TOKENS.items():
-        original_count = _count_for_model(original_text, model)
+        original_count = _count_for_model(original_parts, model)
         payload_count = _count_for_model(payload_text, model)
 
         saved = original_count - payload_count

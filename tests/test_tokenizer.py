@@ -154,3 +154,12 @@ def test_analyze_tokens_joins_files_in_order(tmp_path):
     _, combined = analyze_tokens(paths)
 
     assert combined == "".join(f"\n### {p}\nbody{i}\n" for i, p in enumerate(paths))
+
+
+def test_counting_a_list_of_parts_matches_the_joined_text_closely():
+    from ziplex.tokenizer import count_tokens
+
+    parts = [f"\n### f{i}.py\ndef f{i}(x):\n    return x * {i}\n" for i in range(200)]
+    joined = count_tokens("".join(parts), "o200k_base")
+    split = count_tokens(parts, "o200k_base")
+    assert abs(split - joined) <= len(parts)
