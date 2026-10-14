@@ -18,6 +18,7 @@ from .confidence import estimate_confidence, REVIEW_THRESHOLD
 from .config import collection_kwargs, load_config
 from .tech_stack import detect_tech_stack
 from .paths import REPO_ROOT
+from . import __version__
 from .progress_i18n import pick, set_current as _set_progress_lang
 from . import checkpoint as ckpt
 from . import summarizer
@@ -743,7 +744,7 @@ def _assemble_aif(
     include: list[str] | None, ignore: list[str] | None, lang: str, rules: list[str],
     folders: dict, folder_confidences: dict, folder_file_counts: dict, token_results: dict,
     files_data: dict, root: Path, selected: list[str], root_path: str, current_manifest: dict[str, str],
-    deselected: list[str] | None = None,
+    deselected: list[str] | None = None, use_llm: bool = True,
 ) -> dict:
     """Step 7: assembles the final in-memory aif dict from every piece the
     earlier stages already computed -- no new logic of its own past this
@@ -789,6 +790,10 @@ def _assemble_aif(
             # summaries themselves -- was actually written in. See pack()'s
             # own `lang` param docstring for why this is always attached.
             "language": lang,
+            # Lets a later `pack` tell whether this output is still what the
+            # same command would produce (cli._up_to_date_pack()).
+            "ziplex_version": __version__,
+            "llm": use_llm,
         },
         "rules": rules,
         # {folder path: {"summary": "...", "confidence": float, "file_count": int}},
@@ -1419,7 +1424,7 @@ def pack(
         project_name, prompt, tech_stack, security_scan,
         include, ignore, lang, rules, folders, folder_confidences, folder_file_counts,
         token_results, files_data, root, selected, root_path, current_manifest,
-        deselected=deselected,
+        deselected=deselected, use_llm=use_llm,
     )
 
     # delete the checkpoint on success

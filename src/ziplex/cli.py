@@ -15,7 +15,8 @@ from .text_references import TextRefIndex, find_text_references_for_file, merge_
 from .import_context import resolve_import_context, expand_file_dependencies
 from .tokenizer import analyze_tokens_with_compression
 from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider, get_usage
-from .packager import pack, save_aif
+from .packager import pack, save_aif, resolve_output_path
+from . import summarizer
 from .corrector import correct_aif
 from .edits import finalize_aif, set_file_summary, set_folder_summary
 from .file.relationship import (
@@ -583,8 +584,67 @@ def _cmd_tokens(args) -> None:
         print(f"  절감:    {data['saved']:,} 토큰 ({data['saved_pct']}% 감소)\n")
 
 
+def _enforce_max_tokens(aif: dict, args) -> None:
+    # aif["tokens"]'s "compressed" is the saved aif.json's own size
+    # (packager._measure_saved_tokens(), run by save_aif()).
+    passed, actual = _check_max_tokens(aif["tokens"], args.max_tokens, args.max_tokens_model)
+    if actual is None:
+        print(f"\n⚠️  --max-tokens-model '{args.max_tokens_model}'은 알 수 없는 모델입니다"
+              f" (사용 가능: {', '.join(aif['tokens'].keys())})")
+        sys.exit(1)
+    # actual isn't None, so args.max_tokens_model is a real key --
+    # safe to look up its data for the same approx label the two
+    # breakdown tables above already show for this model.
+    model_label = _model_label(args.max_tokens_model, aif["tokens"][args.max_tokens_model])
+    if not passed:
+        print(f"\n❌ 토큰 예산 초과: {model_label} 기준 {actual:,} > {args.max_tokens:,} (--max-tokens)")
+        sys.exit(1)
+    else:
+        print(f"\n✅ 토큰 예산 통과: {model_label} 기준 {actual:,} ≤ {args.max_tokens:,}")
+
+
+def _up_to_date_pack(args) -> tuple[Path, dict] | None:
+    """(aif path, aif) when the previous pack at the output path is exactly
+    what this --auto run would produce again -- same Ziplex version, LLM
+    mode, language and scope, no failed summaries, and no file changed on
+    disk. None means "pack normally". Interactive selection and --no-cache
+    never short-circuit."""
+    if not args.auto or args.no_cache:
+        return None
+    name = Path(args.path).resolve().name
+    aif_path = resolve_output_path({"project": {"name": name}}, args.output, project_path=args.path)
+    try:
+        aif = json.loads(aif_path.read_text(encoding="utf-8"))
+        manifest = json.loads(cache_path_for_aif(str(aif_path)).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    project = aif.get("project") or {}
+    include, ignore, deselected = scope_from_aif(aif)
+    lang = args.lang if args.lang in LANGUAGE_NAMES else "en"
+    if (
+        project.get("ziplex_version") != __version__
+        or project.get("llm") != (not args.no_llm)
+        or project.get("language") != lang
+        or deselected
+        or (include or []) != (_split_patterns(args.include) or [])
+        or (ignore or []) != (_split_patterns(args.ignore) or [])
+        or any(summarizer.is_summary_failed_placeholder(f.get("summary", "")) for f in aif.get("files", {}).values())
+    ):
+        return None
+    if check_freshness_scoped(args.path, manifest, include, ignore).is_stale:
+        return None
+    return aif_path, aif
+
+
 def _cmd_pack(args) -> None:
     _require_dir_or_exit(args.path)
+    up_to_date = _up_to_date_pack(args)
+    if up_to_date:
+        aif_path, aif = up_to_date
+        print(f"✅ 변경 없음 -- 기존 pack이 최신입니다: {aif_path} (다시 하려면 --no-cache)")
+        if args.max_tokens is not None:
+            _enforce_max_tokens(aif, args)
+        return
     # --auto-correct also means no terminal to prompt if an LLM call
     # keeps failing inside pack() itself (see handle_llm_failure).
     aif = pack(
@@ -649,22 +709,7 @@ def _cmd_pack(args) -> None:
             print(f"  합계: {usage['total_tokens']:,}")
 
         if args.max_tokens is not None:
-            # aif["tokens"]'s "compressed" is the saved aif.json's own size
-            # (packager._measure_saved_tokens(), run by save_aif() above).
-            passed, actual = _check_max_tokens(aif["tokens"], args.max_tokens, args.max_tokens_model)
-            if actual is None:
-                print(f"\n⚠️  --max-tokens-model '{args.max_tokens_model}'은 알 수 없는 모델입니다"
-                      f" (사용 가능: {', '.join(aif['tokens'].keys())})")
-                sys.exit(1)
-            # actual isn't None, so args.max_tokens_model is a real key --
-            # safe to look up its data for the same approx label the two
-            # breakdown tables above already show for this model.
-            model_label = _model_label(args.max_tokens_model, aif["tokens"][args.max_tokens_model])
-            if not passed:
-                print(f"\n❌ 토큰 예산 초과: {model_label} 기준 {actual:,} > {args.max_tokens:,} (--max-tokens)")
-                sys.exit(1)
-            else:
-                print(f"\n✅ 토큰 예산 통과: {model_label} 기준 {actual:,} ≤ {args.max_tokens:,}")
+            _enforce_max_tokens(aif, args)
     elif args.max_tokens is not None:
         # pack() returned {} -- a checkpoint-and-exit on a repeated LLM
         # failure, or a cancelled/empty run -- so there's no aif["tokens"]

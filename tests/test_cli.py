@@ -938,3 +938,32 @@ def test_tree_command_resolves_an_internal_go_package_import(tmp_path, monkeypat
     out = capsys.readouterr().out
     assert "internal/utils/format.go" in out
     assert "example.com/myproject/internal/utils" not in out  # resolved, not left as an external leaf
+
+
+def _pack_argv(project, out, *extra):
+    return ["cli.py", "pack", str(project), "--auto", "--auto-correct", "--no-llm", "-o", str(out), *extra]
+
+
+def test_pack_skips_work_when_nothing_changed_since_the_last_pack(tmp_path, monkeypatch, capsys):
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "a.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    out = tmp_path / "out" / "proj.json"
+
+    monkeypatch.setattr(sys, "argv", _pack_argv(project, out))
+    cli.main()
+    capsys.readouterr()
+
+    calls = []
+    monkeypatch.setattr(cli, "pack", lambda *a, **k: calls.append(1) or {})
+    cli.main()
+    assert calls == []
+    assert "변경 없음" in capsys.readouterr().out
+
+    # a changed file, a different scope, or --no-cache all pack again
+    (project / "a.py").write_text("def f():\n    return 2\n", encoding="utf-8")
+    cli.main()
+    assert calls == [1]
+    monkeypatch.setattr(sys, "argv", _pack_argv(project, out, "--no-cache"))
+    cli.main()
+    assert calls == [1, 1]
