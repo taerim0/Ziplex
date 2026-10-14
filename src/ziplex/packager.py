@@ -8,7 +8,7 @@ from .file.selector import select_files, review_dangerous_files
 from .file.media import classify_media_file, media_summary
 from .file.textutil import relative_key as _rel_key
 from .extract.code.extractor import extract_all, extract_dependencies
-from .text_references import find_text_references_for_file, merge_text_references
+from .text_references import TextRefIndex, find_text_references_for_file, merge_text_references
 from .import_context import resolve_import_context, expand_file_dependencies
 from .tokenizer import analyze_tokens_with_payload, count_tokens_for_model
 from .aif_io import detach_weak_edges, dumps_aif, write_aif, WEAK_KEY
@@ -1170,6 +1170,7 @@ def pack(
     # pack(), not per file; a project with no go.mod / no TS files pays
     # nothing, every raw import string passing through untouched below.
     import_ctx = resolve_import_context(root_path, all_names)
+    text_ref_index = TextRefIndex(all_names)
 
     # Text-reference matches (see text_references.py), kept separate from
     # files_data[fp]["dependencies"] until *after* step 5's LLM summary
@@ -1200,7 +1201,7 @@ def pack(
         # attempt only to find nothing) is skipped for it outright.
         media_kind = classify_media_file(file_path)
         text_refs_by_path[file_path] = (
-            [] if media_kind else find_text_references_for_file(file_path, name, all_names)
+            [] if media_kind else find_text_references_for_file(file_path, name, all_names, index=text_ref_index)
         )
 
         # restore from checkpoint -- unless the file changed since that

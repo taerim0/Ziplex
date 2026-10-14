@@ -11,7 +11,7 @@ from .file.collector import collect_files, print_tree as print_file_tree
 from .file.scanner import scan_files
 from .file.media import classify_media_file
 from .file.textutil import relative_key as _rel_key, normalize_path
-from .text_references import find_text_references_for_file, merge_text_references
+from .text_references import TextRefIndex, find_text_references_for_file, merge_text_references
 from .import_context import resolve_import_context, expand_file_dependencies
 from .tokenizer import analyze_tokens_with_compression
 from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider, get_usage
@@ -699,12 +699,13 @@ def _cmd_tree(args) -> None:
     # same feature's output (exactly what happened to the text-reference
     # merge below before it was fixed).
     import_ctx = resolve_import_context(args.path, all_names)
+    text_ref_index = TextRefIndex(all_names)
 
     files_data = {}
     for file_path in safe_files:
         name = _rel_key(file_path, args.path)
         deps = expand_file_dependencies(file_path, name, extract_dependencies(file_path), import_ctx)
-        text_refs = find_text_references_for_file(file_path, name, all_names)
+        text_refs = find_text_references_for_file(file_path, name, all_names, index=text_ref_index)
         # merge_text_references() -- the same shared merge step packager.py's
         # per-file loop routes through -- is what lets build_tree() tag a
         # text reference apart from a real import as internal_text_refs

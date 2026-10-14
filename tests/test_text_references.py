@@ -1,5 +1,5 @@
 from ziplex.text_references import (
-    find_text_references, find_text_references_for_file, merge_text_references, _contains_token,
+    TextRefIndex, find_text_references, find_text_references_for_file, merge_text_references, _contains_token,
 )
 
 
@@ -189,3 +189,95 @@ def test_for_file_skips_a_file_with_a_tree_sitter_grammar(tmp_path):
 def test_for_file_returns_empty_list_for_an_unreadable_file(tmp_path):
     missing = tmp_path / "does_not_exist.md"
     assert find_text_references_for_file(str(missing), "does_not_exist.md", ["a.gd"]) == []
+
+
+# --- TextRefIndex parity against the pre-index implementation -------------
+
+def _oracle_find_text_references(content, self_path, other_paths):
+    """The original O(candidates) implementation, kept only as a reference
+    oracle: TextRefIndex must return exactly what this returns."""
+    found = set()
+    for other in other_paths:
+        if other != self_path and _contains_token(content, other, strict_path_boundary=True):
+            found.add(other)
+    by_basename = {}
+    for other in other_paths:
+        if other != self_path:
+            by_basename.setdefault(other.rsplit("/", 1)[-1], []).append(other)
+    for filename, candidates in by_basename.items():
+        if len(candidates) == 1 and _contains_token(content, filename):
+            found.add(candidates[0])
+    return [other for other in other_paths if other in found]
+
+
+_PARITY_NAMES = [
+    "README.md", "AGENTS.md", "src/AGENTS.md", "docs/AGENTS.md", "LICENSE", "Makefile",
+    ".tx/config", ".github/workflows/ci.yml", ".gitignore", ".env.example",
+    "scenes/player.gd", "sub/scenes/player.gd", "entities/enemy.gd", "player.gd",
+    "docs/index.md", "docs/a b.md", "weird(name).txt", "x=y.cfg", "a/b/c.min.js",
+    "src/ziplex/__init__.py", "tests/__init__.py", "pkg/util.py", "über/straße.md",
+    "conf.d/site.conf", "_build/out.html", "-dash.txt", "trail.", "docs/config",
+]
+
+_PARITY_CONTENTS = [
+    '[ext_resource path="res://scenes/player.gd" id=1]',
+    "see sub/scenes/player.gd and ../scenes/player.gd and ./pkg/util.py",
+    "foo../scenes/player.gd and multiplayer.gd and player.gdx",
+    "Translations live in .tx/config; CI in .github/workflows/ci.yml.",
+    "x.tx/config a/.tx/config (.tx/config) `.gitignore` .env.example!",
+    "Read the root AGENTS.md, then src/AGENTS.md, LICENSE and the Makefile.",
+    "Open docs/a b.md or weird(name).txt or x=y.cfg please",
+    "minified: a/b/c.min.js c.min.js b/c.min.js",
+    "__init__.py src/ziplex/__init__.py tests/__init__.py",
+    "unicode: über/straße.md and straße.md, Xstraße.md",
+    "conf.d/site.conf site.conf _build/out.html out.html -dash.txt",
+    "ends with trail. and docs/config, also config and index.md",
+    r"windows: docs\index.md and pkg\util.py",
+    "https://example.com/docs/index.md?x=1#player.gd",
+    "=================\n-----------------\n/////////////////\n....trail....",
+    "",
+    "README.md",
+]
+
+
+def test_index_matches_oracle_on_varied_fixtures():
+    index = TextRefIndex(_PARITY_NAMES)
+    for content in _PARITY_CONTENTS:
+        for self_path in ["notes.txt", "README.md", "scenes/player.gd", "player.gd", "docs/AGENTS.md"]:
+            expected = _oracle_find_text_references(content, self_path, _PARITY_NAMES)
+            assert find_text_references(content, self_path, _PARITY_NAMES, index=index) == expected, (content, self_path)
+            assert find_text_references(content, self_path, _PARITY_NAMES) == expected, (content, self_path)
+
+
+def test_index_matches_oracle_on_randomized_content():
+    import random
+    rng = random.Random(1234)
+    pieces = _PARITY_NAMES + [n.rsplit("/", 1)[-1] for n in _PARITY_NAMES] + [
+        " ", "\n", "/", "./", "../", "res://", ".", "x", "_", "(", ")", '"', "=", "-", "\\", "é",
+    ]
+    index = TextRefIndex(_PARITY_NAMES)
+    for _ in range(3000):
+        content = "".join(rng.choice(pieces) for _ in range(rng.randint(1, 12)))
+        self_path = rng.choice(_PARITY_NAMES + ["notes.txt"])
+        expected = _oracle_find_text_references(content, self_path, _PARITY_NAMES)
+        assert find_text_references(content, self_path, _PARITY_NAMES, index=index) == expected, (content, self_path)
+
+
+def test_ambiguity_counts_other_files_only():
+    # Self shares the basename with exactly one other file -> that other
+    # file's bare-basename mention still resolves.
+    names = ["a/config.yml", "b/config.yml"]
+    assert find_text_references("see config.yml", "a/config.yml", names, index=TextRefIndex(names)) == ["b/config.yml"]
+
+
+def test_index_preserves_input_order_and_duplicates():
+    names = ["z.md", "a.md", "z.md"]
+    assert find_text_references("a.md z.md", "x", names, index=TextRefIndex(names)) == \
+        _oracle_find_text_references("a.md z.md", "x", names)
+
+
+def test_for_file_accepts_a_prebuilt_index(tmp_path):
+    (tmp_path / "README.md").write_text("See .tx/config and player.gd.", encoding="utf-8")
+    names = ["player.gd", ".tx/config", "README.md"]
+    found = find_text_references_for_file(str(tmp_path / "README.md"), "README.md", names, index=TextRefIndex(names))
+    assert found == ["player.gd", ".tx/config"]

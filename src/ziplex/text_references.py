@@ -51,7 +51,9 @@ from .extract.code.languages import get_language_config
 from .file.textutil import read_text
 
 
-def find_text_references_for_file(file_path: str, name: str, all_names: list[str]) -> list[str]:
+def find_text_references_for_file(
+    file_path: str, name: str, all_names: list[str], index: "TextRefIndex | None" = None,
+) -> list[str]:
     """File-level convenience wrapper around find_text_references(): reads
     file_path itself and skips it entirely (empty list, no error) when it
     has a Tree-sitter grammar (get_language_config(ext) is not None -- that
@@ -63,13 +65,16 @@ def find_text_references_for_file(file_path: str, name: str, all_names: list[str
     exactly one place -- packager.py's pack() and cli.py's `tree` subcommand
     both call this instead of each re-implementing the same
     get_language_config/read_text guard independently and risking drift.
+
+    `index` is a TextRefIndex built once from `all_names`; a per-file loop
+    should pass it (building it per call costs O(len(all_names)) each time).
     """
     if get_language_config(Path(file_path).suffix) is not None:
         return []
     content = read_text(file_path)
     if content is None:
         return []
-    return find_text_references(content, name, all_names)
+    return find_text_references(content, name, all_names, index=index)
 
 
 def merge_text_references(dependencies: list[str], text_refs: list[str]) -> tuple[list[str], list[str]]:
@@ -95,7 +100,9 @@ def merge_text_references(dependencies: list[str], text_refs: list[str]) -> tupl
     return dependencies + text_refs, list(text_refs)
 
 
-def find_text_references(content: str, self_path: str, other_paths: list[str]) -> list[str]:
+def find_text_references(
+    content: str, self_path: str, other_paths: list[str], index: "TextRefIndex | None" = None,
+) -> list[str]:
     """Returns the subset of other_paths (relative, POSIX-style keys -- see
     file/textutil.py's relative_key(), which is what produces them) that
     appear referenced inside content. self_path is excluded even if
@@ -130,29 +137,122 @@ def find_text_references(content: str, self_path: str, other_paths: list[str]) -
     The full-path form is unaffected either way -- it already names one
     specific candidate unambiguously, regardless of how many other files
     elsewhere share its basename.
+
+    `index` must have been built from exactly `other_paths`; when omitted
+    one is built here. Matching semantics are identical either way -- the
+    index only narrows which candidates reach _contains_token().
     """
+    if index is None:
+        index = TextRefIndex(other_paths)
     found = set()
 
-    # Full relative path -- always unambiguous, independent of the
-    # basename-ambiguity check below.
-    for other in other_paths:
-        if other != self_path and _contains_token(content, other, strict_path_boundary=True):
-            found.add(other)
+    for token in index.candidate_tokens(content):
+        if token in index.paths and token != self_path and _contains_token(content, token, strict_path_boundary=True):
+            found.add(token)
+        owners = index.by_basename.get(token)
+        if owners is not None:
+            # Ambiguity counts *other* files only -- self never competes.
+            others = [p for p in owners if p != self_path]
+            if len(others) == 1 and _contains_token(content, token):
+                found.add(others[0])
 
-    # Bare filename+extension -- grouped by basename first so an ambiguous
-    # one (2+ *other* candidates sharing it) can be skipped for all of
-    # them rather than guessed at; see this function's own docstring.
-    by_basename: dict[str, list[str]] = {}
-    for other in other_paths:
-        if other != self_path:
-            by_basename.setdefault(other.rsplit("/", 1)[-1], []).append(other)
+    return index.ordered(found)
 
-    for filename, candidates in by_basename.items():
-        if len(candidates) == 1 and _contains_token(content, filename):
-            found.add(candidates[0])
 
-    # other_paths' own order, not found's (a set) or by_basename's (grouped)
-    return [other for other in other_paths if other in found]
+class TextRefIndex:
+    """Once-per-run lookup structure over the collected file keys, shared by
+    every find_text_references() call in a run.
+
+    Candidate discovery is exact, not heuristic: every match
+    _contains_token() can accept is bounded by a non-word char (or content
+    edge) on both sides. A token made only of _RUN_CHARS therefore sits
+    inside one maximal _RUN_RE run of content, starting at the run start or
+    right after a non-word char and ending at the run end or right before
+    one -- candidate_tokens() enumerates exactly those spans and looks them
+    up. Tokens containing a char outside _RUN_CHARS (whitespace, quotes,
+    brackets, ...) can't be found that way and are checked directly on every
+    call (`fallback`). Every hit is still re-verified by _contains_token().
+    """
+
+    _MEMO_LIMIT = 500_000
+
+    def __init__(self, all_names: list[str]):
+        self.names = list(all_names)
+        self.paths = set(self.names)
+        self.by_basename: dict[str, list[str]] = {}
+        for name in self.names:
+            self.by_basename.setdefault(name.rsplit("/", 1)[-1], []).append(name)
+
+        tokens = self.paths | self.by_basename.keys()
+        tokens.discard("")
+        self.fallback = sorted(t for t in tokens if not _RUN_RE.fullmatch(t))
+        self.tokens = tokens.difference(self.fallback)
+        self.first_chars = {t[0] for t in self.tokens}
+        self.last_chars = {t[-1] for t in self.tokens}
+        self.min_len = min((len(t) for t in self.tokens), default=0)
+        self.max_len = max((len(t) for t in self.tokens), default=0)
+
+        self._order: dict[str, int] = {}
+        for i, name in enumerate(self.names):
+            self._order.setdefault(name, i)
+        self._has_duplicates = len(self._order) != len(self.names)
+        self._memo: dict[str, tuple[str, ...]] = {}
+
+    def candidate_tokens(self, content: str) -> set[str]:
+        """Superset of the tokens _contains_token() could match in content."""
+        hits = set(t for t in self.fallback if t in content)
+        if not self.tokens:
+            return hits
+        memo = self._memo
+        for run in _RUN_RE.findall(content):
+            run_hits = memo.get(run)
+            if run_hits is None:
+                run_hits = self._run_hits(run)
+                if len(memo) < self._MEMO_LIMIT:
+                    memo[run] = run_hits
+            if run_hits:
+                hits.update(run_hits)
+        return hits
+
+    def _run_hits(self, run: str) -> tuple[str, ...]:
+        nonword = [m.start() for m in _NON_WORD_RE.finditer(run)]
+        if not nonword:
+            return (run,) if run in self.tokens else ()
+        n = len(run)
+        starts = [0] + [p + 1 for p in nonword if p + 1 < n]
+        ends = nonword + [n]
+        if ends[0] == 0:
+            ends = ends[1:]
+        first, last, tokens = self.first_chars, self.last_chars, self.tokens
+        lo, hi = self.min_len, self.max_len
+        out = []
+        for s in starts:
+            if run[s] not in first:
+                continue
+            for e in ends:
+                length = e - s
+                if length < lo:
+                    continue
+                if length > hi:
+                    break
+                if run[e - 1] in last:
+                    piece = run[s:e]
+                    if piece in tokens:
+                        out.append(piece)
+        return tuple(out)
+
+    def ordered(self, found: set[str]) -> list[str]:
+        """found, in the original all_names order (duplicates preserved)."""
+        if self._has_duplicates:
+            return [name for name in self.names if name in found]
+        return sorted(found, key=self._order.__getitem__)
+
+
+# Chars a path-like run may contain; anything else is a non-word separator
+# (so a run boundary is always a valid _contains_token() boundary).
+_RUN_CHARS = r"[^\s\"'`<>()\[\]{}|,;*=]"
+_RUN_RE = re.compile(_RUN_CHARS + "+")
+_NON_WORD_RE = re.compile(r"\W")
 
 
 def _contains_token(content: str, token: str, strict_path_boundary: bool = False) -> bool:
