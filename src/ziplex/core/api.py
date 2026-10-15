@@ -180,8 +180,23 @@ class Graph:
             ({"file": p, "chain": chain(p)} for p in parent if g.files.get(p, {}).get("is_test")),
             key=lambda t: (len(t["chain"]), t["file"]),
         )
-        reached_from = {t["chain"][-1] for t in tests}
-        untested = [c for c in changed if c not in reached_from and not g.files[c]["is_test"] and g.files[c]["kind"] == "code"]
+        def reaches_a_test(start: str) -> bool:
+            # Checked per file: the shortest chains above can all start at a
+            # changed test, hiding that it also covers another changed file.
+            seen, queue = {start}, deque([start])
+            while queue:
+                for src, _, kind in g.rev.get(queue.popleft(), []):
+                    if kind != "text" and src not in seen:
+                        if g.files.get(src, {}).get("is_test"):
+                            return True
+                        seen.add(src)
+                        queue.append(src)
+            return False
+
+        untested = [
+            c for c in changed
+            if g.files[c]["kind"] == "code" and not g.files[c]["is_test"] and not reaches_a_test(c)
+        ]
         package_json = None
         try:
             with open(posixpath.join(self.root, "package.json"), encoding="utf-8") as f:

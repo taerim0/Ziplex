@@ -66,6 +66,7 @@ Repository = "https://github.com/taerim0/Ziplex"
 [project.scripts]
 ziplex = "ziplex.cli:main"
 ziplex-mcp = "ziplex.mcp_server:main"
+ziplex-hook = "ziplex.hook:main"
 
 # ziplex-gui lives in gui-scripts, not scripts, on purpose -- on Windows
 # this is the one distinction between a "console" and "GUI" launcher .exe

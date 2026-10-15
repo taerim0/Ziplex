@@ -84,6 +84,9 @@ def build_message(rel: str, dependents: list[str], tests: int, command: str | No
     return msg if len(msg) < MAX_CHARS else msg[: MAX_CHARS - 5] + " ..."
 
 
+FULL_REFRESH_AFTER = 60  # seconds
+
+
 def post_edit(payload: dict, now: float | None = None) -> dict | None:
     """The hook output dict, or None when there is nothing worth saying."""
     path = _edited_path(payload)
@@ -97,7 +100,12 @@ def post_edit(payload: dict, now: float | None = None) -> dict | None:
 
     graph = Graph(str(root))
     try:
-        graph.refresh([path])
+        # A path-only refresh trusts the index for every other file; files
+        # also change outside the editor (git checkout, a formatter), so walk
+        # the whole tree when the last update is older than FULL_REFRESH_AFTER.
+        updated_ns = int(graph.index.meta("updated_ns") or 0)
+        stale = time.time_ns() - updated_ns > FULL_REFRESH_AFTER * 1_000_000_000
+        graph.refresh(None if stale else [path])
         try:
             rel = graph.resolve(path)
         except ValueError:  # ignored / out-of-scope / deleted file
@@ -124,7 +132,7 @@ def post_edit(payload: dict, now: float | None = None) -> dict | None:
 
 
 def run(stdin, stdout) -> int:
-    """Entry point for `ziplex hook post-edit`. Always returns 0."""
+    """Shared by `ziplex-hook` and `ziplex hook post-edit`. Always returns 0."""
     try:
         payload = json.loads(stdin.read() or "{}")
         if isinstance(payload, dict):
@@ -135,3 +143,17 @@ def run(stdin, stdout) -> int:
     except Exception:  # a hook must never break the editing session
         pass
     return 0
+
+
+def main() -> None:
+    """`ziplex-hook` console script: the hook without importing the CLI
+    (its top-level imports cost ~0.5s per edit)."""
+    import sys
+
+    if hasattr(sys.stdin, "reconfigure"):  # Claude Code sends UTF-8, not the console codepage
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    sys.exit(run(sys.stdin, sys.stdout))
+
+
+if __name__ == "__main__":
+    main()

@@ -114,3 +114,23 @@ def test_long_commands_fall_back_to_ziplex_impact():
 def test_message_never_exceeds_the_limit():
     text = hook.build_message("x" * 400, ["y" * 400], 3, "pytest t.py")
     assert len(text) < hook.MAX_CHARS
+
+
+def test_hook_walks_the_whole_tree_when_the_index_is_old(tmp_path, monkeypatch):
+    from ziplex import hook
+    from ziplex.core import api
+
+    calls = []
+    real = api.Graph.refresh
+    monkeypatch.setattr(api.Graph, "refresh", lambda self, paths=None: calls.append(paths) or real(self, paths))
+    root = tmp_path / "proj"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    api.Graph(str(root)).refresh()
+    payload = {"tool_name": "Edit", "session_id": "s", "tool_input": {"file_path": str(root / "pkg" / "a.py")}}
+
+    hook.post_edit(payload)
+    assert calls[-1] is not None  # fresh index: only the edited file
+    monkeypatch.setattr(hook, "FULL_REFRESH_AFTER", -1)
+    hook.post_edit(payload)
+    assert calls[-1] is None  # old index: full walk

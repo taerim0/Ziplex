@@ -1129,7 +1129,7 @@ def test_install_claude_hook_writes_settings_and_builds_index(tmp_path, monkeypa
     assert _run_cli(monkeypatch, "install", "claude", "--project", str(root), "--hook") == 0
     out = capsys.readouterr().out
     assert f"claude mcp add ziplex -- ziplex-mcp --project {root.resolve()}" in out
-    assert '"command": "ziplex hook post-edit"' in out  # shown in the diff
+    assert '"command": "ziplex-hook"' in out  # shown in the diff
     data = json.loads(settings.read_text(encoding="utf-8"))
     assert data["model"] == "opus" and data["hooks"]["Stop"] == []
     assert data["hooks"]["PostToolUse"] == [cli.HOOK_ENTRY]
@@ -1148,7 +1148,7 @@ def test_install_claude_dry_run_writes_and_runs_nothing(tmp_path, monkeypatch, c
     root = _graph_project(tmp_path)
     assert _run_cli(monkeypatch, "install", "claude", "--project", str(root), "--hook", "--dry-run") == 0
     out = capsys.readouterr().out
-    assert "claude mcp add ziplex" in out and "ziplex hook post-edit" in out
+    assert "claude mcp add ziplex" in out and "ziplex-hook" in out
     assert not (root / ".claude").exists()
     assert not (root / ".ziplex").exists()
 

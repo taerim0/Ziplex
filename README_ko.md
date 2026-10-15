@@ -212,7 +212,7 @@ ziplex install claude --hook                  # Claude Code에 MCP 서버 + 편�
 
 선별 실행이 안전하지 않으면(빌드/설정/lock 파일이 바뀌었거나 파일이 삭제됨) `impact --format paths`는 아무것도 출력하지 않습니다. 그래서 위의 `pytest $(...)`는 전체 테스트로 돌아갑니다. 이유는 stderr로 나옵니다. `--format commands`는 바로 실행할 수 있는 `pytest`/`jest`/`go test` 명령을 출력합니다.
 
-`ziplex install claude --hook`은 `<project>/.claude/settings.json`에 `PostToolUse` 항목(`ziplex hook post-edit`)을 추가합니다. Claude가 파일을 편집하면, 그 파일에 의존하는 파일 수와 실행할 테스트를 한 줄로 알려 줍니다. 작업을 막지 않고, 인덱스가 없는 프로젝트에서는 아무것도 출력하지 않으며, 같은 파일은 10분에 한 번만 알립니다. `--dry-run`은 아무것도 바꾸지 않고 명령과 settings 변경 내용만 보여 줍니다.
+`ziplex install claude --hook`은 `<project>/.claude/settings.json`에 `PostToolUse` 항목(`ziplex-hook`)을 추가합니다. Claude가 파일을 편집하면, 그 파일에 의존하는 파일 수와 실행할 테스트를 한 줄로 알려 줍니다. 작업을 막지 않고, 인덱스가 없는 프로젝트에서는 아무것도 출력하지 않으며, 같은 파일은 10분에 한 번만 알립니다. `--dry-run`은 아무것도 바꾸지 않고 명령과 settings 변경 내용만 보여 줍니다.
 
 ## MCP 서버
 

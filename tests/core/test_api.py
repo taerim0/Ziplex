@@ -109,3 +109,9 @@ def test_overview_scope_limits_the_test_count(repo):
     _, g = repo
     assert g.overview("pkg")["tests"] == 0
     assert g.overview("tests")["tests"] == 2
+
+
+def test_a_changed_test_does_not_hide_that_it_covers_another_changed_file(repo):
+    _, g = repo
+    result = g.impacted_tests(["pkg/service.py", "tests/test_service.py"])
+    assert result["untested"] == []

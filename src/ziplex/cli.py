@@ -554,7 +554,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ins.add_argument("target", choices=["claude"], help="설치 대상")
     ins.add_argument("--project", default=".", help="프로젝트 폴더 경로 (기본값: 현재 폴더)")
     ins.add_argument("--hook", action="store_true",
-                     help="<project>/.claude/settings.json에 PostToolUse 훅(ziplex hook post-edit)도 추가")
+                     help="<project>/.claude/settings.json에 PostToolUse 훅(ziplex-hook)도 추가")
     ins.add_argument("--dry-run", action="store_true", help="실행/저장하지 않고 할 일만 출력")
 
     return parser
@@ -1185,7 +1185,9 @@ def _cmd_hook(args) -> None:
     sys.exit(hook.run(sys.stdin, sys.stdout))
 
 
-HOOK_COMMAND = "ziplex hook post-edit"
+HOOK_COMMAND = "ziplex-hook"
+# Commands an existing settings.json may already run for this hook.
+_HOOK_COMMANDS = {HOOK_COMMAND, "ziplex hook post-edit"}
 HOOK_ENTRY = {"matcher": "Edit|Write|MultiEdit", "hooks": [{"type": "command", "command": HOOK_COMMAND, "timeout": 10}]}
 
 
@@ -1197,7 +1199,7 @@ def merge_hook_settings(settings: dict) -> tuple[dict, bool]:
     merged = copy.deepcopy(settings)
     post = merged.setdefault("hooks", {}).setdefault("PostToolUse", [])
     for entry in post:
-        if any(isinstance(h, dict) and h.get("command") == HOOK_COMMAND for h in (entry.get("hooks") or [])):
+        if any(isinstance(h, dict) and h.get("command") in _HOOK_COMMANDS for h in (entry.get("hooks") or [])):
             return merged, False
     post.append(copy.deepcopy(HOOK_ENTRY))
     return merged, True

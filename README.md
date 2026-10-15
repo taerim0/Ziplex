@@ -213,7 +213,7 @@ ziplex install claude --hook                  # register the MCP server + a post
 
 `impact --format paths` prints nothing when a targeted run isn't safe (a build/config/lockfile changed, or a file was deleted), so the `pytest $(...)` line above falls back to the whole suite; the reason goes to stderr. `--format commands` prints ready-to-run `pytest`/`jest`/`go test` commands instead.
 
-With `--hook`, `ziplex install claude` adds a `PostToolUse` entry (`ziplex hook post-edit`) to `<project>/.claude/settings.json`. After Claude edits a file it tells Claude, in one short line, how many files depend on it and which tests to run. It never blocks, stays silent in projects without an index, and repeats at most once per file per 10 minutes. `--dry-run` shows the command and the settings diff without changing anything.
+With `--hook`, `ziplex install claude` adds a `PostToolUse` entry (`ziplex-hook`) to `<project>/.claude/settings.json`. After Claude edits a file it tells Claude, in one short line, how many files depend on it and which tests to run. It never blocks, stays silent in projects without an index, and repeats at most once per file per 10 minutes. `--dry-run` shows the command and the settings diff without changing anything.
 
 ## MCP server
 
