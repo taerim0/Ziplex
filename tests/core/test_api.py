@@ -103,3 +103,9 @@ def test_renderers_are_compact_text(repo):
     assert "run: pytest" in text
     assert "pkg/core.py <-" in api.render_dependents(g.dependents(["pkg/core.py"]))
     assert "code files" in api.render_overview(g.overview())
+
+
+def test_overview_scope_limits_the_test_count(repo):
+    _, g = repo
+    assert g.overview("pkg")["tests"] == 0
+    assert g.overview("tests")["tests"] == 2

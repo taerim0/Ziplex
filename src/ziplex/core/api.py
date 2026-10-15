@@ -206,7 +206,10 @@ class Graph:
             rel, include_text_refs=False, top_n=top_n,
             scope=lambda n: n in code and (not prefix or n == prefix or n.startswith(prefix + "/")),
         )
-        summary["tests"] = sum(1 for p in code if self._graph().files[p]["is_test"])
+        summary["tests"] = sum(
+            1 for p in code
+            if self._graph().files[p]["is_test"] and (not prefix or p == prefix or p.startswith(prefix + "/"))
+        )
         unresolved: dict[str, int] = {}
         for src, ext in self._graph().external.items():
             if not prefix or src.startswith(prefix + "/"):
