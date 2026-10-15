@@ -4,9 +4,13 @@ targeted test selection unsafe (build/config/lockfiles)."""
 import posixpath
 import re
 
-_TEST_DIRS = {"tests", "test", "__tests__", "spec", "specs", "testing"}
+# Folder names that mark tests for languages whose runners discover by folder
+# (rspec, JUnit's src/test, ...). Python and JS/TS runners discover by file
+# name, so a helper under tests/ (or Django's django/test/ package) isn't one.
+_TEST_DIRS = {"tests", "test", "spec", "specs", "testing"}
+_NAME_ONLY_EXT = {".py", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts", ".go"}
 _TEST_NAME = re.compile(
-    r"(^test_.*\.py$|.*_test\.py$"
+    r"(^test_.*\.py$|.*_test\.py$|^tests?\.py$"
     r"|.*\.(test|spec)\.[cm]?[jt]sx?$"
     r"|.*_test\.go$"
     r"|.*_spec\.rb$|.*_test\.rb$"
@@ -34,7 +38,12 @@ def is_test_path(path: str) -> bool:
         return False
     if _TEST_NAME.match(name):
         return True
-    return any(part in _TEST_DIRS for part in path.split("/")[:-1])
+    folders = path.split("/")[:-1]
+    if "__tests__" in folders:
+        return True
+    if posixpath.splitext(name)[1] in _NAME_ONLY_EXT:
+        return False
+    return any(part in _TEST_DIRS for part in folders)
 
 
 def forces_run_all(path: str) -> bool:

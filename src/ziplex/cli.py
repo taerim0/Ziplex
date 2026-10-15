@@ -1,4 +1,5 @@
 import argparse
+import os
 import json
 import re
 import sys
@@ -1324,7 +1325,13 @@ def main():
     if handler is None:
         _print_command_overview()
         return
-    handler(args)
+    try:
+        handler(args)
+    except BrokenPipeError:  # output piped into head/less that exited early
+        try:
+            sys.stdout = open(os.devnull, "w")
+        except OSError:
+            pass
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from ..file.relationship import graph_summary
 from .diff import changed_files
 from .index import GraphIndex
-from .testmap import forces_run_all, implicit_dependencies, package_inits, run_command
+from .testmap import forces_run_all, implicit_dependencies, is_test_path, package_inits, run_command
 
 
 # Imports that never run when a test imports the module (`if TYPE_CHECKING:`,
@@ -45,10 +45,12 @@ class Graph:
         if self._cache and self._cache.generation == generation:
             return self._cache
         conn = self.index.conn
+        # is_test is derived on load, not trusted from the row: the test-file
+        # rules can change without the file's content changing.
         files = {
-            path: {"kind": kind, "is_test": bool(is_test), "flagged": bool(flagged)}
-            for path, kind, is_test, flagged in conn.execute(
-                "SELECT path, kind, is_test, flagged FROM files WHERE kind IN ('code', 'text', 'media')"
+            path: {"kind": kind, "is_test": kind == "code" and is_test_path(path), "flagged": bool(flagged)}
+            for path, kind, flagged in conn.execute(
+                "SELECT path, kind, flagged FROM files WHERE kind IN ('code', 'text', 'media')"
             )
         }
         g = _Graph(generation, files)
