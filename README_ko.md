@@ -196,6 +196,24 @@ pytest
 
 실제 프로젝트로 `pack`을 빠르게 스모크테스트하고 싶다면: `LLM_PROVIDER=mock ziplex pack <project> --auto --auto-correct`로 1초 안에 네트워크 없이 전체 파이프라인을 돌릴 수 있습니다.
 
+## 그래프 인덱스: 의존 관계, 영향받는 테스트, 편집 훅
+
+pack도 LLM도 필요 없습니다. 아래 명령은 `<project>/.ziplex/index.db`에 증분 의존성 그래프 인덱스를 두고 거기서 답합니다. 언제 지워도 되는 캐시이고 자동으로 gitignore됩니다. 프로젝트 경로를 생략하면 현재 폴더를 씁니다.
+
+```bash
+ziplex index [--check]                        # 인덱스 생성/갱신; --check는 바뀐 파일이 있으면 종료 코드 1
+ziplex deps src/app.py                        # 이 파일이 import하는 파일 (라인 번호 포함)
+ziplex deps src/app.py --in --depth 2         # 이 파일에 의존하는 파일 (hop별)
+ziplex impact                                 # 커밋하지 않은 변경이 영향을 주는 테스트 (= --diff worktree)
+pytest $(ziplex impact --format paths)        # 그 테스트만 실행
+ziplex path src/app.py src/db.py              # 최단 import 경로
+ziplex install claude --hook                  # Claude Code에 MCP 서버 + 편집 후 훅 등록
+```
+
+선별 실행이 안전하지 않으면(빌드/설정/lock 파일이 바뀌었거나 파일이 삭제됨) `impact --format paths`는 아무것도 출력하지 않습니다. 그래서 위의 `pytest $(...)`는 전체 테스트로 돌아갑니다. 이유는 stderr로 나옵니다. `--format commands`는 바로 실행할 수 있는 `pytest`/`jest`/`go test` 명령을 출력합니다.
+
+`ziplex install claude --hook`은 `<project>/.claude/settings.json`에 `PostToolUse` 항목(`ziplex hook post-edit`)을 추가합니다. Claude가 파일을 편집하면, 그 파일에 의존하는 파일 수와 실행할 테스트를 한 줄로 알려 줍니다. 작업을 막지 않고, 인덱스가 없는 프로젝트에서는 아무것도 출력하지 않으며, 같은 파일은 10분에 한 번만 알립니다. `--dry-run`은 아무것도 바꾸지 않고 명령과 settings 변경 내용만 보여 줍니다.
+
 ## MCP 서버
 
 Claude Code, Cursor 등 MCP 클라이언트에서 이미 패킹된 프로젝트를 바로 질의할 수 있습니다 — `aif.json`을 프롬프트에 복사-붙여넣기할 필요 없이요.
