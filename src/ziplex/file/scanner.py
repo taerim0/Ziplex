@@ -10,7 +10,6 @@ import threading
 from pathlib import Path
 
 from ..file.textutil import read_text
-from ..progress_i18n import pick
 from . import scan_cache
 from .media import classify_media_file, is_media_file
 
@@ -437,6 +436,7 @@ def _render(result) -> dict | None:
     """Neutral scan result -> the public {"reason", "line", "matched_text"}
     shape, with `reason` localized via progress_i18n at call time. A dict
     without "code" passes through unchanged."""
+    from ..progress_i18n import pick  # render-time only: keeps scanning UI-free
     if not result:
         return None
     code = result.get("code")

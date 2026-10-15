@@ -79,6 +79,20 @@ def extract_signatures(file_path: str) -> list[str]:
     return results
 
 
+def extract_imports(file_path: str) -> list[tuple[str, int]]:
+    """Raw dependency entries with the 1-based line of the syntax node that
+    produced each (the import statement), for the graph index."""
+    parser = get_parser(file_path)
+    config = get_language_config(Path(file_path).suffix) if parser else None
+    code = read_text(file_path) if config else None
+    if code is None:
+        return []
+    tree = parser.parse(bytes(code, "utf8"))
+    deps, lines = [], []
+    _walk_all(tree.root_node, None, (None,) * 5, [], config.dependency_handler, deps, None, [], lines)
+    return list(zip(deps, lines))
+
+
 def extract_dependencies(file_path: str) -> list[str]:
     parser = get_parser(file_path)
     if not parser:
@@ -302,7 +316,7 @@ def _traverse_signatures(node, results: list, node_types: list, implicit_names: 
         _traverse_signatures(child, results, node_types, implicit_names, name_prefixes, zero_arg_types, node, field_handler)
 
 
-def _walk_all(node, parent, sig_args, signatures, dep_handler, dependencies, api_handler, api):
+def _walk_all(node, parent, sig_args, signatures, dep_handler, dependencies, api_handler, api, dep_lines=None):
     """One pre-order pass doing what _traverse_signatures/_traverse_dependencies/
     _traverse_api do separately -- each list ends up in the same order, and each
     visitor stops descending exactly where its own traversal would. Creating
@@ -315,7 +329,13 @@ def _walk_all(node, parent, sig_args, signatures, dep_handler, dependencies, api
             want_sig = False
         elif field_handler is not None:
             field_handler(node, signatures)
-    want_dep = dep_handler is not None and not dep_handler(node, dependencies)
+    if dep_handler is not None:
+        before = len(dependencies)
+        want_dep = not dep_handler(node, dependencies)
+        if dep_lines is not None and len(dependencies) > before:
+            dep_lines.extend([node.start_point[0] + 1] * (len(dependencies) - before))
+    else:
+        want_dep = False
     want_api = api_handler is not None and not api_handler(node, api)
     if not (want_sig or want_dep or want_api):
         return
@@ -324,7 +344,7 @@ def _walk_all(node, parent, sig_args, signatures, dep_handler, dependencies, api
         _walk_all(
             child, node, child_sig_args, signatures,
             dep_handler if want_dep else None, dependencies,
-            api_handler if want_api else None, api,
+            api_handler if want_api else None, api, dep_lines,
         )
 
 

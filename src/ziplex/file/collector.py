@@ -83,6 +83,15 @@ DEFAULT_IGNORE = [
 ]
 
 def collect_files(root_path: str, include: list[str] | None = None, ignore: list[str] | None = None) -> list[str]:
+    """Every file under root_path that survives walk_candidates()'s pattern
+    filters and is either decodable text or a recognized media asset."""
+    return [
+        fp for fp in walk_candidates(root_path, include, ignore)
+        if is_media_file(fp) is not None or read_text(fp) is not None
+    ]
+
+
+def walk_candidates(root_path: str, include: list[str] | None = None, ignore: list[str] | None = None) -> list[str]:
     """include/ignore are optional extra glob patterns (gitignore syntax --
     same pathspec engine DEFAULT_IGNORE/.gitignore already use, so "**"
     works correctly), typically sourced from a project's .ziplex.json (see
@@ -163,31 +172,7 @@ def collect_files(root_path: str, include: list[str] | None = None, ignore: list
             if include_spec is not None and not include_spec.match_file(relative_posix):
                 continue
 
-            # No name-pattern list can enumerate every binary format a project
-            # might contain (images, fonts, compiled artifacts, checksums...).
-            # Detect it directly instead: a file unreadable as text has nothing
-            # for the LLM to summarize, and letting it through just means a
-            # summary hallucinated from the filename alone, wasted tokens in
-            # every downstream step, and a wasted LLM call. One deliberate
-            # exception: a *recognized* media asset (image/video/audio/font,
-            # see file/media.py) survives too, despite also being binary --
-            # packager.py gives it a free, metadata-only summary instead of an
-            # LLM one, so letting it through costs nothing, and keeping it out
-            # entirely used to make it invisible everywhere downstream (never
-            # in `files`, never resolvable as another file's dependency
-            # target -- a Godot scene's ext_resource, an <img src>, a README
-            # naming a screenshot). is_media_file() checked first, not
-            # read_text() -- both orders are logically equivalent (this is
-            # an OR: keep if text OR media-extension), but reading a whole
-            # file into memory just to attempt a doomed UTF-8 decode is real,
-            # avoidable I/O for a large binary (a video/audio asset
-            # especially) that a plain extension check already answers for
-            # free; only a file collect_files() doesn't already recognize as
-            # media needs the real read_text() check at all.
             file_path = str(dir_obj / filename)
-            if is_media_file(file_path) is None and read_text(file_path) is None:
-                continue
-
             collected.append(file_path)
 
     return sorted(collected)

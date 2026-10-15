@@ -17,7 +17,7 @@ def test_core_does_not_pull_in_frontends_or_the_llm_layer():
     src = Path(__file__).resolve().parents[2] / "src"
     code = (
         "import sys, json; sys.path.insert(0, %r)\n"
-        "import ziplex.core.graph\n"
+        "import ziplex.core.graph, ziplex.core.index, ziplex.core.api\n"
         "print(json.dumps(sorted(sys.modules)))" % str(src)
     )
     loaded = json.loads(subprocess.check_output([sys.executable, "-c", code], text=True))
