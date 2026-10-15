@@ -1,4 +1,4 @@
-"""Verifies the MCP tools are registered and callable through the actual
+"""Legacy mode (`--aif`/`--legacy-tools`). Verifies the MCP tools are registered and callable through the actual
 mcp.server.MCPServer API (name, docstring-as-description, call_tool
 dispatch) -- not just as plain Python functions. The underlying logic
 itself is already covered elsewhere: test_relationship.py exercises
@@ -17,9 +17,11 @@ from mcp.server.mcpserver.exceptions import ToolError
 from ziplex import freshness
 from ziplex import mcp_server
 
+LEGACY = mcp_server.build_server("legacy")
+
 
 def _call(name: str, arguments: dict):
-    return asyncio.run(mcp_server.mcp.call_tool(name, arguments))
+    return asyncio.run(LEGACY.call_tool(name, arguments))
 
 
 def _json_result(result) -> dict:
@@ -32,7 +34,7 @@ def _json_result(result) -> dict:
 
 
 def test_all_tools_are_registered():
-    tools = asyncio.run(mcp_server.mcp.list_tools())
+    tools = asyncio.run(LEGACY.list_tools())
     names = {t.name for t in tools}
     assert names == {
         "get_overview", "list_files", "get_folders", "get_relationships", "get_graph_summary", "get_dependents",
@@ -42,13 +44,13 @@ def test_all_tools_are_registered():
 
 def test_server_instructions_point_structural_questions_at_the_graph_tools():
     # EXPERIMENTS #10: an agent not told to use the graph rebuilt it by script
-    instructions = mcp_server.mcp.instructions
+    instructions = LEGACY.instructions
     for tool in ("get_dependents", "get_blast_radius", "get_relationships", "get_graph_summary"):
         assert tool in instructions
 
 
 def test_tool_descriptions_come_from_the_short_mcp_table():
-    tools = {t.name: t for t in asyncio.run(mcp_server.mcp.list_tools())}
+    tools = {t.name: t for t in asyncio.run(LEGACY.list_tools())}
     assert set(tools) == set(mcp_server.TOOL_DESCRIPTIONS)
     for name, tool in tools.items():
         assert tool.description == mcp_server.TOOL_DESCRIPTIONS[name]
@@ -56,7 +58,7 @@ def test_tool_descriptions_come_from_the_short_mcp_table():
 
 def test_tool_list_stays_within_its_context_budget():
     # The whole tool list is sent to the client in every session.
-    tools = asyncio.run(mcp_server.mcp.list_tools())
+    tools = asyncio.run(LEGACY.list_tools())
     payload = json.dumps([t.model_dump(exclude_none=True) for t in tools])
     assert len(payload) < 7000
     assert len(mcp_server.INSTRUCTIONS) < 700
@@ -327,17 +329,16 @@ def test_search_project_uses_the_server_default_project_when_omitted(tmp_path, m
 
 
 def test_main_sets_defaults_from_cli_args(monkeypatch):
-    monkeypatch.setattr(mcp_server.mcp, "run", lambda: None)
-    monkeypatch.setattr(
-        "sys.argv", ["ziplex-mcp", "--aif", "some/out.json", "--project", "some/project"]
-    )
+    served = []
+    monkeypatch.setattr(mcp_server.MCPServer, "run", lambda self: served.append(self))
     monkeypatch.setitem(mcp_server._defaults, "aif", None)
     monkeypatch.setitem(mcp_server._defaults, "project", None)
 
-    mcp_server.main()
+    mcp_server.main(["--aif", "some/out.json", "--project", "some/project"])
 
     assert mcp_server._defaults["aif"] == "some/out.json"
     assert mcp_server._defaults["project"] == "some/project"
+    assert served[0].instructions == mcp_server.INSTRUCTIONS  # --aif selects legacy mode
 
 
 def test_check_freshness_via_call_tool(tmp_path):
