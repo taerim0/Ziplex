@@ -197,6 +197,24 @@ Covers the deterministic core — compressors, the Tree-sitter extractor, the co
 
 Want to smoke-test `pack` against a real project without waiting on Gemini? `LLM_PROVIDER=mock ziplex pack <project> --auto --auto-correct` runs the whole pipeline network-free in under a second.
 
+## Graph index: deps, impacted tests, editor hook
+
+No pack and no LLM needed: these commands keep an incremental dependency-graph index in `<project>/.ziplex/index.db` (a disposable cache, gitignored automatically) and answer from it. The project defaults to the current directory.
+
+```bash
+ziplex index [--check]                        # build/refresh the index; --check exits 1 if anything changed
+ziplex deps src/app.py                        # what it imports (with line numbers)
+ziplex deps src/app.py --in --depth 2         # who depends on it, by hop
+ziplex impact                                 # tests affected by your uncommitted changes (= --diff worktree)
+pytest $(ziplex impact --format paths)        # run just those tests
+ziplex path src/app.py src/db.py              # shortest import chain
+ziplex install claude --hook                  # register the MCP server + a post-edit hook with Claude Code
+```
+
+`impact --format paths` prints nothing when a targeted run isn't safe (a build/config/lockfile changed, or a file was deleted), so the `pytest $(...)` line above falls back to the whole suite; the reason goes to stderr. `--format commands` prints ready-to-run `pytest`/`jest`/`go test` commands instead.
+
+With `--hook`, `ziplex install claude` adds a `PostToolUse` entry (`ziplex hook post-edit`) to `<project>/.claude/settings.json`. After Claude edits a file it tells Claude, in one short line, how many files depend on it and which tests to run. It never blocks, stays silent in projects without an index, and repeats at most once per file per 10 minutes. `--dry-run` shows the command and the settings diff without changing anything.
+
 ## MCP server
 
 Query an already-packed project directly from Claude Code, Cursor, or any other MCP client — no copy-pasting `aif.json` into a prompt.

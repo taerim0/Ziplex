@@ -967,3 +967,218 @@ def test_pack_skips_work_when_nothing_changed_since_the_last_pack(tmp_path, monk
     monkeypatch.setattr(sys, "argv", _pack_argv(project, out, "--no-cache"))
     cli.main()
     assert calls == [1, 1]
+
+
+# ---- graph index commands (index / deps / impact / path / install / hook) ----
+
+def _graph_project(tmp_path):
+    root = tmp_path / "gproj"
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/core.py": "def run():\n    return 1\n",
+        "pkg/service.py": "from pkg.core import run\n\ndef serve():\n    return run()\n",
+        "app.py": "from pkg.service import serve\n",
+        "tests/test_service.py": "from pkg.service import serve\n\ndef test_serve():\n    assert serve()\n",
+        "pyproject.toml": "[project]\nname = 'x'\n",
+    }
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text, encoding="utf-8")
+    return root
+
+
+def _run_cli(monkeypatch, *argv) -> int:
+    monkeypatch.setattr(sys, "argv", ["cli.py", *argv])
+    try:
+        cli.main()
+    except SystemExit as e:
+        return e.code or 0
+    return 0
+
+
+def test_index_check_exit_codes(tmp_path, monkeypatch, capsys):
+    root = _graph_project(tmp_path)
+    assert _run_cli(monkeypatch, "index", str(root), "--check") == 1  # a brand-new index differs from "nothing"
+    assert "index (new): 6 files" in capsys.readouterr().out
+    assert _run_cli(monkeypatch, "index", str(root), "--check") == 0
+    assert "+0 ~0 -0" in capsys.readouterr().out
+
+    (root / "pkg" / "core.py").write_text("def run():\n    return 2\n", encoding="utf-8")
+    assert _run_cli(monkeypatch, "index", str(root), "--check", "--json") == 1
+    data = json.loads(capsys.readouterr().out)
+    assert (data["changed"], data["new_index"], data["files"], data["edges"]) == (1, False, 6, 3)
+    assert _run_cli(monkeypatch, "index", str(root)) == 0  # without --check a change is not an error
+
+
+def test_index_defaults_to_cwd(tmp_path, monkeypatch, capsys):
+    root = _graph_project(tmp_path)
+    monkeypatch.chdir(root)
+    assert _run_cli(monkeypatch, "index") == 0
+    assert (root / ".ziplex" / "index.db").is_file()
+
+
+def test_deps_out_in_and_json(tmp_path, monkeypatch, capsys):
+    root = _graph_project(tmp_path)
+    _run_cli(monkeypatch, "deps", "pkg/service.py", "--project", str(root))
+    out = capsys.readouterr().out
+    assert out.startswith("pkg/service.py -> 1 file(s)") and "pkg/core.py:1" in out
+
+    _run_cli(monkeypatch, "deps", "core.py", "--in", "--depth", "2", "--project", str(root))
+    assert "pkg/core.py <- 3 dependent(s) in 2 hop(s)" in capsys.readouterr().out
+
+    _run_cli(monkeypatch, "deps", "core.py", "--in", "--json", "--project", str(root))
+    assert json.loads(capsys.readouterr().out) == {"pkg/core.py": [[["pkg/service.py", 1]]]}
+
+    _run_cli(monkeypatch, "deps", "app.py", "--external", "--json", "--project", str(root))
+    assert json.loads(capsys.readouterr().out)["app.py"]["external"] == []
+
+
+def test_graph_commands_reject_unknown_files_with_exit_2(tmp_path, monkeypatch, capsys):
+    root = _graph_project(tmp_path)
+    assert _run_cli(monkeypatch, "deps", "nope.py", "--project", str(root)) == 2
+    assert "nope.py" in capsys.readouterr().err
+    assert _run_cli(monkeypatch, "path", "app.py", "nope.py", "--project", str(root)) == 2
+    assert _run_cli(monkeypatch, "deps", "a.py", "--project", str(tmp_path / "missing")) == 2
+
+
+def test_path_command(tmp_path, monkeypatch, capsys):
+    root = _graph_project(tmp_path)
+    assert _run_cli(monkeypatch, "path", "app.py", "core.py", "--project", str(root)) == 0
+    assert capsys.readouterr().out.strip() == (
+        "2 hop(s): app.py -> pkg/service.py (line 1 of app.py) -> pkg/core.py (line 1 of pkg/service.py)"
+    )
+    assert _run_cli(monkeypatch, "path", "core.py", "app.py", "--project", str(root)) == 1
+    assert "no import path" in capsys.readouterr().out
+
+
+def test_impact_formats(tmp_path, monkeypatch, capsys):
+    root = _graph_project(tmp_path)
+    args = ("impact", "pkg/core.py", "--project", str(root))
+    assert _run_cli(monkeypatch, *args) == 0
+    out = capsys.readouterr().out
+    assert "tests/test_service.py  (via pkg/service.py <- pkg/core.py)" in out
+    assert "run: pytest tests/test_service.py" in out
+
+    _run_cli(monkeypatch, *args, "--format", "paths")
+    assert capsys.readouterr().out == "tests/test_service.py\n"
+    _run_cli(monkeypatch, *args, "--format", "commands")
+    assert capsys.readouterr().out == "pytest tests/test_service.py\n"
+    _run_cli(monkeypatch, *args, "--format", "json")
+    assert json.loads(capsys.readouterr().out)["tests"][0]["file"] == "tests/test_service.py"
+
+
+def test_impact_run_all_fallback(tmp_path, monkeypatch, capsys):
+    # A config change: `paths` prints nothing (so `pytest $(...)` runs everything),
+    # `commands` prints the whole-suite command; both say why on stderr. Exit 0.
+    root = _graph_project(tmp_path)
+    assert _run_cli(monkeypatch, "impact", "pyproject.toml", "pkg/core.py", "--project", str(root), "--format", "paths") == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "run all tests -- pyproject.toml" in captured.err
+    _run_cli(monkeypatch, "impact", "pyproject.toml", "--project", str(root), "--format", "commands")
+    assert capsys.readouterr().out == "pytest\n"
+
+
+def test_impact_with_no_tests_affected_prints_nothing(tmp_path, monkeypatch, capsys):
+    root = _graph_project(tmp_path)
+    _run_cli(monkeypatch, "impact", "app.py", "--project", str(root), "--format", "commands")
+    captured = capsys.readouterr()
+    assert captured.out == "" and "no tests affected" in captured.err
+
+
+def test_impact_defaults_to_the_git_worktree_diff(tmp_path, monkeypatch, capsys):
+    import subprocess
+    root = _graph_project(tmp_path)
+
+    def git(*a):
+        subprocess.run(["git", "-C", str(root), "-c", "user.email=a@b", "-c", "user.name=a", *a],
+                       check=True, capture_output=True)
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    (root / "pkg" / "service.py").write_text("from pkg.core import run\n\ndef serve():\n    return 2\n", encoding="utf-8")
+    _run_cli(monkeypatch, "impact", "--project", str(root), "--format", "paths")
+    assert capsys.readouterr().out == "tests/test_service.py\n"
+    assert _run_cli(monkeypatch, "impact", "--project", str(root), "--diff", "no-such-ref") == 2
+
+
+def test_merge_hook_settings_preserves_and_is_idempotent():
+    existing = {
+        "permissions": {"allow": ["Bash(ls)"]},
+        "hooks": {"PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]}],
+                  "Stop": [{"hooks": [{"type": "command", "command": "notify"}]}]},
+    }
+    merged, changed = cli.merge_hook_settings(existing)
+    assert changed
+    assert merged["permissions"] == existing["permissions"]
+    assert merged["hooks"]["Stop"] == existing["hooks"]["Stop"]
+    assert merged["hooks"]["PostToolUse"] == existing["hooks"]["PostToolUse"] + [cli.HOOK_ENTRY]
+    assert len(existing["hooks"]["PostToolUse"]) == 1  # input not mutated
+    again, changed = cli.merge_hook_settings(merged)
+    assert not changed and again == merged
+
+
+def test_install_claude_hook_writes_settings_and_builds_index(tmp_path, monkeypatch, capsys):
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda name: None)  # never run the real `claude`
+    root = _graph_project(tmp_path)
+    settings = root / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({"model": "opus", "hooks": {"Stop": []}}), encoding="utf-8")
+
+    assert _run_cli(monkeypatch, "install", "claude", "--project", str(root), "--hook") == 0
+    out = capsys.readouterr().out
+    assert f"claude mcp add ziplex -- ziplex-mcp --project {root.resolve()}" in out
+    assert '"command": "ziplex hook post-edit"' in out  # shown in the diff
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert data["model"] == "opus" and data["hooks"]["Stop"] == []
+    assert data["hooks"]["PostToolUse"] == [cli.HOOK_ENTRY]
+    assert (root / ".ziplex" / "index.db").is_file()
+
+    assert _run_cli(monkeypatch, "install", "claude", "--project", str(root), "--hook") == 0
+    assert "이미 설치" in capsys.readouterr().out
+    assert json.loads(settings.read_text(encoding="utf-8"))["hooks"]["PostToolUse"] == [cli.HOOK_ENTRY]
+
+
+def test_install_claude_dry_run_writes_and_runs_nothing(tmp_path, monkeypatch, capsys):
+    import shutil
+    import subprocess
+    monkeypatch.setattr(shutil, "which", lambda name: "claude")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: pytest.fail("dry-run must not run anything"))
+    root = _graph_project(tmp_path)
+    assert _run_cli(monkeypatch, "install", "claude", "--project", str(root), "--hook", "--dry-run") == 0
+    out = capsys.readouterr().out
+    assert "claude mcp add ziplex" in out and "ziplex hook post-edit" in out
+    assert not (root / ".claude").exists()
+    assert not (root / ".ziplex").exists()
+
+
+def test_install_claude_refuses_to_overwrite_invalid_settings(tmp_path, monkeypatch, capsys):
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    root = _graph_project(tmp_path)
+    settings = root / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text("{ not json", encoding="utf-8")
+    assert _run_cli(monkeypatch, "install", "claude", "--project", str(root), "--hook") == 2
+    assert settings.read_text(encoding="utf-8") == "{ not json"
+
+
+def test_install_claude_runs_claude_when_available(tmp_path, monkeypatch, capsys):
+    import shutil
+    import subprocess
+    calls = []
+    monkeypatch.setattr(shutil, "which", lambda name: "/bin/claude")
+    monkeypatch.setattr(subprocess, "run",
+                        lambda cmd, **k: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "added", ""))
+    root = _graph_project(tmp_path)
+    assert _run_cli(monkeypatch, "install", "claude", "--project", str(root)) == 0
+    assert calls == [["/bin/claude", "mcp", "add", "ziplex", "--", "ziplex-mcp", "--project", str(root.resolve())]]
+    assert not (root / ".claude").exists()  # no --hook
+
+
+def test_hook_command_always_exits_zero(monkeypatch, capsys):
+    import io
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{broken"))
+    assert _run_cli(monkeypatch, "hook", "post-edit") == 0
+    assert capsys.readouterr().out == ""

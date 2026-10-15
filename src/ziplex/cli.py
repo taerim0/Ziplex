@@ -1,5 +1,6 @@
 import argparse
 import json
+import re
 import sys
 from .core.graph import build_graph
 from datetime import datetime
@@ -213,6 +214,11 @@ _COMMAND_OVERVIEW = [
     ("settings [set <key> <value>]", "View/change ~/.ziplex/settings.json"),
     ("checkpoint [clean [<path>|--all]]", "List/delete leftover checkpoint files"),
     ("doctor [<path>]", "Environment sanity check -- no LLM calls"),
+    ("index [<path>] [--check]", "Refresh the dependency-graph index (.ziplex/index.db) -- no LLM calls"),
+    ("deps <file...> [--in]", "What a file imports, or (--in) what depends on it"),
+    ("impact [<file...>] [--diff REF]", "Tests affected by a change, plus the command to run them"),
+    ("path <a> <b>", "Shortest import chain between two files"),
+    ("install claude [--hook]", "Register the MCP server (and the post-edit hook) with Claude Code"),
     ("signatures | dependencies | api | compress | debug <file>", "One extraction step on a single file"),
 ]
 
@@ -510,6 +516,46 @@ def _build_parser() -> argparse.ArgumentParser:
     sm.add_argument("file", help="수정할 파일 (files의 키, 예: src/a.py) -- --folder를 주면 폴더 경로")
     sm.add_argument("summary", help="새 summary 텍스트")
     sm.add_argument("--folder", action="store_true", help="file 인자를 aif['files'] 대신 aif['folders']의 키로 취급")
+
+    # ---- graph index commands (ziplex.core.api; never pack, never an LLM) ----
+    ix = sub.add_parser("index", help="의존성 그래프 인덱스(.ziplex/index.db)를 디스크와 동기화 (LLM 호출 없음)")
+    ix.add_argument("path", nargs="?", default=".", help="프로젝트 폴더 경로 (기본값: 현재 폴더)")
+    ix.add_argument("--check", action="store_true",
+                    help="갱신 후 추가/변경/삭제된 파일이 있으면 종료 코드 1 (인덱스가 처음 만들어진 경우 포함)")
+    ix.add_argument("--json", action="store_true", help="결과를 JSON으로 출력")
+
+    dp = sub.add_parser("deps", help="파일이 import하는 파일 (기본) 또는 --in: 그 파일에 의존하는 파일")
+    dp.add_argument("files", nargs="+", help="파일 경로 (상대/절대 경로 또는 유일한 접미사, 예: core/graph.py)")
+    dp.add_argument("--project", default=".", help="프로젝트 폴더 경로 (기본값: 현재 폴더)")
+    dp.add_argument("--in", dest="incoming", action="store_true", help="역방향: 이 파일에 의존하는 파일 (hop별)")
+    dp.add_argument("--depth", type=int, default=1, help="--in의 탐색 깊이 (기본값: 1)")
+    dp.add_argument("--mentions", action="store_true", help="문서 속 산문 언급(text reference)도 포함")
+    dp.add_argument("--external", action="store_true", help="외부 패키지 import도 출력 (정방향만)")
+    dp.add_argument("--json", action="store_true", help="쿼리 결과를 JSON으로 출력")
+
+    im = sub.add_parser("impact", help="변경된 파일이 영향을 주는 테스트와 실행 명령 (인자 없으면 --diff worktree)")
+    im.add_argument("files", nargs="*", help="변경된 파일 경로")
+    im.add_argument("--project", default=".", help="프로젝트 폴더 경로 (기본값: 현재 폴더)")
+    im.add_argument("--diff", default=None, metavar="REF",
+                    help="git에서 변경 파일을 가져옴: worktree | staged | HEAD~1 | main... 등")
+    im.add_argument("--format", choices=["text", "json", "paths", "commands"], default="text",
+                    help="text(기본) | json | paths(테스트 경로 한 줄씩) | commands(실행 명령 한 줄씩). "
+                         "전체 실행이 필요하면 paths는 아무것도 출력하지 않고 commands는 전체 실행 명령을 출력")
+
+    pa = sub.add_parser("path", help="두 파일 사이의 최단 import 경로 (없으면 종료 코드 1)")
+    pa.add_argument("source", help="시작 파일")
+    pa.add_argument("target", help="도착 파일")
+    pa.add_argument("--project", default=".", help="프로젝트 폴더 경로 (기본값: 현재 폴더)")
+
+    hk = sub.add_parser("hook", help="Claude Code 훅 진입점 (stdin으로 hook JSON을 받음, 항상 종료 코드 0)")
+    hk.add_argument("event", choices=["post-edit"], help="post-edit: PostToolUse(Edit|Write|MultiEdit)")
+
+    ins = sub.add_parser("install", help="Claude Code에 Ziplex 등록 (MCP 서버, 선택적으로 편집 후 훅)")
+    ins.add_argument("target", choices=["claude"], help="설치 대상")
+    ins.add_argument("--project", default=".", help="프로젝트 폴더 경로 (기본값: 현재 폴더)")
+    ins.add_argument("--hook", action="store_true",
+                     help="<project>/.claude/settings.json에 PostToolUse 훅(ziplex hook post-edit)도 추가")
+    ins.add_argument("--dry-run", action="store_true", help="실행/저장하지 않고 할 일만 출력")
 
     return parser
 
@@ -995,6 +1041,226 @@ def _cmd_summary(args) -> None:
     print(f"✅ {args.file} summary 수정됨")
 
 
+# ---- graph index commands ----------------------------------------------------
+# All run on ziplex.core.api.Graph: refresh the index, then query it. Output
+# is English (it is api.render_*'s / machine-readable); a bad file argument
+# or a git failure is a usage error -> stderr + exit 2.
+
+def _open_graph(project: str):
+    from .core.api import Graph  # deferred: keeps `ziplex hook` and unrelated commands light
+    if not Path(project).is_dir():
+        print(f"❌ 디렉터리를 찾을 수 없습니다: {project}", file=sys.stderr)
+        sys.exit(2)
+    return Graph(project)
+
+
+def _usage_error(message: str) -> None:
+    print(f"❌ {message}", file=sys.stderr)
+    sys.exit(2)
+
+
+def _cmd_index(args) -> None:
+    import time
+    graph = _open_graph(args.path)
+    was_new = graph.index.meta("generation") is None
+    started = time.perf_counter()
+    result = graph.refresh()
+    elapsed = time.perf_counter() - started
+    conn = graph.index.conn
+    files = conn.execute("SELECT COUNT(*) FROM files WHERE kind IN ('code', 'text', 'media')").fetchone()[0]
+    edges, internal = conn.execute("SELECT COUNT(*), COUNT(dst_id) FROM edges").fetchone()
+    dirty = result["added"] + result["changed"] + result["removed"]
+    if args.json:
+        print(json.dumps({
+            **result, "new_index": was_new, "files": files, "edges": internal,
+            "external_edges": edges - internal, "seconds": round(elapsed, 3),
+            "db": str(graph.index.db_path),
+        }))
+    else:
+        print(
+            f"index{' (new)' if was_new else ''}: {files} files, {internal} edges (+{edges - internal} external) | "
+            f"+{result['added']} ~{result['changed']} -{result['removed']} | {elapsed:.2f}s"
+        )
+    if args.check and dirty:
+        if not args.json:
+            print(f"⚠️  index was out of date ({dirty} file(s) differed from disk)", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cmd_deps(args) -> None:
+    from .core import api
+    graph = _open_graph(args.project)
+    graph.refresh()
+    try:
+        if args.incoming:
+            result = graph.dependents(args.files, depth=args.depth, include_mentions=args.mentions)
+        else:
+            result = graph.dependencies(args.files, external=args.external)
+            if not args.mentions:
+                for entry in result.values():
+                    entry.pop("mentions", None)
+    except ValueError as e:
+        _usage_error(str(e))
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        print(api.render_dependents(result) if args.incoming else api.render_dependencies(result))
+
+
+def _run_all_commands(graph) -> list[str]:
+    """Whole-suite commands, one per ecosystem that has indexed tests."""
+    from .core.testmap import run_command
+    tests = [p for (p,) in graph.index.conn.execute("SELECT path FROM files WHERE is_test = 1")]
+    commands = []
+    if any(p.endswith(".py") for p in tests):
+        commands.append("pytest")
+    js = [p for p in tests if re.search(r"\.[cm]?[jt]sx?$", p)]
+    if js:  # the runner run_command() would pick, without file arguments
+        commands.append(run_command(js[:1], _package_json(graph.root))[0].rsplit(" ", 1)[0])
+    if any(p.endswith(".go") for p in tests):
+        commands.append("go test ./...")
+    return commands
+
+
+def _package_json(root: str) -> dict | None:
+    try:
+        with open(Path(root) / "package.json", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _cmd_impact(args) -> None:
+    """Exit 0 unless the arguments are unusable. When a targeted selection
+    is unsafe (`run_all` non-empty: build/config/lockfile changed, or a file
+    was deleted), `paths` prints nothing -- so `pytest $(ziplex impact
+    --format paths)` runs the whole suite -- and `commands` prints the
+    whole-suite commands; both explain why on stderr."""
+    from .core import api
+    graph = _open_graph(args.project)
+    graph.refresh()
+    diff = args.diff or (None if args.files else "worktree")
+    try:
+        result = graph.impacted_tests(args.files, diff=diff)
+    except ValueError as e:
+        _usage_error(str(e))
+    if args.format == "json":
+        print(json.dumps(result, ensure_ascii=False))
+        return
+    if args.format == "text":
+        print(api.render_impacted(result))
+        return
+    if result["not_indexed"]:
+        print("ziplex: not in the index: " + ", ".join(result["not_indexed"]), file=sys.stderr)
+    if result["run_all"]:
+        print("ziplex: run all tests -- " + "; ".join(result["run_all"]), file=sys.stderr)
+        if args.format == "commands":
+            for cmd in _run_all_commands(graph):
+                print(cmd)
+        return
+    if not result["tests"]:
+        print("ziplex: no tests affected", file=sys.stderr)
+    for line in ([t["file"] for t in result["tests"]] if args.format == "paths" else result["commands"]):
+        print(line)
+
+
+def _cmd_path(args) -> None:
+    from .core import api
+    graph = _open_graph(args.project)
+    graph.refresh()
+    try:
+        hops = graph.path(args.source, args.target)
+        source, target = graph.resolve(args.source), graph.resolve(args.target)
+    except ValueError as e:
+        _usage_error(str(e))
+    print(api.render_path(source, target, hops))
+    if hops is None:
+        sys.exit(1)
+
+
+def _cmd_hook(args) -> None:
+    from . import hook
+    if hasattr(sys.stdin, "reconfigure"):  # Claude Code sends UTF-8, not the console codepage
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    sys.exit(hook.run(sys.stdin, sys.stdout))
+
+
+HOOK_COMMAND = "ziplex hook post-edit"
+HOOK_ENTRY = {"matcher": "Edit|Write|MultiEdit", "hooks": [{"type": "command", "command": HOOK_COMMAND, "timeout": 10}]}
+
+
+def merge_hook_settings(settings: dict) -> tuple[dict, bool]:
+    """`settings` with the post-edit PostToolUse entry added; (new, changed).
+    Existing keys and hooks are kept; an entry already running
+    HOOK_COMMAND (under any matcher) counts as installed."""
+    import copy
+    merged = copy.deepcopy(settings)
+    post = merged.setdefault("hooks", {}).setdefault("PostToolUse", [])
+    for entry in post:
+        if any(isinstance(h, dict) and h.get("command") == HOOK_COMMAND for h in (entry.get("hooks") or [])):
+            return merged, False
+    post.append(copy.deepcopy(HOOK_ENTRY))
+    return merged, True
+
+
+def _cmd_install(args) -> None:
+    import difflib
+    import shutil
+    import subprocess
+
+    project = Path(args.project).resolve()
+    if not project.is_dir():
+        _usage_error(f"디렉터리를 찾을 수 없습니다: {args.project}")
+
+    mcp_cmd = ["claude", "mcp", "add", "ziplex", "--", "ziplex-mcp", "--project", str(project)]
+    shown = " ".join(f'"{a}"' if " " in a else a for a in mcp_cmd)
+    claude = shutil.which("claude")
+    if args.dry_run or claude is None:
+        reason = "--dry-run" if args.dry_run else "claude CLI를 PATH에서 찾지 못했습니다"
+        print(f"ℹ️  MCP 등록 명령 ({reason} -- 직접 실행하세요):\n  {shown}")
+    else:
+        print(f"▶ {shown}")
+        done = subprocess.run([claude, *mcp_cmd[1:]], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        output = (done.stdout + done.stderr).strip()
+        if output:
+            print("  " + output.replace("\n", "\n  "))
+        if done.returncode != 0:
+            print("⚠️  MCP 등록 실패 (이미 등록돼 있으면 무시해도 됩니다)")
+
+    if args.hook:
+        settings_path = project / ".claude" / "settings.json"
+        try:
+            before_text = settings_path.read_text(encoding="utf-8") if settings_path.exists() else ""
+            before = json.loads(before_text) if before_text.strip() else {}
+        except (OSError, ValueError) as e:
+            _usage_error(f"{settings_path} 읽기 실패 (수정하지 않음): {e}")
+        if not isinstance(before, dict):
+            _usage_error(f"{settings_path}의 최상위가 JSON 객체가 아닙니다 (수정하지 않음)")
+        merged, changed = merge_hook_settings(before)
+        if not changed:
+            print(f"✅ 훅이 이미 설치돼 있습니다: {settings_path}")
+        else:
+            after_text = json.dumps(merged, indent=2, ensure_ascii=False) + "\n"
+            diff = difflib.unified_diff(
+                before_text.splitlines(keepends=True), after_text.splitlines(keepends=True),
+                fromfile=str(settings_path) if before_text else "/dev/null", tofile=str(settings_path),
+            )
+            sys.stdout.writelines(diff)
+            if args.dry_run:
+                print("ℹ️  --dry-run: settings.json은 저장하지 않았습니다")
+            else:
+                settings_path.parent.mkdir(parents=True, exist_ok=True)
+                settings_path.write_text(after_text, encoding="utf-8")
+                print(f"✅ PostToolUse 훅 추가됨: {settings_path}")
+
+    if args.dry_run:
+        print(f"ℹ️  --dry-run: 인덱스는 만들지 않았습니다 (ziplex index {project})")
+        return
+    graph = _open_graph(str(project))
+    result = graph.refresh()
+    print(f"✅ 인덱스 갱신됨: {graph.index.db_path} (+{result['added']} ~{result['changed']} -{result['removed']})")
+
+
 # One entry per registered subcommand -- main() just looks up args.command
 # here and calls the match. A bare invocation (args.command is None, no
 # subcommand typed at all) is the one case with no entry, handled by
@@ -1024,6 +1290,12 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], None]] = {
     "link": _cmd_link,
     "unlink": _cmd_unlink,
     "summary": _cmd_summary,
+    "index": _cmd_index,
+    "deps": _cmd_deps,
+    "impact": _cmd_impact,
+    "path": _cmd_path,
+    "hook": _cmd_hook,
+    "install": _cmd_install,
 }
 
 

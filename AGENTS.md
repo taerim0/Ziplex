@@ -63,6 +63,16 @@ ziplex checkpoint clean <project_path>                             # delete just
 ziplex checkpoint clean --all                                      # delete every checkpoint
 ziplex doctor [project_path]                                       # environment check -- Python version, active LLM provider/model/API key, secretlint, leftover checkpoints (no LLM call); project_path adds .env/git-repo checks
 ```
+Graph index commands (`ziplex.core.api.Graph` over `<project>/.ziplex/index.db`; never pack, never an LLM; `--project`/path defaults to cwd; an unknown file or git error → stderr + exit 2):
+```
+ziplex index [path] [--check] [--json]          # refresh the index, one-line summary; --check exits 1 if any file differed (a brand-new index counts)
+ziplex deps <file...> [--in [--depth N]] [--mentions] [--external] [--json]   # imports of a file, or (--in) its dependents by hop
+ziplex impact [file...] [--diff worktree|staged|REF] [--format text|json|paths|commands]   # impacted tests; no files + no --diff = --diff worktree
+ziplex path <a> <b>                              # shortest import chain; exit 1 when there is none
+ziplex install claude [--hook] [--dry-run]       # `claude mcp add ziplex -- ziplex-mcp --project <abs>` (only printed if `claude` isn't on PATH) + build the index; --hook merges the PostToolUse entry into <project>/.claude/settings.json (idempotent)
+ziplex hook post-edit                            # the Claude Code PostToolUse hook (src/ziplex/hook.py): stdin JSON in, additionalContext out, always exit 0
+```
+`impact` always exits 0. When a targeted run is unsafe (`run_all`: a build/config/lockfile changed, or a file was deleted) `--format paths` prints nothing -- so `pytest $(ziplex impact --format paths)` runs the whole suite -- and `--format commands` prints the whole-suite commands (`pytest`, `npx jest`, `go test ./...`); the reason goes to stderr. No affected tests also prints nothing to stdout, so a script that must tell "nothing to run" from "run everything" uses `--format json`. `index --check` is a staleness gate for a *persisted* index (e.g. restored from a CI cache); on a fresh checkout it always exits 1. The hook acts only inside a project that already has `.ziplex/index.db` (nearest ancestor of the edited file), refreshes just that file, and emits at most once per (session, file) per 10 minutes (`.ziplex/hook_state.json`) when the file has dependents or affected tests.
 (`<project_path>` is *any* target project being packed/inspected — `--include "src/**/*.py"` is that target project's own `src/`, unrelated to Ziplex's own.)
 
 MCP server (exposes an already-packed project's `aif.json`/`detail.json`, read-only):
