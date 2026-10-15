@@ -80,3 +80,22 @@ def run_command(test_paths: list[str], package_json: dict | None = None) -> list
     if go_dirs:
         commands.append("go test " + " ".join(f"./{d}" if d != "." else "." for d in go_dirs))
     return commands
+
+
+def package_inits(path: str, all_paths: set[str]) -> list[str]:
+    """`__init__.py` files Python runs before `path` itself: importing
+    a/b/c.py executes a/__init__.py and a/b/__init__.py first. Stops at the
+    first folder that isn't a regular package (namespace / src roots)."""
+    if not path.endswith(".py"):
+        return []
+    inits = []
+    folder = posixpath.dirname(path)
+    if posixpath.basename(path) == "__init__.py":
+        folder = posixpath.dirname(folder)
+    while folder:
+        init = folder + "/__init__.py"
+        if init not in all_paths:
+            break
+        inits.append(init)
+        folder = posixpath.dirname(folder)
+    return inits

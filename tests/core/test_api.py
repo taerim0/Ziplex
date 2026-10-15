@@ -115,3 +115,51 @@ def test_a_changed_test_does_not_hide_that_it_covers_another_changed_file(repo):
     _, g = repo
     result = g.impacted_tests(["pkg/service.py", "tests/test_service.py"])
     assert result["untested"] == []
+
+
+def test_changing_a_package_init_impacts_tests_of_every_module_below_it(tmp_path):
+    root = tmp_path / "repo"
+    for rel, text in {
+        "lib/__init__.py": "VERSION = 1\n",
+        "lib/sub/__init__.py": "",
+        "lib/sub/mod.py": "def f():\n    return 1\n",
+        "tests/test_mod.py": "from lib.sub.mod import f\n",
+    }.items():
+        _write(root, rel, text)
+    g = api.Graph(str(root), db_path=str(tmp_path / "i.db"))
+    g.refresh()
+    assert [t["file"] for t in g.impacted_tests(["lib/__init__.py"])["tests"]] == ["tests/test_mod.py"]
+    assert g.dependents(["lib/__init__.py"])["lib/__init__.py"] == []  # not a dependents edge
+
+
+def test_type_checking_and_main_guard_imports_dont_select_tests(tmp_path):
+    root = tmp_path / "repo"
+    for rel, text in {
+        "lib/__init__.py": "",
+        "lib/models.py": "X = 1\n",
+        "lib/api.py": "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from lib import models\n"
+                      "if __name__ == '__main__':\n    from lib import models\n",
+        "tests/test_api.py": "from lib import api\n",
+    }.items():
+        _write(root, rel, text)
+    g = api.Graph(str(root), db_path=str(tmp_path / "i.db"))
+    g.refresh()
+    assert g.impacted_tests(["lib/models.py"])["tests"] == []
+    assert g.dependents(["lib/models.py"])["lib/models.py"][0] == [("lib/api.py", 3)]  # still a dependency
+
+
+def test_function_local_imports_in_init_dont_reach_every_package_member(tmp_path):
+    root = tmp_path / "repo"
+    for rel, text in {
+        "lib/__init__.py": "def show():\n    from lib.console import Console\n    return Console\n",
+        "lib/console.py": "class Console:\n    pass\n",
+        "lib/table.py": "X = 1\n",
+        "tests/test_table.py": "from lib.table import X\n",
+        "tests/test_show.py": "import lib\n\ndef test_show():\n    lib.show()\n",
+    }.items():
+        _write(root, rel, text)
+    g = api.Graph(str(root), db_path=str(tmp_path / "i.db"))
+    g.refresh()
+    tests = [t["file"] for t in g.impacted_tests(["lib/console.py"])["tests"]]
+    assert tests == ["tests/test_show.py"]  # imports lib and can call show(); test_table can't reach it
+    assert [t["file"] for t in g.impacted_tests(["lib/__init__.py"])["tests"]] == ["tests/test_show.py", "tests/test_table.py"]

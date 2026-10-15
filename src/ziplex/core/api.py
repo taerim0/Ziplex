@@ -9,7 +9,14 @@ from dataclasses import dataclass, field
 from ..file.relationship import graph_summary
 from .diff import changed_files
 from .index import GraphIndex
-from .testmap import forces_run_all, implicit_dependencies, run_command
+from .testmap import forces_run_all, implicit_dependencies, package_inits, run_command
+
+
+# Imports that never run when a test imports the module (`if TYPE_CHECKING:`,
+# TS `import type`, `if __name__ == "__main__":`). Still real dependencies,
+# but they can't make a test fail at runtime -- impacted_tests skips them.
+_INERT_CONTEXTS = {"typing", "main"}
+_DEPENDENCY_KINDS = ("import", "lazy", "inert", "implicit")
 
 
 @dataclass
@@ -46,16 +53,27 @@ class Graph:
         }
         g = _Graph(generation, files)
         query = (
-            "SELECT s.path, d.path, e.external, e.kind, e.line FROM edges e JOIN files s ON s.id = e.src_id "
+            "SELECT s.path, d.path, e.external, e.kind, e.line, e.ctx FROM edges e JOIN files s ON s.id = e.src_id "
             "LEFT JOIN files d ON d.id = e.dst_id ORDER BY s.path, e.line"
         )
-        for src, dst, external, kind, line in conn.execute(query):
+        for src, dst, external, kind, line, ctx in conn.execute(query):
+            if kind == "import" and ctx in _INERT_CONTEXTS:
+                kind = "inert"
+            elif kind == "import" and ctx == "function":
+                kind = "lazy"
             if dst is None:
                 g.external.setdefault(src, []).append((external, line))
                 continue
             g.out.setdefault(src, []).append((dst, line, kind))
             g.rev.setdefault(dst, []).append((src, line, kind))
         paths = set(files)
+        # "package" edges (module -> enclosing __init__.py) count for impact,
+        # not as dependents: every module of a package would otherwise
+        # "depend on" its __init__.py.
+        for module in (p for p in files if p.endswith(".py")):
+            for init in package_inits(module, paths):
+                g.out.setdefault(module, []).append((init, None, "package"))
+                g.rev.setdefault(init, []).append((module, None, "package"))
         for test in (p for p, info in files.items() if info["is_test"]):
             for dep in implicit_dependencies(test, paths):
                 g.out.setdefault(test, []).append((dep, None, "implicit"))
@@ -89,7 +107,7 @@ class Graph:
     def dependents(self, files: list[str], depth: int = 1, include_mentions: bool = False) -> dict:
         """Reverse dependencies grouped by hop. {file: [[(path, line), ...] per hop]}"""
         g = self._graph()
-        kinds = {"import", "implicit"} | ({"text"} if include_mentions else set())
+        kinds = set(_DEPENDENCY_KINDS) | ({"text"} if include_mentions else set())
         result = {}
         for arg in files:
             start = self.resolve(arg)
@@ -113,7 +131,9 @@ class Graph:
         result = {}
         for arg in files:
             path = self.resolve(arg)
-            entry = {"internal": list(dict.fromkeys((dst, line) for dst, line, kind in g.out.get(path, []) if kind != "text"))}
+            entry = {"internal": list(dict.fromkeys(
+                (dst, line) for dst, line, kind in g.out.get(path, []) if kind in _DEPENDENCY_KINDS
+            ))}
             mentions = [dst for dst, _, kind in g.out.get(path, []) if kind == "text"]
             if mentions:
                 entry["mentions"] = mentions
@@ -138,10 +158,34 @@ class Graph:
                     node = prev
                 return list(reversed(hops))
             for dst, line, kind in g.out.get(node, []):
-                if kind != "text" and dst not in parent:
+                if kind in _DEPENDENCY_KINDS and dst not in parent:
                     parent[dst] = (node, line)
                     queue.append(dst)
         return None
+
+    def _impact_closure(self, changed: list[str]) -> dict[str, str | None]:
+        """{file: next hop toward a changed file} for every file whose code
+        can run a changed file. Reverse edges, except prose mentions and
+        inert (TYPE_CHECKING / __main__) imports. A path that went through a
+        function-local ("lazy") import may not continue over a package edge:
+        importing a package member runs the package's __init__.py, but not
+        the functions that __init__.py merely defines."""
+        g = self._graph()
+        parent: dict[str, str | None] = {c: None for c in changed}
+        lazy = {c: False for c in changed}
+        queue = deque(changed)
+        while queue:
+            node = queue.popleft()
+            for src, _, kind in g.rev.get(node, []):
+                if kind in ("text", "inert") or (kind == "package" and lazy[node]):
+                    continue
+                src_lazy = lazy[node] or kind == "lazy"
+                # first visit, or a non-lazy path to a file seen only lazily
+                if src not in lazy or (lazy[src] and not src_lazy):
+                    parent[src] = node
+                    lazy[src] = src_lazy
+                    queue.append(src)
+        return parent
 
     def impacted_tests(self, files: list[str] | None = None, diff: str | None = None) -> dict:
         """Tests reached from the changed files over reverse import (and
@@ -161,14 +205,7 @@ class Graph:
                 unknown.append(arg)
 
         run_all = sorted({p for p in changed + deleted + unknown if forces_run_all(p)})
-        parent: dict[str, str | None] = {c: None for c in changed}
-        queue = deque(changed)
-        while queue:
-            node = queue.popleft()
-            for src, _, kind in g.rev.get(node, []):
-                if kind != "text" and src not in parent:
-                    parent[src] = node
-                    queue.append(src)
+        parent = self._impact_closure(changed)
 
         def chain(node: str) -> list[str]:
             out = [node]
@@ -183,15 +220,7 @@ class Graph:
         def reaches_a_test(start: str) -> bool:
             # Checked per file: the shortest chains above can all start at a
             # changed test, hiding that it also covers another changed file.
-            seen, queue = {start}, deque([start])
-            while queue:
-                for src, _, kind in g.rev.get(queue.popleft(), []):
-                    if kind != "text" and src not in seen:
-                        if g.files.get(src, {}).get("is_test"):
-                            return True
-                        seen.add(src)
-                        queue.append(src)
-            return False
+            return any(g.files.get(p, {}).get("is_test") for p in self._impact_closure([start]) if p != start)
 
         untested = [
             c for c in changed

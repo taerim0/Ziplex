@@ -1,3 +1,4 @@
+import re
 from .languages import get_language_config
 from .parser import get_parser
 from .compressor import compress_file, compress_from_tree
@@ -79,9 +80,39 @@ def extract_signatures(file_path: str) -> list[str]:
     return results
 
 
-def extract_imports(file_path: str) -> list[tuple[str, int]]:
+_FUNCTION_NODES = {
+    "function_definition", "function_declaration", "method_definition", "method_declaration",
+    "arrow_function", "function_expression", "func_literal", "lambda", "function_item",
+}
+_TYPE_CHECKING = re.compile(r"^\(?\s*(typing\.)?TYPE_CHECKING\s*\)?$")
+_MAIN_GUARD = re.compile(r"__name__\s*==\s*['\"]__main__['\"]")
+
+
+def _import_context(node) -> str:
+    """Where an import runs: "module" (at import time), "function" (when the
+    enclosing function is called), "typing" (never at runtime: `if
+    TYPE_CHECKING:`, TS `import type`) or "main" (only as a script)."""
+    if node.type == "import_statement" and node.text.startswith(b"import type "):
+        return "typing"
+    current = node.parent
+    while current is not None:
+        if current.type == "if_statement":
+            condition = current.child_by_field_name("condition")
+            text = condition.text.decode("utf-8", "replace").strip() if condition is not None else ""
+            if _TYPE_CHECKING.match(text):
+                return "typing"
+            if _MAIN_GUARD.search(text):
+                return "main"
+        elif current.type in _FUNCTION_NODES:
+            return "function"
+        current = current.parent
+    return "module"
+
+
+def extract_imports(file_path: str) -> list[tuple[str, int, str]]:
     """Raw dependency entries with the 1-based line of the syntax node that
-    produced each (the import statement), for the graph index."""
+    produced each (the import statement) and its _import_context(), for the
+    graph index."""
     parser = get_parser(file_path)
     config = get_language_config(Path(file_path).suffix) if parser else None
     code = read_text(file_path) if config else None
@@ -90,7 +121,7 @@ def extract_imports(file_path: str) -> list[tuple[str, int]]:
     tree = parser.parse(bytes(code, "utf8"))
     deps, lines = [], []
     _walk_all(tree.root_node, None, (None,) * 5, [], config.dependency_handler, deps, None, [], lines)
-    return list(zip(deps, lines))
+    return [(dep, line, ctx) for dep, (line, ctx) in zip(deps, lines)]
 
 
 def extract_dependencies(file_path: str) -> list[str]:
@@ -333,7 +364,8 @@ def _walk_all(node, parent, sig_args, signatures, dep_handler, dependencies, api
         before = len(dependencies)
         want_dep = not dep_handler(node, dependencies)
         if dep_lines is not None and len(dependencies) > before:
-            dep_lines.extend([node.start_point[0] + 1] * (len(dependencies) - before))
+            tag = (node.start_point[0] + 1, _import_context(node))
+            dep_lines.extend([tag] * (len(dependencies) - before))
     else:
         want_dep = False
     want_api = api_handler is not None and not api_handler(node, api)

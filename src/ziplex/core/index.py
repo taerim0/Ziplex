@@ -32,7 +32,7 @@ from ..file.textutil import cached_reads, relative_key
 from .graph import GraphBuilder
 from .testmap import is_test_path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 INDEX_DIR = ".ziplex"
 INDEX_FILE = "index.db"
 
@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE TABLE IF NOT EXISTS imports (
     file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     raw TEXT NOT NULL,
-    line INTEGER NOT NULL
+    line INTEGER NOT NULL,
+    ctx TEXT NOT NULL DEFAULT 'module'   -- module | function | typing | main (extractor._import_context)
 );
 CREATE INDEX IF NOT EXISTS imports_file ON imports(file_id);
 CREATE TABLE IF NOT EXISTS edges (
@@ -62,7 +63,8 @@ CREATE TABLE IF NOT EXISTS edges (
     dst_id INTEGER REFERENCES files(id) ON DELETE CASCADE,
     external TEXT,
     kind TEXT NOT NULL,            -- import | text
-    line INTEGER
+    line INTEGER,
+    ctx TEXT
 );
 CREATE INDEX IF NOT EXISTS edges_src ON edges(src_id);
 CREATE INDEX IF NOT EXISTS edges_dst ON edges(dst_id);
@@ -219,8 +221,8 @@ class GraphIndex:
                 self.conn.execute("DELETE FROM imports WHERE file_id = ?", (file_id,))
                 if kind == "code":
                     self.conn.executemany(
-                        "INSERT INTO imports (file_id, raw, line) VALUES (?, ?, ?)",
-                        [(file_id, raw, line) for raw, line in extract_imports(self._abs(rel))],
+                        "INSERT INTO imports (file_id, raw, line, ctx) VALUES (?, ?, ?, ?)",
+                        [(file_id, raw, line, ctx) for raw, line, ctx in extract_imports(self._abs(rel))],
                     )
 
             fresh_paths = {r for r, *_ in fresh}
@@ -265,18 +267,18 @@ class GraphIndex:
         for fid, name, kind, is_flagged in targets:
             abs_path = self._abs(name)
             if kind == "code":
-                for raw, line in self.conn.execute("SELECT raw, line FROM imports WHERE file_id = ?", (fid,)).fetchall():
+                for raw, line, ctx in self.conn.execute("SELECT raw, line, ctx FROM imports WHERE file_id = ?", (fid,)).fetchall():
                     for dep in builder.code_dependencies(abs_path, [raw]):
                         target = resolve_dependency(dep, stem_map, all_names, source_name=name)
                         if target == name:
                             continue
-                        out.append((fid, ids.get(target) if target else None, None if target else dep, "import", line))
+                        out.append((fid, ids.get(target) if target else None, None if target else dep, "import", line, ctx))
             elif kind == "text" and not is_flagged:
                 for ref in builder.text_references(abs_path):
                     if ref != name and ref in ids:
-                        out.append((fid, ids[ref], None, "text", None))
+                        out.append((fid, ids[ref], None, "text", None, None))
         self.conn.executemany(
-            "INSERT INTO edges (src_id, dst_id, external, kind, line) VALUES (?, ?, ?, ?, ?)", out,
+            "INSERT INTO edges (src_id, dst_id, external, kind, line, ctx) VALUES (?, ?, ?, ?, ?, ?)", out,
         )
 
     def relationships(self) -> dict:
