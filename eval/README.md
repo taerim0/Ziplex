@@ -124,3 +124,21 @@ judged against the oracle, not 0.6: Ziplex equals it on click/flask and is
 +0.16 on rich, where the excess is function-local imports that do run when
 a test calls the function.
 
+
+## agent_compare.py (F3/F5: shipped MCP vs. Claude Code alone)
+
+Headless `claude -p --restricted --tools Read,Grep,Glob --strict-mcp-config`
+on both sides; C1 adds `--mcp-config` for `ziplex-mcp --project <repo>`. Same
+neutral prompt, prompt sent on stdin, 3 reps, conditions interleaved; F1 vs.
+answers derived from T2's import traces (impact) and `edges_python.py`
+(importers). Results and analysis: `docs/EXPERIMENTS.md` #15.
+
+```bash
+python eval/agent_compare.py setup --t2-repo <scratch>/repos/rich --t2-work <scratch>/work/rich --out <scratch>/ac/rich --ziplex-mcp <path to ziplex-mcp>
+python eval/agent_compare.py run --out <scratch>/ac/rich --reps 3 --model sonnet
+python eval/agent_compare.py report --out <scratch>/ac/rich
+```
+
+| Date | Repos | Runs | F1 C0 / C1 | Impact questions C1/C0 (cost, calls, time) | Importer questions C1/C0 (cost, time) | Uptake |
+|---|---|---|---|---|---|---|
+| 2026-10-16 | rich + flask (17 q) | 102 | 0.997 / 1.000 | 0.43 / 0.20 / 0.45 | 1.12 / 0.87 | 51/51 |
