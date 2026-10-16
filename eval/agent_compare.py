@@ -186,6 +186,11 @@ def run(args) -> None:
                               timeout=args.timeout)
         row = {"id": q["id"], "type": q["type"], "target": q["target"], "condition": condition, "rep": rep,
                "wall_s": round(time.time() - started, 1), **_parse_stream(proc.stdout.splitlines())}
+        if row["is_error"] and not row["turns"]:
+            # Auth/API failure before any work: recording it as F1=0 would
+            # poison the comparison, so stop and let the run be resumed.
+            sys.exit(f"claude run failed before doing anything ({q['id']} {condition}): "
+                     + (proc.stdout[-300:] or proc.stderr[-300:]))
         row.update(_score(row["answer"], q["gold"]))
         if proc.returncode and not row["answered"]:
             row["stderr"] = proc.stderr[-500:]
