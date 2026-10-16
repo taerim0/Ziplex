@@ -182,3 +182,17 @@ def test_tests_reached_only_through_a_function_local_import_are_marked_possible(
     assert result["commands"] == ["pytest tests/test_syntax.py"]
     assert result["commands_all"] == ["pytest tests/test_syntax.py tests/test_console.py"]
     assert "+1 possibly" in api.render_impacted(result)
+
+
+def test_aliased_typing_module_type_checking_block_is_inert(tmp_path):
+    root = tmp_path / "repo"
+    for rel, text in {
+        "lib/__init__.py": "",
+        "lib/testing.py": "X = 1\n",
+        "lib/app.py": "import typing as t\nif t.TYPE_CHECKING:  # pragma: no cover\n    from .testing import X\n",
+        "tests/test_app.py": "from lib import app\n",
+    }.items():
+        _write(root, rel, text)
+    g = api.Graph(str(root), db_path=str(tmp_path / "i.db"))
+    g.refresh()
+    assert g.impacted_tests(["lib/testing.py"])["tests"] == []

@@ -32,7 +32,7 @@ from ..file.textutil import cached_reads, relative_key
 from .graph import GraphBuilder
 from .testmap import is_test_path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3  # bump whenever stored extraction (imports/ctx) changes
 INDEX_DIR = ".ziplex"
 INDEX_FILE = "index.db"
 

@@ -84,7 +84,7 @@ _FUNCTION_NODES = {
     "function_definition", "function_declaration", "method_definition", "method_declaration",
     "arrow_function", "function_expression", "func_literal", "lambda", "function_item",
 }
-_TYPE_CHECKING = re.compile(r"^\(?\s*(typing\.)?TYPE_CHECKING\s*\)?$")
+_TYPE_CHECKING = re.compile(r"^\(?\s*(\w+\.)?TYPE_CHECKING\s*\)?$")  # TYPE_CHECKING, typing./t.TYPE_CHECKING
 _MAIN_GUARD = re.compile(r"__name__\s*==\s*['\"]__main__['\"]")
 
 
