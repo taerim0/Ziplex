@@ -1161,7 +1161,8 @@ def _cmd_impact(args) -> None:
         return
     if not result["tests"]:
         print("ziplex: no tests affected", file=sys.stderr)
-    for line in ([t["file"] for t in result["tests"]] if args.format == "paths" else result["commands"]):
+    # CI-facing formats include the "possibly affected" tests too.
+    for line in ([t["file"] for t in result["tests"]] if args.format == "paths" else result["commands_all"]):
         print(line)
 
 

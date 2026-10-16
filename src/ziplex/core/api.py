@@ -165,9 +165,10 @@ class Graph:
                     queue.append(dst)
         return None
 
-    def _impact_closure(self, changed: list[str]) -> dict[str, str | None]:
-        """{file: next hop toward a changed file} for every file whose code
-        can run a changed file. Reverse edges, except prose mentions and
+    def _impact_closure(self, changed: list[str]) -> tuple[dict[str, str | None], dict[str, bool]]:
+        """({file: next hop toward a changed file}, {file: reached only via a
+        function-local import}) for every file whose code can run a changed
+        file. Reverse edges, except prose mentions and
         inert (TYPE_CHECKING / __main__) imports. A path that went through a
         function-local ("lazy") import may not continue over a package edge:
         importing a package member runs the package's __init__.py, but not
@@ -187,7 +188,7 @@ class Graph:
                     parent[src] = node
                     lazy[src] = src_lazy
                     queue.append(src)
-        return parent
+        return parent, lazy
 
     def impacted_tests(self, files: list[str] | None = None, diff: str | None = None) -> dict:
         """Tests reached from the changed files over reverse import (and
@@ -207,7 +208,7 @@ class Graph:
                 unknown.append(arg)
 
         run_all = sorted({p for p in changed + deleted + unknown if forces_run_all(p)})
-        parent = self._impact_closure(changed)
+        parent, lazy = self._impact_closure(changed)
 
         def chain(node: str) -> list[str]:
             out = [node]
@@ -215,14 +216,20 @@ class Graph:
                 out.append(parent[out[-1]])
             return out
 
+        # "certain": the test loads a changed file when it is imported.
+        # Otherwise only a function-local import on the way reaches it -- the
+        # test is affected only if it calls that function.
         tests = sorted(
-            ({"file": p, "chain": chain(p)} for p in parent if g.files.get(p, {}).get("is_test")),
-            key=lambda t: (len(t["chain"]), t["file"]),
+            (
+                {"file": p, "chain": chain(p), "certain": not lazy[p]}
+                for p in parent if g.files.get(p, {}).get("is_test")
+            ),
+            key=lambda t: (not t["certain"], len(t["chain"]), t["file"]),
         )
         def reaches_a_test(start: str) -> bool:
             # Checked per file: the shortest chains above can all start at a
             # changed test, hiding that it also covers another changed file.
-            return any(g.files.get(p, {}).get("is_test") for p in self._impact_closure([start]) if p != start)
+            return any(g.files.get(p, {}).get("is_test") for p in self._impact_closure([start])[0] if p != start)
 
         untested = [
             c for c in changed
@@ -241,7 +248,10 @@ class Graph:
             "tests": tests,
             "untested": untested,
             "run_all": run_all + (["deleted files: their importers can't be traced"] if deleted else []),
-            "commands": run_command([t["file"] for t in tests], package_json),
+            # commands: the certain tests (the edit loop); commands_all: every
+            # test that could be affected (CI, where a miss costs more).
+            "commands": run_command([t["file"] for t in tests if t["certain"]], package_json),
+            "commands_all": run_command([t["file"] for t in tests], package_json),
         }
 
     def overview(self, scope: str = "", top_n: int = 10) -> dict:
@@ -314,12 +324,22 @@ def render_path(source: str, target: str, hops) -> str:
 
 
 def render_impacted(result: dict, limit: int = 60) -> str:
-    lines = [f"changed: {len(result['changed'])} file(s); tests affected: {len(result['tests'])}"]
-    for t in result["tests"][:limit]:
+    certain = [t for t in result["tests"] if t.get("certain", True)]
+    possible = [t for t in result["tests"] if not t.get("certain", True)]
+    lines = [
+        f"changed: {len(result['changed'])} file(s); tests affected: {len(certain)}"
+        + (f" (+{len(possible)} possibly, via function-local imports)" if possible else "")
+    ]
+    for t in certain[:limit]:
         via = " <- ".join(t["chain"][1:])
         lines.append(f"  {t['file']}" + (f"  (via {via})" if via else ""))
-    if len(result["tests"]) > limit:
-        lines.append(f"  ... +{len(result['tests']) - limit}")
+    if len(certain) > limit:
+        lines.append(f"  ... +{len(certain) - limit}")
+    if possible:
+        shown = possible[: max(0, min(10, limit - len(certain)))]
+        lines.append("possibly (only if they call a function that imports it lazily): "
+                     + ", ".join(t["file"] for t in shown)
+                     + (f" ... +{len(possible) - len(shown)}" if len(possible) > len(shown) else ""))
     if result["untested"]:
         lines.append("no test reaches: " + ", ".join(result["untested"]))
     if result["not_indexed"]:

@@ -163,3 +163,22 @@ def test_function_local_imports_in_init_dont_reach_every_package_member(tmp_path
     tests = [t["file"] for t in g.impacted_tests(["lib/console.py"])["tests"]]
     assert tests == ["tests/test_show.py"]  # imports lib and can call show(); test_table can't reach it
     assert [t["file"] for t in g.impacted_tests(["lib/__init__.py"])["tests"]] == ["tests/test_show.py", "tests/test_table.py"]
+
+
+def test_tests_reached_only_through_a_function_local_import_are_marked_possible(tmp_path):
+    root = tmp_path / "repo"
+    for rel, text in {
+        "lib/__init__.py": "",
+        "lib/console.py": "def render():\n    from lib.syntax import highlight\n    return highlight()\n",
+        "lib/syntax.py": "def highlight():\n    return 1\n",
+        "tests/test_console.py": "from lib.console import render\n",
+        "tests/test_syntax.py": "from lib.syntax import highlight\n",
+    }.items():
+        _write(root, rel, text)
+    g = api.Graph(str(root), db_path=str(tmp_path / "i.db"))
+    g.refresh()
+    result = g.impacted_tests(["lib/syntax.py"])
+    assert {t["file"]: t["certain"] for t in result["tests"]} == {"tests/test_syntax.py": True, "tests/test_console.py": False}
+    assert result["commands"] == ["pytest tests/test_syntax.py"]
+    assert result["commands_all"] == ["pytest tests/test_syntax.py tests/test_console.py"]
+    assert "+1 possibly" in api.render_impacted(result)

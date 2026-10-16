@@ -116,7 +116,7 @@ def post_edit(payload: dict, now: float | None = None) -> dict | None:
     finally:
         graph.index.close()
 
-    tests = len(impact["tests"])
+    tests = sum(1 for t in impact["tests"] if t.get("certain", True))
     if not dependents and not tests:
         return None
     now = time.time() if now is None else now
