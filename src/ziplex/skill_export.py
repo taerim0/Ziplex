@@ -8,7 +8,7 @@ no server process required.
 Inspired by repomix's --skill-generate feature (see the `ziplex-roadmap`
 memory), but deliberately narrower in one respect: repomix's generated
 files.md embeds every file's full raw source ("grep-friendly"); this module
-never does that -- references/files.md stays to summaries + confidence,
+never does that -- references/files.md stays to summaries,
 exactly what aif.json itself already restricts to, and the compressed (not
 raw) per-file body only ships as references/detail.json, copied verbatim
 from the pack's own sibling file. Shipping full source in an
@@ -25,7 +25,6 @@ import re
 from pathlib import Path
 
 from .aif_io import attach_weak_edges, read_detail_or_none
-from .confidence import project_confidence_summary
 from .extract.code.languages import is_code_path
 from .file.relationship import graph_summary
 
@@ -76,7 +75,7 @@ def _skill_md(aif: dict, slug: str) -> str:
     rule_count = len(aif.get("rules", []))
     description = (
         f"Pre-summarized reference for the {name} codebase, packed by Ziplex -- "
-        f"file summaries, confidence scores, dependency graph, and coding rules. "
+        f"file summaries, dependency graph, and coding rules. "
         f"Use when asked about this project's structure, what a file does, or how "
         f"files depend on each other, before reading raw source."
     )
@@ -95,10 +94,10 @@ This is a Ziplex-packed **snapshot** ({file_count} files, {rule_count} coding ru
 
 ## How to use this
 
-1. **`references/overview.md`** — the AI guide above, coding rules, a per-folder map (each folder's role, file count, and confidence), an overall confidence rollup, and token stats (how much smaller this reference is than the raw source).
-2. **`references/files.md`** — every file's one-line summary and a confidence score (0.0-1.0). A low score means the summary's wording didn't overlap much with the file's real signatures -- worth a closer look before trusting it, not a guarantee it's wrong.
+1. **`references/overview.md`** — the AI guide above, coding rules, a per-folder map (each folder's role and file count), and token stats (how much smaller this reference is than the raw source).
+2. **`references/files.md`** — every file's one-line summary.
 3. **`references/relationships.md`** — the dependency graph, already resolved: per file, what it depends on and which files use it.
-4. **`references/detail.json`** — full compressed source per file (structure and signatures kept, function bodies elided), keyed by the same relative path used everywhere else here. Read a file's entry only once its summary/confidence/relationships say it's worth a closer look -- that's the entire point of Ziplex's compression; reading every entry defeats it.
+4. **`references/detail.json`** — full compressed source per file (structure and signatures kept, function bodies elided), keyed by the same relative path used everywhere else here. Read a file's entry only once its summary/relationships say it's worth a closer look -- that's the entire point of Ziplex's compression; reading every entry defeats it.
 
 ## Structural questions: use the graph first
 
@@ -112,22 +111,10 @@ def _overview_md(aif: dict) -> str:
     tokens = aif.get("tokens", {})
     files = aif.get("files", {})
 
-    # Real gap found dogfooding Ziplex on its own repo: judging "is this
-    # pack worth trusting" from inside a skill (no MCP server, no GUI
-    # badge) used to mean reading every one of files.md's 100+ confidence
-    # numbers by hand. Same rollup query_service.get_overview() attaches,
-    # shared via confidence.project_confidence_summary() so the two
-    # distribution channels can't report a different number for the same
-    # pack.
-    confidence_summary = project_confidence_summary(files)
-
     lines = [
         "# Overview", "",
         f"**Project**: {project.get('name') or '(unnamed)'}",
         f"**Files**: {len(files)}",
-        f"**Confidence**: {confidence_summary['average']:.2f} average, "
-        f"{confidence_summary['needs_review_count']} file(s) flagged for review "
-        f"(see references/files.md)",
         "",
         "## AI guide", "",
         (project.get("prompt") or "").strip() or "(none)", "",
@@ -149,7 +136,7 @@ def _overview_md(aif: dict) -> str:
             summary = (info.get("summary") or "").replace("|", "\\|").replace("\n", " ")
             count = info.get("file_count")
             count_text = f"{count} file(s)" if count is not None else "file count unknown"
-            lines.append(f"- `{path}` ({count_text}, confidence {info.get('confidence', 1.0):.2f}): {summary}")
+            lines.append(f"- `{path}` ({count_text}): {summary}")
 
     # Free (no LLM call), manifest-based fact block -- see tech_stack.py.
     # Older aif.json files packed before this field existed simply have no
@@ -202,15 +189,15 @@ def _files_md(aif: dict) -> str:
     lines = [
         "# Files", "",
         f"{len(files)} files, sorted by path.", "",
-        "| File | Confidence | Summary |",
-        "|---|---|---|",
+        "| File | Summary |",
+        "|---|---|",
     ]
     for name in sorted(files):
         data = files[name]
         # Escape what would otherwise break the table -- a summary is free-
         # form LLM text, not something this module controls the shape of.
         summary = (data.get("summary") or "").replace("|", "\\|").replace("\n", " ")
-        lines.append(f"| `{name}` | {data.get('confidence', 1.0):.2f} | {summary} |")
+        lines.append(f"| `{name}` | {summary} |")
     return "\n".join(lines) + "\n"
 
 

@@ -51,14 +51,6 @@ def test_generate_flat_markdown_inlines_summary_and_code_together():
     assert "def main():" in app_section
 
 
-def test_generate_flat_markdown_flags_low_confidence_files():
-    md = generate_flat_markdown(_sample_aif(), _sample_detail())
-    utils_section = md[md.index("`src/utils.py`"):]
-    assert "⚠️" in utils_section.splitlines()[0]
-    app_section = md[md.index("`src/app.py`"):md.index("`src/utils.py`")]
-    assert "⚠️" not in app_section.splitlines()[0]
-
-
 def test_generate_flat_markdown_includes_folders_when_present():
     md = generate_flat_markdown(_sample_aif(), _sample_detail())
     assert "`src`" in md

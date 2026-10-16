@@ -31,7 +31,6 @@ from .file.textutil import parent_folder, normalize_path
 from .search import search_files, read_detail_range
 from .freshness import check_freshness_scoped, load_pack_scope, cache_path_for_aif
 from .config import collect_and_scan
-from .confidence import project_confidence_summary
 from .aif_io import attach_weak_edges, expand_relationships, detail_path_for
 
 
@@ -233,7 +232,6 @@ def get_overview(aif_path: str, project_path: str | None = None) -> dict:
         "rules": aif.get("rules", []),
         "tokens": aif.get("tokens", {}),
         "file_count": len(files),
-        "confidence_summary": project_confidence_summary(files),
     }
     warning = _stale_warning(project_path, aif_path)
     if warning:

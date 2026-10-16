@@ -13,7 +13,8 @@ shipping English text for that language in some fixed strings and the
 requested language in others.
 """
 
-from ziplex import llm, packager, summarizer
+from ziplex import packager
+from ziplex.enrich import llm, summarizer
 
 
 def test_every_fixed_string_dict_covers_every_supported_language():

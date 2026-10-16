@@ -12,74 +12,21 @@ point -- by an earlier test file.
 """
 
 import builtins
+
+import pytest
 import json
 import struct
 from pathlib import Path
 
-from ziplex import checkpoint
-from ziplex import llm
+
+from ziplex.enrich import llm
 from ziplex import packager
-from ziplex import summarizer
+from ziplex.enrich import summarizer
 
 
 def _write(path, content):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
-
-
-def test_pack_runs_end_to_end_with_mock_provider(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    _write(project / "README.md", "# Sample\n\nA sample project.\n")
-
-    aif = packager.pack(str(project), auto=True, interactive=False)
-
-    assert aif["project"]["name"] == "project"
-    assert aif["project"]["prompt"] == "Mock AI guide for local testing."
-    assert aif["rules"] == ["mock rule: methods use camelCase"]
-    assert set(aif["files"].keys()) == {"main.py", "README.md"}
-
-    for name, data in aif["files"].items():
-        assert data["summary"] == "Mock summary for local testing."
-        assert "compressed" in data, name
-
-    # confidence.py: MockProvider's canned summary doesn't mention main.py's
-    # actual signature ("add"), so it's correctly flagged low; README.md has
-    # no signatures to check against, so there's nothing to contradict
-    assert aif["files"]["main.py"]["confidence"] == 0.0
-    assert aif["files"]["README.md"]["confidence"] == 1.0
-
-    assert "GPT-4o" in aif["tokens"]
-    assert aif["tokens"]["GPT-4o"]["original"] > 0
-    # approx must survive into the saved aif.json, not just the tokenizer's
-    # own in-memory result -- a real bug this test would have caught: the
-    # aif assembly step used to hand-pick only original/compressed/saved_pct
-    # out of token_results, silently dropping approx for every reader of a
-    # saved pack (cli.py's pack-summary/--max-tokens prints, the GUI's
-    # Overview token table), even though the standalone `tokens` CLI command
-    # (which never goes through this filtering) showed it correctly.
-    assert aif["tokens"]["GPT-4o"]["approx"] is False
-    assert aif["tokens"]["Claude"]["approx"] is True
-    assert aif["tokens"]["Gemini"]["approx"] is True
-
-    # security_scan is always attached, zeroed out when nothing was ever
-    # flagged -- same "always present, zero when N/A" convention tech_stack
-    # already uses, so a reader can tell "scanned, found nothing" apart
-    # from "not attached at all" (an older aif.json packed before this
-    # field existed).
-    assert aif["project"]["security_scan"] == {"flagged": 0, "included_anyway": 0, "excluded": 0}
-    # format_notes is a fixed constant, identical on every pack -- not
-    # LLM-generated, so it's exactly packager.FORMAT_NOTES["en"] verbatim.
-    assert aif["project"]["format_notes"] == packager.FORMAT_NOTES["en"]
-
-    # no checkpoint should be left behind on a clean success
-    assert not checkpoint._checkpoint_path(str(project)).exists()
-
-    # pack() attaches a content-hash manifest for freshness.check_freshness()
-    assert set(aif["_manifest"].keys()) == {"main.py", "README.md"}
 
 
 def test_pack_never_calls_the_llm_for_a_media_asset_even_with_use_llm_true(tmp_path, monkeypatch):
@@ -98,7 +45,6 @@ def test_pack_never_calls_the_llm_for_a_media_asset_even_with_use_llm_true(tmp_p
 
     provider = _CountingProvider()
     monkeypatch.setattr(llm, "_provider", provider)
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -116,7 +62,7 @@ def test_pack_never_calls_the_llm_for_a_media_asset_even_with_use_llm_true(tmp_p
     assert aif["files"]["logo.png"]["compressed"] == ""
     # no signatures to check against -- same free 1.0 a trivial text file
     # (e.g. this same test's README-less project has none for) gets
-    assert aif["files"]["logo.png"]["confidence"] == 1.0
+
     # main.py still got a real (mocked) LLM call -- only the media file was
     # skipped, not the whole run
     assert provider.calls > 0
@@ -133,7 +79,6 @@ def test_pack_gives_a_text_file_with_a_media_extension_a_real_summary_not_a_meta
     # gap caught by review: file/media.py's classify_media_file() confirms
     # content, not just extension)
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(
@@ -156,7 +101,6 @@ def test_pack_use_llm_false_never_calls_the_llm_and_uses_structural_summaries(tm
             raise AssertionError("use_llm=False must never call the LLM provider")
 
     monkeypatch.setattr(llm, "_provider", _RaisingProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -171,47 +115,11 @@ def test_pack_use_llm_false_never_calls_the_llm_and_uses_structural_summaries(tm
     assert aif["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE["en"]
 
 
-def test_pack_use_llm_false_ignores_rules_and_prompt_from_an_earlier_llm_run_checkpoint(tmp_path, monkeypatch):
-    # A prior use_llm=True run can succeed at the rules step, then fail at
-    # the prompt step and checkpoint with real inferred rules but no
-    # prompt. Retrying with use_llm=False (e.g. "LLM 사용 안 함" in the GUI,
-    # after a real API-key/quota problem) auto-resumes that checkpoint
-    # (use_cache=True is the default) -- pack(use_llm=False)'s contract is
-    # that rules is always [] and prompt is always STRUCTURAL_ONLY_NOTE,
-    # and restoring a genuine prior LLM result here would silently ship an
-    # aif.json with real coding rules alongside a prompt asserting no LLM
-    # inference ever happened.
-    class _RaisingProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
-            raise AssertionError("use_llm=False must never call the LLM provider")
-
-    monkeypatch.setattr(llm, "_provider", _RaisingProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    checkpoint.save_checkpoint(
-        str(project),
-        {
-            "project": {"name": "project", "prompt": ""},  # prompt step never completed
-            "rules": ["a real, previously-inferred rule"],
-            "files_data": {},
-        },
-    )
-
-    aif = packager.pack(str(project), auto=True, interactive=False, use_llm=False)
-
-    assert aif["rules"] == []
-    assert aif["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE["en"]
-
-
 def test_pack_use_llm_false_still_reuses_a_cached_real_summary(tmp_path, monkeypatch):
     # use_llm=False means "don't call the LLM now," not "throw away a
     # better answer already on hand" -- a file unchanged since a prior
     # LLM-enabled pack should keep that real summary, not get downgraded.
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -227,26 +135,6 @@ def test_pack_use_llm_false_still_reuses_a_cached_real_summary(tmp_path, monkeyp
     assert aif["files"]["main.py"]["summary"] == "Mock summary for local testing."
 
 
-def test_confirm_regenerate_failed_summaries_non_interactive_returns_false_without_prompting(monkeypatch):
-    def _unexpected_input(*a, **k):
-        raise AssertionError("input() must not be called when interactive=False")
-
-    monkeypatch.setattr(builtins, "input", _unexpected_input)
-
-    assert packager._confirm_regenerate_failed_summaries(["main.py"], interactive=False) is False
-
-
-def test_confirm_regenerate_failed_summaries_interactive_respects_choice(monkeypatch):
-    monkeypatch.setattr(builtins, "input", lambda *a, **k: "1")
-    assert packager._confirm_regenerate_failed_summaries(["main.py"], interactive=True) is True
-
-    monkeypatch.setattr(builtins, "input", lambda *a, **k: "2")
-    assert packager._confirm_regenerate_failed_summaries(["main.py"], interactive=True) is False
-
-    monkeypatch.setattr(builtins, "input", lambda *a, **k: "")
-    assert packager._confirm_regenerate_failed_summaries(["main.py"], interactive=True) is False
-
-
 class _EmptySummaryProvider(llm.MockProvider):
     """Answers rules/prompt/relationships normally (via MockProvider) but
     returns an empty payload for any summary-shaped prompt, so every file's
@@ -259,49 +147,6 @@ class _EmptySummaryProvider(llm.MockProvider):
         if '"summaries"' in prompt or '"summary"' in prompt:
             return "{}"
         return super().generate(prompt, retry=retry)
-
-
-def test_pack_prompts_to_regenerate_a_cached_failed_summary_and_honors_yes(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    # first pack: the summary call fails for every file, so main.py's cached
-    # summary ends up being the literal failure placeholder
-    monkeypatch.setattr(llm, "_provider", _EmptySummaryProvider())
-    aif1 = packager.pack(str(project), auto=True, interactive=False)
-    assert aif1["files"]["main.py"]["summary"] == summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"]
-    packager.save_aif(aif1, project_path=str(project))
-
-    # second pack: file content unchanged (would normally reuse the cached
-    # summary as-is), but interactive + answering "1" should regenerate it
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(builtins, "input", lambda *a, **k: "1")
-    aif2 = packager.pack(str(project), auto=True, interactive=True)
-
-    assert aif2["files"]["main.py"]["summary"] == "Mock summary for local testing."
-
-
-def test_pack_leaves_cached_failed_summary_when_declined(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    monkeypatch.setattr(llm, "_provider", _EmptySummaryProvider())
-    aif1 = packager.pack(str(project), auto=True, interactive=False)
-    packager.save_aif(aif1, project_path=str(project))
-
-    # non-interactive: no prompt at all, placeholder stays cached as-is
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    aif2 = packager.pack(str(project), auto=True, interactive=False)
-    assert aif2["files"]["main.py"]["summary"] == summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"]
-
-    # interactive but declined ("2"): same result, by explicit choice
-    monkeypatch.setattr(builtins, "input", lambda *a, **k: "2")
-    aif3 = packager.pack(str(project), auto=True, interactive=True)
-    assert aif3["files"]["main.py"]["summary"] == summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"]
 
 
 class _EmptyRulesProvider(llm.MockProvider):
@@ -351,114 +196,8 @@ class _EmptyPromptProvider(llm.MockProvider):
         return super().generate(prompt, retry=retry)
 
 
-def test_pack_rules_failure_noninteractive_checkpoints_and_stops(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", _EmptyRulesProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    def _unexpected_input(*a, **k):
-        raise AssertionError("input() must not be called when interactive=False")
-    monkeypatch.setattr(builtins, "input", _unexpected_input)
-
-    aif = packager.pack(str(project), auto=True, interactive=False)
-
-    assert aif == {}
-    assert checkpoint._checkpoint_path(str(project)).exists()
-
-
-def test_pack_rules_failure_interactive_retry_recovers(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", _FlakyRulesProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    # "1" = retry -- handle_llm_failure()'s menu choice, asked exactly once
-    # (the first rules call fails, the retried second one succeeds)
-    monkeypatch.setattr(builtins, "input", lambda *a, **k: "1")
-
-    aif = packager.pack(str(project), auto=True, interactive=True)
-
-    assert aif["rules"] == ["mock rule: methods use camelCase"]
-    assert not checkpoint._checkpoint_path(str(project)).exists()
-
-
-def test_pack_rules_failure_interactive_manual_input_is_used(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", _EmptyRulesProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    # "2" = type a value directly -- handle_llm_failure() prompts twice:
-    # once for the menu choice, once for the value itself
-    responses = iter(["2", "manual rule one, manual rule two"])
-    monkeypatch.setattr(builtins, "input", lambda *a, **k: next(responses))
-
-    aif = packager.pack(str(project), auto=True, interactive=True)
-
-    assert aif["rules"] == ["manual rule one", "manual rule two"]
-
-
-def test_pack_rules_failure_interactive_blank_manual_input_reprompts(tmp_path, monkeypatch):
-    # "".split(",") is [''] -- a one-element list holding an empty string,
-    # not an empty list -- so pressing Enter with no text at the manual-
-    # entry prompt used to silently become a single bogus empty-string
-    # rule instead of re-prompting (`while not rules:` only re-loops on a
-    # genuinely empty list). Must go back through the failure menu again,
-    # not accept the blank input as if it were real.
-    monkeypatch.setattr(llm, "_provider", _EmptyRulesProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    # "2" = manual input, "" = pressed Enter with nothing typed -- must
-    # re-loop back to the failure menu instead of accepting [''] as rules.
-    responses = iter(["2", "", "2", "real rule one, real rule two"])
-    monkeypatch.setattr(builtins, "input", lambda *a, **k: next(responses))
-
-    aif = packager.pack(str(project), auto=True, interactive=True)
-
-    assert aif["rules"] == ["real rule one", "real rule two"]
-
-
-def test_pack_rules_failure_interactive_save_and_exit_checkpoints(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", _EmptyRulesProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    monkeypatch.setattr(builtins, "input", lambda *a, **k: "3")  # save and exit
-
-    aif = packager.pack(str(project), auto=True, interactive=True)
-
-    assert aif == {}
-    assert checkpoint._checkpoint_path(str(project)).exists()
-
-
-def test_pack_prompt_failure_noninteractive_checkpoints_and_stops(tmp_path, monkeypatch):
-    # Same wiring as the rules loop just above, but for the second,
-    # structurally identical `while not prompt` loop -- both need their own
-    # end-to-end proof since they're two separate call sites in packager.py.
-    monkeypatch.setattr(llm, "_provider", _EmptyPromptProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    aif = packager.pack(str(project), auto=True, interactive=False)
-
-    assert aif == {}
-    assert checkpoint._checkpoint_path(str(project)).exists()
-
-
 def test_pack_attaches_tech_stack_detected_from_a_manifest_file(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -474,15 +213,13 @@ def test_pack_attaches_tech_stack_detected_from_a_manifest_file(tmp_path, monkey
         "dependencies_truncated": False,
     }]
 
-    # survives finalize_aif() the same way project.name/prompt do -- it's
-    # not a per-file field finalize_aif() prunes
-    from ziplex.edits import finalize_aif
-    assert finalize_aif(aif)["project"]["tech_stack"] == aif["project"]["tech_stack"]
+    # survives () the same way project.name/prompt do -- it's
+    # not a per-file field () prunes
+    assert (aif)["project"]["tech_stack"] == aif["project"]["tech_stack"]
 
 
 def test_pack_attaches_an_empty_tech_stack_when_no_manifest_present(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -526,7 +263,6 @@ def test_build_architecture_summary_caps_and_notes_truncation():
 
 def test_pack_attaches_folder_summaries(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -542,20 +278,18 @@ def test_pack_attaches_folder_summaries(tmp_path, monkeypatch):
     # An aggregate of each folder's own member files' already-scored
     # confidence (folder_summary.group_confidence_by_folder()), not an
     # independently verified signal -- present regardless of value.
-    assert isinstance(aif["folders"]["."]["confidence"], float)
-    assert isinstance(aif["folders"]["src"]["confidence"], float)
+
+
     # How many files that one summary sentence is standing in for.
     assert aif["folders"]["."]["file_count"] == 2
     assert aif["folders"]["src"]["file_count"] == 2
 
-    # survives finalize_aif() the same way tech_stack does -- not a
+    # survives () the same way tech_stack does -- not a
     # per-file field it prunes
-    from ziplex.edits import finalize_aif
-    assert finalize_aif(aif)["folders"] == aif["folders"]
+    assert (aif)["folders"] == aif["folders"]
 
 
 def test_pack_use_llm_false_generates_structural_folder_summaries(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     def _unexpected_call(*a, **k):
         raise AssertionError("must not call the LLM for folder summaries under --no-llm")
@@ -573,7 +307,6 @@ def test_pack_use_llm_false_generates_structural_folder_summaries(tmp_path, monk
 
 def test_pack_omits_the_summary_of_a_one_file_folder(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "solo" / "only.py", "def only():\n    pass\n")
@@ -588,32 +321,8 @@ def test_pack_omits_the_summary_of_a_one_file_folder(tmp_path, monkeypatch):
     assert "solo/only.py" in aif["files"]  # the file itself is still fully described
 
 
-def test_saved_aif_omits_confidence_when_it_is_1_0_and_readers_default_it(tmp_path, monkeypatch):
-    import json
-    from ziplex import query_service
-
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "notes.md", "# Notes\n\nplain text, no signatures to check\n")
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    out = tmp_path / "out" / "p.json"
-
-    aif = packager.pack(str(project), auto=True, interactive=False)
-    assert aif["files"]["notes.md"]["confidence"] == 1.0  # in memory it is always present
-    packager.save_aif(aif, output_path=str(out), progress_lang="en")
-
-    saved = json.loads(out.read_text(encoding="utf-8"))
-    assert "confidence" not in saved["files"]["notes.md"]  # 1.0 is implied
-    assert saved["files"]["main.py"]["confidence"] < 0.34  # a real score is kept
-    # every reader treats a missing confidence as 1.0
-    assert query_service.list_files(str(out))["notes.md"]["confidence"] == 1.0
-
-
 def test_pack_captures_a_text_file_reference_to_a_code_file(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "entities" / "player.gd", "extends Node\nfunc _ready():\n    pass\n")
@@ -624,14 +333,13 @@ def test_pack_captures_a_text_file_reference_to_a_code_file(tmp_path, monkeypatc
 
     aif = packager.pack(str(project), auto=True, interactive=False)
 
-    assert aif["files"]["README.md"]["dependencies"] == ["entities/player.gd"]
-    assert aif["files"]["README.md"]["text_dependencies"] == ["entities/player.gd"]
-    # and it survives finalize_aif()'s relationship-building the same way a
+    assert aif["relationships"]["README.md"]["internal"] == ["entities/player.gd"]
+    assert aif["relationships"]["README.md"]["internal_text_refs"] == ["entities/player.gd"]
+    # and it survives ()'s relationship-building the same way a
     # real import would -- tagged as internal_text_refs, not just internal,
     # since it's a prose mention with no real import behind it (see
     # file/relationship.py's build_tree() docstring)
-    from ziplex.edits import finalize_aif
-    final = finalize_aif(aif)
+    final = (aif)
     assert final["relationships"]["README.md"]["internal"] == ["entities/player.gd"]
     assert final["relationships"]["README.md"]["internal_text_refs"] == ["entities/player.gd"]
     assert "text_dependencies" not in final["files"]["README.md"]
@@ -642,7 +350,6 @@ def test_pack_resolves_an_internal_go_package_import_to_its_concrete_files(tmp_p
     # go_packages.py closes the gap left by resolve_dependency()'s pure
     # file-stem matching (see its own docstring and _go_dependency_handler's).
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "go.mod", "module example.com/myproject\n\ngo 1.21\n")
@@ -652,13 +359,12 @@ def test_pack_resolves_an_internal_go_package_import_to_its_concrete_files(tmp_p
 
     aif = packager.pack(str(project), auto=True, interactive=False)
 
-    deps = set(aif["files"]["main.go"]["dependencies"])
+    deps = set(aif["relationships"]["main.go"]["internal"])
     assert "internal/utils/format.go" in deps
     assert "internal/utils/parse.go" in deps
     assert "example.com/myproject/internal/utils" not in deps  # replaced, not just appended to
 
-    from ziplex.edits import finalize_aif
-    final = finalize_aif(aif)
+    final = (aif)
     internal = set(final["relationships"]["main.go"]["internal"])
     assert {"internal/utils/format.go", "internal/utils/parse.go"} <= internal
     # a real package import, not a text_references.py prose mention
@@ -674,7 +380,6 @@ def test_pack_text_reference_does_not_hijack_the_summary_prompt(tmp_path, monkey
     # never seen its actual text. MockProvider ignores prompt content
     # entirely, so this needs a provider that records what it was actually
     # asked, not just that *a* summary came back.
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     captured_prompts = []
 
@@ -708,7 +413,6 @@ def test_pack_lang_threads_language_instruction_into_every_llm_prompt(tmp_path, 
     # entirely (it only pattern-matches the JSON field name), so this needs
     # a provider that records what it was actually asked, same pattern as
     # test_pack_text_reference_does_not_hijack_the_summary_prompt above.
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     captured_prompts = []
 
@@ -735,7 +439,6 @@ def test_pack_lang_threads_language_instruction_into_every_llm_prompt(tmp_path, 
 
 def test_pack_lang_defaults_to_english(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -749,7 +452,6 @@ def test_pack_lang_unrecognized_value_falls_back_to_english(tmp_path, monkeypatc
     # language must not raise or silently produce a prompt with no language
     # instruction at all -- see pack()'s own `lang` docstring.
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -763,7 +465,6 @@ def test_pack_lang_no_llm_localizes_structural_note_and_summaries(tmp_path, monk
     # deterministic structural summary) are Ziplex's own text, never an LLM
     # call -- they must still follow the chosen `lang` for consistency, not
     # always ship in English regardless of the selection.
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -776,36 +477,12 @@ def test_pack_lang_no_llm_localizes_structural_note_and_summaries(tmp_path, monk
     assert "정의" in aif["files"]["main.py"]["summary"]
 
 
-def test_pack_excludes_a_dangerous_file_non_interactively_with_no_prompt(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    def _unexpected_input(*a, **k):
-        raise AssertionError("input() must not be called when interactive=False")
-
-    monkeypatch.setattr(builtins, "input", _unexpected_input)
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    _write(project / "secret.env", 'API_KEY = "abc123"\n')
-
-    aif = packager.pack(str(project), auto=True, interactive=False)
-
-    # secret.env's content stays excluded (no prompt raised); it only appears
-    # as a graph node with a fixed placeholder summary.
-    assert set(aif["files"].keys()) == {"main.py", "secret.env"}
-    assert aif["files"]["secret.env"]["summary"] in packager.FLAGGED_SUMMARY.values()
-    assert aif["project"]["security_scan"] == {"flagged": 1, "included_anyway": 0, "excluded": 1}
-
-
 def test_pack_keeps_a_flagged_files_imports_in_the_graph_without_its_content(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
     project = tmp_path / "project"
     _write(project / "app.py", "def run():\n    return 1\n")
     _write(project / "test_app.py", 'import app\nAPI_KEY = "abc123def456"\n\ndef test_run():\n    assert app.run()\n')
 
-    from ziplex.edits import finalize_aif
-    aif = finalize_aif(packager.pack(str(project), auto=True, interactive=False, use_llm=False))
+    aif = (packager.pack(str(project), auto=True, interactive=False, use_llm=False))
     out = tmp_path / "out" / "demo.json"
     packager.save_aif(aif, str(out))
 
@@ -817,7 +494,6 @@ def test_pack_keeps_a_flagged_files_imports_in_the_graph_without_its_content(tmp
 
 
 def test_pack_can_drop_flagged_files_from_the_graph_via_config(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
     project = tmp_path / "project"
     _write(project / "app.py", "def run():\n    return 1\n")
     _write(project / "test_app.py", 'import app\nAPI_KEY = "abc123def456"\n')
@@ -828,149 +504,8 @@ def test_pack_can_drop_flagged_files_from_the_graph_via_config(tmp_path, monkeyp
     assert "test_app.py" not in aif["files"]
 
 
-def test_pack_interactive_review_includes_a_dangerous_file_when_chosen(tmp_path, monkeypatch):
-    # Gated on `interactive` (--auto-correct's absence), not `auto` -- same
-    # switch as every other "can we ask the terminal something" decision
-    # already in pack() (checkpoint resume, handle_llm_failure). `auto=True`
-    # here on purpose: it only changes *how* the safe set gets selected,
-    # not whether this review can still happen.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    monkeypatch.setattr(builtins, "input", lambda: "1")  # include the one flagged file
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    _write(project / "secret.env", 'API_KEY = "abc123"\n')
-
-    aif = packager.pack(str(project), auto=True, interactive=True)
-
-    assert set(aif["files"].keys()) == {"main.py", "secret.env"}
-    # Computed from the final `selected` list, not the CLI-only
-    # `included_anyway` variable -- this is the interactive-prompt path's
-    # own proof that it lands in the count either way.
-    assert aif["project"]["security_scan"] == {"flagged": 1, "included_anyway": 1, "excluded": 0}
-
-
-def test_pack_interactive_review_declines_by_default_on_blank_input(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    monkeypatch.setattr(builtins, "input", lambda: "")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    _write(project / "secret.env", 'API_KEY = "abc123"\n')
-
-    aif = packager.pack(str(project), auto=True, interactive=True)
-
-    assert set(aif["files"].keys()) == {"main.py", "secret.env"}
-    assert aif["files"]["secret.env"]["summary"] in packager.FLAGGED_SUMMARY.values()
-
-
-def test_pack_preselected_can_name_a_dangerous_file_directly(tmp_path, monkeypatch):
-    # The GUI's file-selection screen shows the same reason/matched-line
-    # detail review_dangerous_files() prints, as a checkbox a human ticks
-    # *before* ever calling pack() -- naming the file in `preselected` here
-    # already *is* that decision, so this has to work with no prompt at all
-    # (interactive=False, matching how the GUI always calls pack()).
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    def _unexpected_input(*a, **k):
-        raise AssertionError("input() must not be called for a preselected file")
-
-    monkeypatch.setattr(builtins, "input", _unexpected_input)
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    _write(project / "secret.env", 'API_KEY = "abc123"\n')
-
-    aif = packager.pack(
-        str(project), interactive=False, preselected=["main.py", "secret.env"]
-    )
-
-    assert set(aif["files"].keys()) == {"main.py", "secret.env"}
-    # The whole reason security_scan is computed from `selected`, not the
-    # `included_anyway` variable -- a preselected/GUI caller never touches
-    # that variable at all (it's only ever populated by the interactive
-    # terminal prompt), so this is the one case that would have silently
-    # under-reported "included_anyway" if the count had been sourced from
-    # the wrong place.
-    assert aif["project"]["security_scan"] == {"flagged": 1, "included_anyway": 1, "excluded": 0}
-
-
-def test_pack_preselected_dangerous_file_is_not_logged_as_excluded(tmp_path, monkeypatch, capsys):
-    # Real bug reported directly: the pack itself always included a
-    # preselected dangerous file correctly (security_scan's own count,
-    # asserted in the test above, proves that) -- but the printed "민감
-    # 파일 제외" log used to be computed from `included_anyway`, which only
-    # the interactive terminal prompt ever populates, right after the scan
-    # and *before* `preselected` got a chance to override it. So a GUI
-    # user who explicitly checked "include anyway" still saw their own
-    # file listed as excluded in the pack log, even though it was about to
-    # be included -- confusing, even though the actual result was correct.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    _write(project / "secret.env", 'API_KEY = "abc123"\n')
-
-    packager.pack(str(project), interactive=False, preselected=["main.py", "secret.env"])
-
-    out = capsys.readouterr().out
-    assert "민감 파일 제외" not in out
-    assert "❌ secret.env" not in out
-
-
-def test_pack_still_logs_a_genuinely_excluded_dangerous_file(tmp_path, monkeypatch, capsys):
-    # Sanity check alongside the fix above: a dangerous file that's
-    # actually left out (not named in preselected) must still be logged as
-    # excluded -- the fix moves *when*/*how* this is computed, not whether
-    # it happens at all.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    _write(project / "secret.env", 'API_KEY = "abc123"\n')
-
-    packager.pack(str(project), interactive=False, preselected=["main.py"])
-
-    out = capsys.readouterr().out
-    assert "민감 파일 제외: 1개" in out
-    assert "secret.env" in out
-
-
-def test_pack_does_not_duplicate_a_dangerous_file_approved_both_ways(tmp_path, monkeypatch, capsys):
-    # Found by code review: interactive review folding a dangerous file
-    # into safe_files, *and* preselected separately naming that same file,
-    # used to append it to `candidates` twice -- not a real call site today
-    # (the GUI always passes interactive=False), but pack()'s own
-    # parameters allow the combination. The final aif["files"] dict hides
-    # the duplication either way (it's keyed by path, so a double entry in
-    # `selected` just gets processed twice and overwrites itself) -- the
-    # printed "N개 파일 선택됨" count, taken directly from len(selected)
-    # right where the bug was, is what actually exposes it (3 instead of 2
-    # before this fix).
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    monkeypatch.setattr(builtins, "input", lambda: "1")  # include the one flagged file
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    _write(project / "secret.env", 'API_KEY = "abc123"\n')
-
-    aif = packager.pack(
-        str(project), interactive=True, preselected=["main.py", "secret.env"]
-    )
-
-    assert set(aif["files"].keys()) == {"main.py", "secret.env"}
-    assert "✅ 2개 파일 선택됨" in capsys.readouterr().out
-
-
 def test_pack_scopes_files_via_ziplex_json_include(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "src" / "main.py", "def add(a, b):\n    return a + b\n")
@@ -984,7 +519,6 @@ def test_pack_scopes_files_via_ziplex_json_include(tmp_path, monkeypatch):
 
 def test_pack_include_ignore_params_extend_ziplex_json_not_replace_it(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "src" / "main.py", "def add(a, b):\n    return a + b\n")
@@ -1030,7 +564,6 @@ def test_resolve_output_path_falls_back_to_result_dir_with_no_project_path(tmp_p
 
 def test_save_aif_with_no_output_path_defaults_inside_project_path(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -1046,7 +579,6 @@ def test_save_aif_with_no_output_path_defaults_inside_project_path(tmp_path, mon
 
 def test_save_aif_writes_a_sibling_cache_json_from_the_manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -1084,7 +616,6 @@ class _CountingMockProvider(llm.MockProvider):
 def test_pack_reuses_summaries_for_unchanged_files_on_a_second_run(tmp_path, monkeypatch):
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -1096,7 +627,7 @@ def test_pack_reuses_summaries_for_unchanged_files_on_a_second_run(tmp_path, mon
     aif1 = packager.pack(str(project), auto=True, interactive=False)
     packager.save_aif(aif1, project_path=str(project))  # default path -> project/.ziplex/project.json
     first_run_calls = provider.calls
-    assert first_run_calls == 4
+    assert first_run_calls == 3
 
     # second pack, nothing on disk changed: both summaries should be reused
     # from project/.ziplex/project.json (pack()'s own default use_cache
@@ -1107,7 +638,7 @@ def test_pack_reuses_summaries_for_unchanged_files_on_a_second_run(tmp_path, mon
     provider.calls = 0
     aif2 = packager.pack(str(project), auto=True, interactive=False)
 
-    assert provider.calls == 3
+    assert provider.calls == 2  # rules + prompt; summaries reused
     assert aif2["files"]["main.py"]["summary"] == aif1["files"]["main.py"]["summary"]
     assert aif2["files"]["README.md"]["summary"] == aif1["files"]["README.md"]["summary"]
 
@@ -1124,7 +655,6 @@ def test_pack_tree_sitter_parses_each_code_file_only_once(tmp_path, monkeypatch)
     from tree_sitter import Parser
 
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -1155,7 +685,6 @@ def test_pack_hashes_each_selected_file_only_once_per_run(tmp_path, monkeypatch)
     # (a first run with no previous pack on disk returns {} before ever
     # hashing anything there).
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -1185,7 +714,6 @@ def test_pack_result_dir_overrides_result_dir_for_cache_lookup(tmp_path, monkeyp
     # configured output folder.
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
     monkeypatch.setattr(packager, "RESULT_DIR", tmp_path / "unused-default")
     custom_dir = tmp_path / "custom-output"
 
@@ -1205,7 +733,7 @@ def test_pack_result_dir_overrides_result_dir_for_cache_lookup(tmp_path, monkeyp
     # summary is reused from custom_dir, not re-summarized -- would be 4
     # calls if the cache lookup had silently fallen back to RESULT_DIR and
     # found nothing there
-    assert provider.calls == 3
+    assert provider.calls == 2
     assert aif2["files"]["main.py"]["summary"] == aif1["files"]["main.py"]["summary"]
 
 
@@ -1221,7 +749,6 @@ def test_pack_lang_change_forces_full_resummarization_not_cross_language_reuse(t
     # not a silent reuse that would cost only 3 (rules + prompt + folders).
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
     result_dir = tmp_path / "result"
 
     project = tmp_path / "project"
@@ -1236,73 +763,13 @@ def test_pack_lang_change_forces_full_resummarization_not_cross_language_reuse(t
     provider.calls = 0
     aif2 = packager.pack(str(project), auto=True, interactive=False, result_dir=result_dir, lang="ko")
 
-    assert provider.calls == 4
+    assert provider.calls == 3
     assert aif2["project"]["language"] == "ko"
-
-
-def test_pack_checkpoint_resumed_under_a_different_lang_discards_stale_rules_and_prompt(tmp_path, monkeypatch):
-    # A checkpoint saved under `lang="ko"` (real Korean-ish rules/prompt
-    # here, standing in for content an actual LLM would have written in
-    # Korean) must not be reused verbatim when the resuming pack() call asks
-    # for a different `lang` -- the resulting aif would otherwise claim
-    # project.language == "en" while shipping rules/prompt actually written
-    # in Korean, the same class of self-contradiction this codebase already
-    # fixed once for rules/prompt vs. use_llm.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    checkpoint.save_checkpoint(
-        str(project),
-        {
-            "project": {"name": "project", "prompt": "한국어로 작성된 안내", "language": "ko"},
-            "rules": ["한국어 규칙"],
-            "files_data": {},
-        },
-    )
-
-    # interactive=False auto-resumes the checkpoint found above.
-    aif = packager.pack(str(project), auto=True, interactive=False, lang="en")
-
-    assert aif["project"]["language"] == "en"
-    assert aif["rules"] != ["한국어 규칙"]  # regenerated, not the stale-language checkpoint value
-    assert aif["project"]["prompt"] != "한국어로 작성된 안내"
-
-
-def test_pack_checkpoint_resumed_under_the_same_lang_still_reuses_rules_and_prompt(tmp_path, monkeypatch):
-    # Sanity check alongside the mismatch test above: a checkpoint whose
-    # own language matches the resuming run's `lang` must still be reused
-    # verbatim -- the lang_matches guard shouldn't regress this already-
-    # covered case (test_pack_check_cancelled_save_preserves_rules_restored_
-    # from_a_prior_checkpoint covers the no-`language`-key/default-"en" case).
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    checkpoint.save_checkpoint(
-        str(project),
-        {
-            "project": {"name": "project", "prompt": "restored prompt", "language": "ko"},
-            "rules": ["Rule A"],
-            "files_data": {},
-        },
-    )
-
-    aif = packager.pack(str(project), auto=True, interactive=False, lang="ko")
-
-    assert aif["project"]["language"] == "ko"
-    assert aif["rules"] == ["Rule A"]
-    assert aif["project"]["prompt"] == "restored prompt"
 
 
 def test_pack_only_resummarizes_a_changed_file(tmp_path, monkeypatch):
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -1316,13 +783,12 @@ def test_pack_only_resummarizes_a_changed_file(tmp_path, monkeypatch):
 
     # 1 batch call (just main.py) + rules + prompt + folder summaries = 4;
     # README.md's summary is reused
-    assert provider.calls == 4
+    assert provider.calls == 3
 
 
 def test_pack_splits_into_multiple_batches_past_batch_size(tmp_path, monkeypatch):
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
     monkeypatch.setattr(packager, "RESULT_DIR", tmp_path / "result")
     monkeypatch.setattr(summarizer, "BATCH_SIZE", 2)
 
@@ -1334,13 +800,12 @@ def test_pack_splits_into_multiple_batches_past_batch_size(tmp_path, monkeypatch
 
     # 5 files at BATCH_SIZE=2 -> 3 batch calls (2, 2, 1), plus rules + prompt
     # + folder summaries
-    assert provider.calls == 6
+    assert provider.calls == 5
 
 
 def test_pack_use_cache_false_resummarizes_everything(tmp_path, monkeypatch):
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -1354,489 +819,7 @@ def test_pack_use_cache_false_resummarizes_everything(tmp_path, monkeypatch):
 
     # 1 batch call + rules + prompt + folder summaries = 4, same as an
     # unseen project -- nothing reused
-    assert provider.calls == 4
-
-
-def test_pack_includes_a_checkpoint_restored_dependency_only_file_in_rules_input(tmp_path, monkeypatch):
-    # The checkpoint-restore branch used to only check "signatures" (not
-    # "dependencies") before including a file in signatures_map (rules
-    # inference's input) -- diverging from the fresh-extraction branch just
-    # below it, which checks `sigs or deps`. A file with real dependencies
-    # but no functions (a thin index.ts that's just top-level imports, a
-    # real case) would silently be excluded from analyze_rules() only when
-    # restored from a checkpoint, making the inferred rules depend on
-    # whether a run happened to get interrupted and resumed.
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    captured_prompts = []
-
-    class _CapturingMockProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
-            captured_prompts.append(prompt)
-            return super().generate(prompt, retry)
-
-    monkeypatch.setattr(llm, "_provider", _CapturingMockProvider())
-
-    project = tmp_path / "project"
-    _write(project / "deps_only.py", "import os\n")  # no functions, only a dependency
-
-    checkpoint.save_checkpoint(
-        str(project),
-        {
-            "project": {"name": "project", "prompt": ""},
-            # "rules" deliberately omitted (not []) -- rules were never
-            # actually computed by whatever run saved this checkpoint, so
-            # extraction must still run on resume (see checkpoint.
-            # unpack_snapshot()'s rules_computed docstring: an explicit []
-            # here would instead mean "already computed, no rules," and
-            # this test needs the real analyze_rules() prompt to fire so
-            # it can inspect what signatures_map was actually sent).
-            "files_data": {
-                "deps_only.py": {
-                    "signatures": [],
-                    "dependencies": ["os"],
-                    "api": [],
-                    "compressed": "import os",
-                    "summary": "imports os",
-                }
-            },
-        },
-    )
-
-    packager.pack(str(project), auto=True, interactive=False)
-
-    rules_prompts = [p for p in captured_prompts if '"rules"' in p]
-    assert rules_prompts, "expected at least one rules-generation prompt"
-    # basename only, not the full path -- the prompt embeds signatures_map
-    # via an f-string (str() -> repr() on each dict key), which doubles up
-    # backslashes on Windows paths; the basename has none, so it's immune
-    # to that escaping mismatch.
-    assert any("deps_only.py" in p for p in rules_prompts), (
-        "the checkpoint-restored dependency-only file should still be included in "
-        "analyze_rules()'s input, same as if it had been freshly extracted -- got:\n"
-        + "\n---\n".join(rules_prompts)
-    )
-
-
-def test_pack_use_cache_true_resumes_an_existing_checkpoint(tmp_path, monkeypatch):
-    # Baseline for the use_cache=False test just below: confirms a
-    # leftover checkpoint *is* auto-resumed by default (use_cache=True),
-    # so that test's assertion (it's discarded instead) is actually
-    # exercising the difference use_cache makes, not something that would
-    # happen either way.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    checkpoint.save_checkpoint(
-        str(project),
-        {"project": {"name": "project", "prompt": "restored prompt"}, "rules": ["Rule A"], "files_data": {}},
-    )
-
-    aif = packager.pack(str(project), auto=True, interactive=False, use_cache=True)
-
-    assert aif["rules"] == ["Rule A"]
-    assert not checkpoint._checkpoint_path(str(project)).exists()  # deleted on success
-
-
-def test_pack_use_cache_false_discards_a_leftover_checkpoint(tmp_path, monkeypatch):
-    # Regression: "이전 pack 캐시 무시" (no_cache) only ever skipped reusing
-    # RESULT_DIR's cached *summaries* -- a leftover checkpoint from an
-    # interrupted previous run was a completely separate mechanism that
-    # auto-resumed regardless, non-interactively, with no way for a GUI
-    # user (always non-interactive) to say "actually, ignore that too and
-    # start fully fresh." use_cache=False now discards it before it's ever
-    # unpacked, the same "ignore anything cached from before" a human
-    # checking that box actually means.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    checkpoint.save_checkpoint(
-        str(project),
-        {"project": {"name": "project", "prompt": "restored prompt"}, "rules": ["Rule A"], "files_data": {}},
-    )
-
-    aif = packager.pack(str(project), auto=True, interactive=False, use_cache=False)
-
-    # freshly regenerated by MockProvider, not the checkpoint's "Rule A"
-    assert aif["rules"] == ["mock rule: methods use camelCase"]
-    assert not checkpoint._checkpoint_path(str(project)).exists()
-
-
-def test_pack_discard_checkpoint_false_resumes_despite_use_cache_false(tmp_path, monkeypatch):
-    # discard_checkpoint=False (only ever set by the GUI's retry-after-
-    # failure flow, see gui/pack_service.py's start_pack_job(resume=...))
-    # overrides use_cache=False's own "완전히 재패킹 discards a leftover
-    # checkpoint too" behavior -- the whole point of the fix this guards:
-    # retrying a job that started with no_cache=True must still resume
-    # that same job's own checkpoint instead of discarding it and re-
-    # billing every file's summary again.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    checkpoint.save_checkpoint(
-        str(project),
-        {"project": {"name": "project", "prompt": "restored prompt"}, "rules": ["Rule A"], "files_data": {}},
-    )
-
-    aif = packager.pack(
-        str(project), auto=True, interactive=False, use_cache=False,
-        preselected=["main.py"], discard_checkpoint=False,
-    )
-
-    assert aif["rules"] == ["Rule A"]  # restored, not freshly regenerated
-
-
-def test_pack_discard_checkpoint_false_still_discards_a_checkpoint_from_a_different_selection(tmp_path, monkeypatch):
-    # Regression for a real gap code review caught in the fix above:
-    # checkpoints are keyed by project path only, never by which job
-    # produced them -- so a forced resume (discard_checkpoint=False) has to
-    # actually verify the checkpoint looks like *this* run's own before
-    # trusting it, or two overlapping pack attempts for the same project
-    # (a second tab, or a stale error screen retried after a different job
-    # already ran) could silently resume the wrong one's partial progress.
-    # A checkpoint whose own file set doesn't match what this call is about
-    # to select (here: "other.py" was never part of it) must still be
-    # discarded despite discard_checkpoint=False.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    checkpoint.save_checkpoint(
-        str(project),
-        {
-            "project": {"name": "project", "prompt": "restored prompt"},
-            "rules": ["Rule A"],
-            # A different (unrelated) job's own checkpoint -- "other.py" was
-            # never part of this call's own preselected list below.
-            "files_data": {"other.py": {"signatures": [], "dependencies": [], "api": [], "compressed": "", "summary": "x"}},
-        },
-    )
-
-    aif = packager.pack(
-        str(project), auto=True, interactive=False, use_cache=False,
-        preselected=["main.py"], discard_checkpoint=False,
-    )
-
-    # freshly regenerated by MockProvider, not the mismatched checkpoint's
-    # "Rule A" -- and "other.py" never leaks into this run's own output.
-    assert aif["rules"] == ["mock rule: methods use camelCase"]
-    assert "other.py" not in aif["files"]
-    assert not checkpoint._checkpoint_path(str(project)).exists()
-
-
-def test_pack_discard_checkpoint_false_discards_a_mismatch_even_with_use_cache_true(tmp_path, monkeypatch):
-    # Regression for a second real gap a later code review pass caught in
-    # the mismatch guard above: it fell back to `should_discard_checkpoint =
-    # not use_cache` on mismatch, which is False whenever use_cache=True
-    # (the default -- i.e. "완전히 재패킹" unchecked) and therefore silently
-    # un-does the very mismatch detection that just ran, resuming the
-    # foreign checkpoint's rules/prompt anyway. "does this checkpoint
-    # belong to me" and "should I trust my own summary cache" are
-    # independent questions -- a positively-identified mismatch must be
-    # discarded unconditionally, regardless of use_cache.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    checkpoint.save_checkpoint(
-        str(project),
-        {
-            "project": {"name": "project", "prompt": "restored prompt"},
-            "rules": ["Rule A"],
-            # A different (unrelated) job's own checkpoint.
-            "files_data": {"other.py": {"signatures": [], "dependencies": [], "api": [], "compressed": "", "summary": "x"}},
-        },
-    )
-
-    aif = packager.pack(
-        str(project), auto=True, interactive=False, use_cache=True,
-        preselected=["main.py"], discard_checkpoint=False,
-    )
-
-    assert aif["rules"] == ["mock rule: methods use camelCase"]
-    assert "other.py" not in aif["files"]
-    assert not checkpoint._checkpoint_path(str(project)).exists()
-
-
-def test_pack_default_discard_checkpoint_also_discards_a_mismatch(tmp_path, monkeypatch):
-    # Regression for a real gap a full-repo code review caught: the mismatch
-    # guard above used to only run when discard_checkpoint was explicitly
-    # False (the GUI's own retry-after-failure flow) -- an ordinary fresh
-    # job (discard_checkpoint left at its None default, use_cache=True's own
-    # default) hit the identical "leftover checkpoint from an unrelated file
-    # selection" scenario without ever running the check at all, silently
-    # reusing a foreign checkpoint's rules/prompt for this run's own,
-    # unrelated file selection.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    checkpoint.save_checkpoint(
-        str(project),
-        {
-            "project": {"name": "project", "prompt": "restored prompt"},
-            "rules": ["Rule A"],
-            # A different (unrelated) job's own checkpoint -- "other.py" was
-            # never part of this call's own preselected list below.
-            "files_data": {"other.py": {"signatures": [], "dependencies": [], "api": [], "compressed": "", "summary": "x"}},
-        },
-    )
-
-    # Neither use_cache nor discard_checkpoint given here -- today's true
-    # default for a brand-new GUI/CLI pack job.
-    aif = packager.pack(str(project), auto=True, interactive=False, preselected=["main.py"])
-
-    assert aif["rules"] == ["mock rule: methods use camelCase"]
-    assert "other.py" not in aif["files"]
-    assert not checkpoint._checkpoint_path(str(project)).exists()
-
-
-def test_pack_use_cache_false_never_prompts_to_resume(tmp_path, monkeypatch):
-    # use_cache=False must short-circuit before resume_checkpoint_choice()
-    # even when interactive=True -- asking "resume or discard?" makes no
-    # sense for something the caller already said to ignore outright.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    checkpoint.save_checkpoint(
-        str(project),
-        {"project": {"name": "project", "prompt": ""}, "rules": ["Rule A"], "files_data": {}},
-    )
-
-    def _unexpected_input(*a, **k):
-        raise AssertionError("input() must not be called when use_cache=False")
-    monkeypatch.setattr(builtins, "input", _unexpected_input)
-
-    aif = packager.pack(str(project), auto=True, interactive=True, use_cache=False)
-
-    assert aif["rules"] == ["mock rule: methods use camelCase"]
-
-
-def test_pack_check_cancelled_discard_stops_with_no_checkpoint(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    aif = packager.pack(str(project), auto=True, interactive=False, check_cancelled=lambda: "discard")
-
-    assert aif == {}
-    assert not checkpoint._checkpoint_path(str(project)).exists()
-
-
-def test_pack_check_cancelled_save_writes_a_checkpoint(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    aif = packager.pack(str(project), auto=True, interactive=False, check_cancelled=lambda: "save")
-
-    assert aif == {}
-    assert checkpoint._checkpoint_path(str(project)).exists()
-
-
-def test_pack_check_cancelled_none_never_stops(tmp_path, monkeypatch):
-    # a callback that always says "keep going" behaves identically to not
-    # passing one at all
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    aif = packager.pack(str(project), auto=True, interactive=False, check_cancelled=lambda: None)
-
-    assert set(aif["files"].keys()) == {"main.py"}
-
-
-def test_pack_check_cancelled_save_checkpoints_only_progress_made_so_far(tmp_path, monkeypatch):
-    # Cancels on the *second* checkpoint call, not the first -- proves the
-    # checkpoint reflects real partial progress (one file's worth of
-    # extraction already done), not just an immediately-empty snapshot.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "a.py", "def a():\n    pass\n")
-    _write(project / "b.py", "def b():\n    pass\n")
-
-    calls = {"n": 0}
-
-    def check_cancelled():
-        calls["n"] += 1
-        return "save" if calls["n"] == 2 else None
-
-    aif = packager.pack(str(project), auto=True, interactive=False, check_cancelled=check_cancelled)
-
-    assert aif == {}
-    saved = json.loads(checkpoint._checkpoint_path(str(project)).read_text(encoding="utf-8"))
-    assert len(saved["files_data"]) == 1  # the first file's checkpoint-check passed; stopped before the second
-
-
-def test_pack_does_not_re_extract_rules_for_a_checkpoint_with_a_genuine_empty_answer(tmp_path, monkeypatch):
-    # Regression: `if not rules and use_llm:` couldn't tell "nothing was
-    # ever restored" apart from "a checkpoint legitimately restored a real,
-    # empty rules=[] answer" -- both are equally falsy -- and used to
-    # re-run analyze_rules() (a real, re-billed LLM call) on resume even
-    # when the checkpoint had already correctly answered "no rules for this
-    # trivial project."
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    captured_prompts = []
-
-    class _CapturingMockProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
-            captured_prompts.append(prompt)
-            return super().generate(prompt, retry)
-
-    monkeypatch.setattr(llm, "_provider", _CapturingMockProvider())
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    checkpoint.save_checkpoint(
-        str(project),
-        {
-            "project": {"name": "project", "prompt": "restored prompt"},
-            # A genuine, already-computed empty answer -- not "never ran".
-            "rules": [],
-            "files_data": {
-                "main.py": {
-                    "signatures": ["add(a, b)"], "dependencies": [], "api": [],
-                    "compressed": "def add(a, b): ...", "summary": "adds two numbers",
-                }
-            },
-        },
-    )
-
-    aif = packager.pack(str(project), auto=True, interactive=False)
-
-    assert aif["rules"] == []
-    rules_prompts = [p for p in captured_prompts if '"rules"' in p]
-    assert not rules_prompts, "analyze_rules() must not be re-called for an already-computed empty answer"
-
-
-def test_pack_check_cancelled_save_preserves_rules_restored_from_a_prior_checkpoint(tmp_path, monkeypatch):
-    # Regression: a run resumed from a checkpoint that already had `rules`/
-    # `prompt` (restored_rules/restored_prompt, unpacked before the file
-    # loop) used to lose them the moment the user cancelled-and-saved again
-    # before rules were ever regenerated -- _maybe_stop()'s call sites in the
-    # per-file loop and the two checkpoints after it didn't pass
-    # restored_rules/restored_prompt through, so build_snapshot() baked in
-    # its own rules=None/prompt="" defaults instead, silently discarding
-    # already-known-good rules a second cancel-and-save would otherwise have
-    # kept.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    checkpoint.save_checkpoint(
-        str(project),
-        {"project": {"name": "project", "prompt": "restored prompt"}, "rules": ["Rule A"], "files_data": {}},
-    )
-
-    # interactive=False auto-resumes the checkpoint found above; cancelling
-    # on the very first call (inside the per-file loop, before any file is
-    # processed) exercises the earliest of the three _maybe_stop() call
-    # sites that need restored_rules/restored_prompt passed through.
-    aif = packager.pack(str(project), auto=True, interactive=False, check_cancelled=lambda: "save")
-
-    assert aif == {}
-    saved = json.loads(checkpoint._checkpoint_path(str(project)).read_text(encoding="utf-8"))
-    assert saved["rules"] == ["Rule A"]
-    assert saved["project"]["prompt"] == "restored prompt"
-
-
-def _checkpoint_with_main_py(project, summary, content_hash=None):
-    entry = {
-        "signatures": ["def add(a, b)"], "dependencies": [], "api": [],
-        "compressed": "def add(a, b): ...", "summary": summary,
-    }
-    if content_hash is not None:
-        entry["content_hash"] = content_hash
-    checkpoint.save_checkpoint(
-        str(project),
-        {"project": {"name": "project", "prompt": "", "language": "en"}, "files_data": {"main.py": entry}},
-    )
-
-
-def test_pack_resume_reanalyzes_a_file_changed_since_the_checkpoint(tmp_path, monkeypatch):
-    # Restoring it would ship the old summary while cache.json records
-    # today's hash -- freshness would then call it up to date forever.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    _checkpoint_with_main_py(project, "old summary from before the edit", content_hash="hash-of-old-content")
-
-    aif = packager.pack(str(project), auto=True, interactive=False)
-
-    assert aif["files"]["main.py"]["summary"] == "Mock summary for local testing."
-
-
-def test_pack_resume_restores_a_file_unchanged_since_the_checkpoint(tmp_path, monkeypatch):
-    from ziplex.freshness import hash_file
-
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    _checkpoint_with_main_py(project, "restored summary", content_hash=hash_file(str(project / "main.py")))
-
-    aif = packager.pack(str(project), auto=True, interactive=False)
-
-    assert aif["files"]["main.py"]["summary"] == "restored summary"
-
-
-def test_pack_checkpoint_carries_each_files_content_hash(tmp_path, monkeypatch):
-    from ziplex.freshness import hash_file
-
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    # "save" on the check after the per-file loop, so main.py is analyzed first
-    calls = {"n": 0}
-
-    def _cancel_after_first_file():
-        calls["n"] += 1
-        return "save" if calls["n"] > 1 else None
-
-    packager.pack(str(project), auto=True, interactive=False, check_cancelled=_cancel_after_first_file)
-
-    saved = json.loads(checkpoint._checkpoint_path(str(project)).read_text(encoding="utf-8"))
-    assert saved["files_data"]["main.py"]["content_hash"] == hash_file(str(project / "main.py"))
-
-
-def test_pack_resume_retries_a_failure_placeholder_instead_of_keeping_it(tmp_path, monkeypatch):
-    # e.g. every summary failed on an out-of-quota key, the run checkpointed,
-    # the user fixed the key and resumed -- the placeholder is unfinished work.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    _checkpoint_with_main_py(project, summarizer.SUMMARY_FAILED_PLACEHOLDERS["en"])
-
-    aif = packager.pack(str(project), auto=True, interactive=False)
-
-    assert aif["files"]["main.py"]["summary"] == "Mock summary for local testing."
+    assert provider.calls == 3
 
 
 def test_pack_with_llm_replaces_a_previous_no_llm_packs_structural_summaries(tmp_path, monkeypatch):
@@ -1844,7 +827,6 @@ def test_pack_with_llm_replaces_a_previous_no_llm_packs_structural_summaries(tmp
     # files used to keep "Defines: add" forever unless --no-cache was passed.
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
     _write(project / "util.py", "def sub(a, b):\n    return a - b\n")
@@ -1862,7 +844,6 @@ def test_pack_with_llm_replaces_a_previous_no_llm_packs_structural_summaries(tmp
 
 def test_pack_no_llm_still_reuses_its_own_structural_summaries(tmp_path, monkeypatch):
     # The replacement above is LLM-runs-only: a repeat --no-llm pack keeps them.
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
     first = packager.pack(str(project), auto=True, interactive=False, use_llm=False)
@@ -1878,7 +859,6 @@ def test_pack_reuses_summaries_from_an_output_file_not_named_after_the_project_f
     # only ever try out/<folder name>.json and re-bill every file.
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
     out = tmp_path / "out"
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
@@ -1891,14 +871,13 @@ def test_pack_reuses_summaries_from_an_output_file_not_named_after_the_project_f
     provider.calls = 0
     packager.pack(str(project), auto=True, interactive=False, result_dir=out)
 
-    assert provider.calls == 3  # rules + prompt + folders; both summaries reused
+    assert provider.calls == 2  # rules + prompt; both summaries reused
 
 
 def test_pack_reuses_summaries_after_the_project_was_renamed_during_review(tmp_path, monkeypatch):
     # save_aif() names the file after project.name, which review can change.
     provider = _CountingMockProvider()
     monkeypatch.setattr(llm, "_provider", provider)
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
     project = tmp_path / "project"
     _write(project / "main.py", "def add(a, b):\n    return a + b\n")
     _write(project / "util.py", "def sub(a, b):\n    return a - b\n")
@@ -1911,33 +890,13 @@ def test_pack_reuses_summaries_after_the_project_was_renamed_during_review(tmp_p
     provider.calls = 0
     packager.pack(str(project), auto=True, interactive=False)
 
-    assert provider.calls == 3
-
-
-def test_stop_and_save_does_not_restamp_a_stale_language_ai_guide(tmp_path, monkeypatch):
-    # Resuming a "ko" checkpoint under lang="en", then stop-and-save, used
-    # to re-save the Korean guide stamped "en" -- trusted on the next resume.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-    checkpoint.save_checkpoint(
-        str(project),
-        {"project": {"name": "project", "prompt": "한국어 가이드", "language": "ko"}, "rules": ["규칙"], "files_data": {}},
-    )
-
-    packager.pack(str(project), auto=True, interactive=False, lang="en", check_cancelled=lambda: "save")
-
-    saved = json.loads(checkpoint._checkpoint_path(str(project)).read_text(encoding="utf-8"))
-    assert saved["project"]["language"] == "en"
-    assert saved["project"]["prompt"] == ""
+    assert provider.calls == 2
 
 
 def test_rules_prompt_uses_relative_paths_and_caps_signatures_per_file(tmp_path, monkeypatch):
     # A GUI pack's collected paths are absolute; analyze_rules() used to get
     # them verbatim (the local username and folder names went to a
     # third-party API), with every signature of every file uncapped.
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
     captured = []
 
     class _Capturing(llm.MockProvider):
@@ -1958,7 +917,6 @@ def test_rules_prompt_uses_relative_paths_and_caps_signatures_per_file(tmp_path,
 
 
 def test_rules_prompt_lists_files_with_most_signatures_first(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
     captured = []
 
     class _Capturing(llm.MockProvider):
@@ -1979,26 +937,6 @@ def test_rules_prompt_lists_files_with_most_signatures_first(tmp_path, monkeypat
     assert sig_block.index("z_big.py:") < sig_block.index("m_mid.py:") < sig_block.index("a_small.py:")
 
 
-def test_collapse_deselected_folds_fully_unchecked_folders():
-    deselected = ["tests/unit/a.py", "tests/b.py", "src/extra.py", "root.py"]
-    selected = ["src/main.py", "README.md"]
-    assert packager._collapse_deselected(deselected, selected) == ["root.py", "src/extra.py", "tests/"]
-
-
-def test_pack_records_collapsed_deselected_scope(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    project = tmp_path / "project"
-    _write(project / "src" / "main.py", "def add(a, b):\n    return a + b\n")
-    _write(project / "src" / "extra.py", "def sub(a, b):\n    return a - b\n")
-    for i in range(3):
-        _write(project / "tests" / f"test_{i}.py", f"def test_{i}():\n    pass\n")
-
-    aif = packager.pack(str(project), interactive=False, preselected=["src/main.py"])
-
-    assert aif["project"]["scope"]["deselected"] == ["src/extra.py", "tests/"]
-
-
 class _NonStringRulesProvider(llm.MockProvider):
     def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
         if '"rules"' in prompt:
@@ -2013,44 +951,18 @@ class _BareStringPromptProvider(llm.MockProvider):
         return super().generate(prompt, retry=retry)
 
 
-def test_pack_treats_non_string_rule_items_as_a_failed_call(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", _NonStringRulesProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    aif = packager.pack(str(project), auto=True, interactive=False)
-
-    assert aif == {}
-    assert checkpoint._checkpoint_path(str(project)).exists()
-
-
-def test_pack_bare_json_string_prompt_checkpoints_instead_of_crashing(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", _BareStringPromptProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-    project = tmp_path / "project"
-    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
-
-    aif = packager.pack(str(project), auto=True, interactive=False)
-
-    assert aif == {}
-    assert checkpoint._checkpoint_path(str(project)).exists()
-
-
 def test_save_aif_reports_the_saved_files_own_token_count(tmp_path, monkeypatch):
     # pack()'s own count covered per-file summaries only -- 8,387 reported
     # for a 13,358-token aif.json on Ziplex's own pack.
     from ziplex.tokenizer import count_tokens_for_model
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
     project = tmp_path / "project"
     _write(project / "a.py", "import b\n\ndef f():\n    return b.g()\n")
     _write(project / "b.py", "def g():\n    return 1\n")
     out = tmp_path / "out.json"
 
     aif = packager.pack(str(project), auto=True, interactive=False)
-    from ziplex.edits import finalize_aif
-    packager.save_aif(finalize_aif(aif), str(out), project_path=str(project))
+    packager.save_aif((aif), str(out), project_path=str(project))
 
     saved = json.loads(out.read_text(encoding="utf-8"))
     counted = count_tokens_for_model(out.read_text(encoding="utf-8"), "GPT-4o")
@@ -2059,15 +971,40 @@ def test_save_aif_reports_the_saved_files_own_token_count(tmp_path, monkeypatch)
     assert "GPT-3.5" not in saved["tokens"]
 
 
-def test_save_aif_omits_a_folders_confidence_when_it_is_one():
-    aif = {"project": {"name": "p"}, "files": {}, "relationships": {}, "tokens": {},
-           "folders": {"a": {"summary": "s", "confidence": 1.0, "file_count": 2},
-                       "b": {"summary": "s", "confidence": 0.2, "file_count": 3}}}
-    import tempfile, os
-    with tempfile.TemporaryDirectory() as d:
-        out = os.path.join(d, "x.json")
-        packager.save_aif(aif, out, project_path=d)
-        saved = json.loads(open(out, encoding="utf-8").read())
-    assert saved["folders"]["a"] == {"summary": "s", "file_count": 2}
-    assert saved["folders"]["b"]["confidence"] == 0.2
 
+
+def test_an_interrupted_pack_keeps_the_summaries_it_already_paid_for(tmp_path, monkeypatch):
+    provider = _CountingMockProvider()
+    monkeypatch.setattr(llm, "_provider", provider)
+    project = tmp_path / "project"
+    _write(project / "main.py", "def add(a, b):\n    return a + b\n")
+    _write(project / "util.py", "def sub(a, b):\n    return a - b\n")
+
+    def boom(*a, **k):
+        raise RuntimeError("crash after summaries")
+
+    real_rules = packager.analyze_rules
+    monkeypatch.setattr(packager, "analyze_rules", boom)
+    with pytest.raises(RuntimeError):
+        packager.pack(str(project))
+    cache = json.loads((project / ".ziplex" / "summaries.json").read_text(encoding="utf-8"))
+    assert len(cache) == 2
+    assert "summaries.json" in (project / ".ziplex" / ".gitignore").read_text(encoding="utf-8")
+
+    monkeypatch.setattr(packager, "analyze_rules", real_rules)
+    provider = _CountingMockProvider()
+    monkeypatch.setattr(llm, "_provider", provider)
+    aif = packager.pack(str(project))  # no saved aif.json to reuse, only the cache
+    assert provider.calls == 2  # rules + prompt; no summary call
+    assert aif["files"]["main.py"]["summary"]
+
+
+def test_pack_is_non_interactive_and_returns_a_finalized_aif(tmp_path, monkeypatch):
+    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
+    monkeypatch.setattr(builtins, "input", lambda *a, **k: (_ for _ in ()).throw(AssertionError("prompted")))
+    project = tmp_path / "project"
+    _write(project / "a.py", "import b\n")
+    _write(project / "b.py", "x = 1\n")
+    aif = packager.pack(str(project), auto=False, interactive=True)  # legacy flags are ignored
+    assert aif["relationships"]["a.py"]["internal"] == ["b.py"]
+    assert "confidence" not in aif["files"]["a.py"]

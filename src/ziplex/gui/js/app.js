@@ -1,20 +1,11 @@
-// Ziplex GUI frontend, real ES modules (native browser support via
-// `<script type="module">` in index.html -- still no bundler, still no
-// build step) instead of the plain-global/load-order-dependent split this
-// used to be. Each file now says exactly what it needs via `import` and
-// exactly what it offers via `export`, instead of every function being an
-// implicit global any other file could reach into, in any load order that
-// happened to put it first.
+// Ziplex GUI frontend (read-only viewer), plain ES modules, no build step.
 //
 // This file: localStorage-backed state (aif_path/project_path/recent-
-// projects list), the shared `app`/`nav`/`topbar`/`staleBadge` DOM
-// element references, the api()/apiPost() fetch wrappers, the el()-
-// adjacent DOM-builder helpers (el, copyButton, showError, showLoading,
-// createSummaryEditor), the native-picker button family (browseButton and
-// friends, backed by window.pywebview.api -- see gui_server.py's _Api),
-// and the small confidenceLevel()/setStale()/setActiveNav()/
-// setActiveTopbar() display helpers used across every page. The lowest-
-// level shared module -- everything else in js/ imports from this one.
+// projects list), shared DOM references, the api()/apiPost() fetch
+// wrappers, DOM helpers (el, copyButton, showError, showLoading), the
+// native-picker buttons (window.pywebview.api -- see gui_server.py's _Api),
+// freshness-badge helpers + live watcher polling, and nav highlighting.
+// The lowest-level shared module -- everything else in js/ imports it.
 
 import { t, getLang, setLang, applyStaticI18n } from "./i18n.js";
 import { getTheme, setTheme } from "./theme.js";
@@ -99,15 +90,9 @@ export async function apiPost(path, body = {}) {
   return data;
 }
 
-// Groups a flat list of "/"-separated relative paths into a nested
-// {folders, files} tree by path segment -- shared by files.js's post-pack
-// Files page and landing.js's pre-pack folder-checkbox tree, so the two
-// can't drift into two copies of the same grouping algorithm. Each level's
-// `folders` map is Object.create(null), not a plain {} -- a real path
-// segment literally named "__proto__" (or "constructor") would otherwise
-// resolve through Object.prototype instead of being treated as a missing
-// key, silently pointing `node` at the wrong object and crashing once a
-// later segment tries to read .folders off it (found by code review).
+// Groups "/"-separated relative paths into a nested {folders, files} tree.
+// `folders` maps are Object.create(null) so a segment named "__proto__"
+// can't resolve through Object.prototype.
 export function buildPathTree(names) {
   const root = { folders: Object.create(null), files: [] };
   for (const name of names) {
@@ -143,160 +128,6 @@ let navSeq = 0;
 export function beginNavigation() { return ++navSeq; }
 export function navigationToken() { return navSeq; }
 export function isCurrentNavigation(token) { return token === navSeq; }
-
-// A themed in-page confirmation dialog, replacing window.confirm()'s
-// native OS-styled box -- reported directly: an alert-style native dialog
-// reads as the browser interrupting the app, and can't offer more than a
-// bare OK/Cancel (pack.js's leave-an-active-pack-job guard needs three:
-// save & leave / discard & leave / stay). `buttons` is
-// [{label, value, primary?}, ...] -- resolves to whichever one was
-// clicked, or null if dismissed via the overlay or Escape (every caller
-// treats null the same as its own explicit "stay"/"cancel" option). Only
-// one modal is ever open at a time -- a second call while one's still
-// pending resolves to null (the same as dismissing it) rather than
-// stacking a second overlay. It used to return the *first* modal's own
-// promise, so pressing Back while the Stop confirmation was open handed
-// that dialog's true/false to the leave guard, which read either as
-// "discard & stop" -- throwing away the checkpoint the user had asked for.
-// A repeated guard trigger (fast double Back) is de-duplicated separately
-// by pack.js's pendingGuardDecision.
-let openModal = null;
-
-export function showConfirmModal(message, buttons) {
-  if (openModal) return Promise.resolve(null);
-
-  // Accessibility (code review, 2026-08-26): window.confirm() guaranteed a
-  // focus-managed, screen-reader-announced native dialog for free -- this
-  // DOM replacement has to do that itself, or a keyboard/screen-reader
-  // user gets no indication a blocking dialog even opened. previouslyFocused
-  // is restored on close so focus lands back where the human actually was
-  // (whatever they'd clicked/tabbed to before triggering the guard), not
-  // wherever the DOM happens to leave it once the overlay's gone.
-  const previouslyFocused = document.activeElement;
-
-  openModal = new Promise((resolve) => {
-    function close(value) {
-      overlay.remove();
-      document.removeEventListener("keydown", onKeyDown);
-      if (previouslyFocused && previouslyFocused.focus) previouslyFocused.focus();
-      openModal = null;
-      resolve(value);
-    }
-    // Tab/Shift+Tab cycle only through this modal's own buttons while it's
-    // open -- a minimal focus trap, not a full one (no other focusable
-    // content exists inside a confirm dialog), but enough that Tab can't
-    // walk out into the page underneath.
-    function onKeyDown(e) {
-      if (e.key === "Escape") { close(null); return; }
-      if (e.key !== "Tab") return;
-      const first = buttonEls[0];
-      const last = buttonEls[buttonEls.length - 1];
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-    }
-    const buttonEls = buttons.map(b => el("button", {
-      class: b.primary ? "" : "secondary",
-      text: b.label,
-      onclick: () => close(b.value),
-    }));
-    const overlay = el("div", { class: "modal-overlay", role: "presentation" }, [
-      el("div", { class: "modal-box", role: "dialog", "aria-modal": "true", "aria-label": message, tabindex: "-1" }, [
-        el("p", { text: message }),
-        el("div", { class: "modal-buttons" }, buttonEls),
-      ]),
-    ]);
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(null); });
-    document.addEventListener("keydown", onKeyDown);
-    document.body.appendChild(overlay);
-    (buttons.find(b => b.primary) ? buttonEls[buttons.findIndex(b => b.primary)] : buttonEls[0]).focus();
-  });
-  return openModal;
-}
-
-// Shared inline summary editor: a read-only display element + ✏️ edit
-// button that swaps to a textarea + Save/Cancel in place. Originally two
-// near-identical copy-pasted implementations inside files.js (per-file and
-// per-folder editors) -- a real duplication risk caught by code review: a
-// fix to this shared behavior had to be applied by hand to both, and the
-// two copies could silently drift with nothing tying them together. Moved
-// here (rather than staying files.js-local) once pack.js's own pre-save
-// review screen needed the identical read-only/edit-mode toggle, trim/
-// no-op-if-unchanged guard, and try/catch-into-inline-error pattern for its
-// own file/folder summary tree -- the only difference between the two
-// callers is what `onSave` actually does with the new text (POST
-// immediately vs. mutate in-memory state until the whole review is
-// submitted), which was already the one caller-supplied seam here. Layout
-// stays caller-supplied (tag/class/rows/display formatting, and how the
-// edit controls are grouped) since callers place this in genuinely
-// different DOM shapes -- a folder's <summary> disclosure row vs. a file's
-// standalone section -- only the editing *behavior* is shared.
-export function createSummaryEditor({
-  getValue,
-  formatDisplay = (v) => v,
-  displayTag = "span",
-  displayClass = "",
-  editBtnClass = "secondary",
-  rows = "3",
-  onSave,
-  stopPropagation = false,
-  // Defaulted, not required: pack.js's review-screen file rows omitted it,
-  // and the resulting TypeError kept the whole pre-save review form from
-  // rendering on every pack since 0cbbde4.
-  buildEditRow = (textarea, saveBtn, cancelBtn) => el("span", {}, [textarea, saveBtn, cancelBtn]),
-}) {
-  const displayEl = el(displayTag, { class: displayClass });
-  const errorEl = el("p", { class: "error hidden" });
-  const editBtn = el("button", { class: editBtnClass, text: t("fileDetail.editSummary") });
-  const textarea = el("textarea", { rows });
-  const saveBtn = el("button", { text: t("fileDetail.saveSummary") });
-  const cancelBtn = el("button", { class: "secondary", text: t("fileDetail.cancelEdit") });
-  const editRow = buildEditRow(textarea, saveBtn, cancelBtn);
-
-  function showReadOnly() {
-    displayEl.textContent = formatDisplay(getValue());
-    displayEl.classList.remove("hidden");
-    editRow.classList.add("hidden");
-    editBtn.classList.remove("hidden");
-    errorEl.classList.add("hidden");
-  }
-
-  // stopPropagation is a folder row's own extra need: a folder row is a
-  // native <details>/<summary> disclosure that toggles open/closed on any
-  // click, so its own edit controls have to swallow the click (and
-  // preventDefault(), which is what actually suppresses <summary>'s
-  // native toggle) before it bubbles and collapses the row being edited.
-  function guarded(handler) {
-    return (e) => {
-      if (stopPropagation) { e.preventDefault(); e.stopPropagation(); }
-      handler();
-    };
-  }
-  if (stopPropagation) editRow.addEventListener("click", (e) => e.stopPropagation());
-
-  editBtn.addEventListener("click", guarded(() => {
-    textarea.value = getValue();
-    displayEl.classList.add("hidden");
-    editBtn.classList.add("hidden");
-    editRow.classList.remove("hidden");
-    textarea.focus();
-  }));
-  cancelBtn.addEventListener("click", guarded(showReadOnly));
-  saveBtn.addEventListener("click", guarded(async () => {
-    const newValue = textarea.value.trim();
-    if (!newValue || newValue === getValue()) { showReadOnly(); return; }
-    errorEl.classList.add("hidden");
-    try {
-      await onSave(newValue);
-      showReadOnly();
-    } catch (err) {
-      errorEl.textContent = String(err.message || err);
-      errorEl.classList.remove("hidden");
-    }
-  }));
-
-  showReadOnly();
-  return { displayEl, errorEl, editBtn, editRow };
-}
 
 export function copyButton(getText, label = t("core.copy")) {
   const btn = el("button", { class: "secondary", text: label });
@@ -356,17 +187,6 @@ export function browseButton(targetInput) {
 // (see gui_server.py's choose_aif_file), filtered to .json.
 export function browseAifButton(targetInput) {
   return pickerButton(targetInput, "choose_aif_file", t("core.picker.browseFile"), t("core.picker.unavailable"));
-}
-
-// 출력 경로: a file that doesn't necessarily exist yet -- pack's own
-// save_aif() will create it -- so this is a SAVE dialog, not OPEN
-// (see gui_server.py's choose_save_file).
-export function browseSaveButton(targetInput) {
-  return pickerButton(targetInput, "choose_save_file", t("core.picker.browseFile"), t("core.picker.unavailable"));
-}
-
-export function confidenceLevel(conf) {
-  return conf >= 0.67 ? "high" : conf >= 0.34 ? "medium" : "low";
 }
 
 // Caps how many filenames one category (changed/added/removed) lists in a
@@ -510,61 +330,33 @@ export function stopStaleWatch() {
   }
 }
 
-// Highlights the current section in the sidebar (see index.html's
-// data-route attributes) -- a sidebar needs a clear "you are here"
-// indicator the way the old top nav-bar's plain hyperlink list never did.
-// Called once from router.js's route() per navigation, not from each
-// individual render*() -- keeping "which section is this route" in one
-// place instead of every page needing to know its own nav entry.
+// Highlights the current sidebar section; called once per route().
 export function setActiveNav(routeName) {
   for (const a of nav.querySelectorAll("a[data-route]")) {
     a.classList.toggle("active", a.dataset.route === routeName);
   }
 }
 
-// Same idea as setActiveNav() above, one level up: the topbar's four links
-// (the brand/logo included -- it's a real link now, to "/") are global
-// destinations (home, start/resume a pack, open an existing one, options)
-// rather than project sections, so they're highlighted independently of
-// the sidebar -- none of them is active while browsing an already-loaded
-// project (Overview/Files/...), since that's the sidebar's own territory,
-// not this bar's. name=null (browsing pages, or any route this bar
-// doesn't own) clears all four rather than leaving a stale one lit.
+// Topbar counterpart of setActiveNav(); null clears every link.
 export function setActiveTopbar(name) {
   for (const a of topbar.querySelectorAll("a[data-topbar]")) {
     a.classList.toggle("active", a.dataset.topbar === name);
   }
 }
 
-// Wires up the topbar's language/theme pills (index.html's static
-// #lang-toggle/#theme-toggle) once at startup -- called from router.js's
-// DOMContentLoaded, alongside applyStaticI18n(). Deliberately not part of
-// pages/options.js any more: these are display-only chrome prefs a human
-// might flip from anywhere, not pack-behavior settings, so they moved out
-// of the Options page entirely (a real usability gap -- toggling either
-// used to mean navigating there first) rather than just gaining a second,
-// duplicate control alongside the Options page's own.
-//
-// Takes route()/hasActiveGuard() as parameters rather than importing them --
-// router.js already imports from this file (app.js is meant to stay the
-// lowest-level shared module, see this file's own header comment) and
-// hasActiveGuard() lives in pack.js, so importing either back from here
-// would be a circular import.
-export function initTopbarToggles(route, hasActiveGuard) {
+// Wires the topbar's language/theme pills once at startup. Takes route()
+// as a parameter: router.js imports this module, so importing back would
+// be circular.
+export function initTopbarToggles(route) {
   function syncPressed(container, activeValue, datasetKey) {
     for (const btn of container.querySelectorAll("button")) {
       btn.setAttribute("aria-pressed", String(btn.dataset[datasetKey] === activeValue));
     }
   }
 
+  // Guarded: a throw here (stale cached index.html) would abort the
+  // DOMContentLoaded handler before route() ever runs.
   const langToggle = document.getElementById("lang-toggle");
-  // Guards against a real gap found by code review: this runs before
-  // route() in router.js's DOMContentLoaded handler, so an uncaught throw
-  // here (a missing element -- a stale cached index.html after an
-  // upgrade, or a future refactor that renames/removes this div without
-  // updating this call) would abort that whole handler and route() would
-  // never run at all, leaving the app rendering nothing rather than just
-  // a missing toggle.
   if (langToggle) {
     syncPressed(langToggle, getLang(), "langBtn");
     langToggle.addEventListener("click", (e) => {
@@ -572,32 +364,10 @@ export function initTopbarToggles(route, hasActiveGuard) {
       if (!btn || btn.dataset.langBtn === getLang()) return;
       setLang(btn.dataset.langBtn);
       syncPressed(langToggle, btn.dataset.langBtn, "langBtn");
-      // Same two-step refresh options.js's own switcher used before this
-      // moved: applyStaticI18n() re-translates this bar/the sidebar (static
-      // markup route() never touches), route() re-renders whatever page is
-      // current in the new language.
-      applyStaticI18n();
-      // A real gap found by code review, in two parts. First pass: called
-      // route() unconditionally, bypassing the "reviewing"/"running" pack-job
-      // guard entirely -- these buttons are visible on every page, including
-      // mid-job, unlike the old Options-page switcher which only ever lived
-      // behind an already-guarded topbar link. Second pass: routing it
-      // through confirmLeaveActivePackJob() (like every real navigation does)
-      // was itself wrong for a different reason -- that guard's confirmation
-      // *is* "leave, stopping/discarding the job as a side effect," and this
-      // toggle was never asking to leave, just to change language in place.
-      // Confirming it would have silently killed a live job the user only
-      // meant to keep looking at in a different language. So: skip route()
-      // entirely while a guard is active, rather than asking a question whose
-      // only "yes" answer does something the click never requested. The
-      // language preference is still saved and the static chrome above still
-      // updates immediately either way -- only the job screen's own body
-      // stays in whatever language it was last rendered in until it's next
-      // safe to re-render (the job finishing, or the user actually leaving).
-      if (!hasActiveGuard()) route();
+      applyStaticI18n(); // static chrome
+      route(); // current page
     });
   }
-
   const themeToggle = document.getElementById("theme-toggle");
   if (themeToggle) {
     syncPressed(themeToggle, getTheme(), "themeBtn");

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -6,11 +8,21 @@ import threading
 import time
 from typing import Protocol
 
-import requests
-from dotenv import load_dotenv
+# requests/python-dotenv are the optional `ziplex[llm]` extra: the module
+# stays importable without them (MockProvider, --no-llm), and a real
+# provider call explains what to install (_post()).
+try:
+    import requests
+except ImportError:
+    requests = None
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):
+        return False
 
-from . import settings as app_settings
-from .progress_i18n import pick
+from .. import settings as app_settings
+from ..progress_i18n import pick
 
 load_dotenv()
 
@@ -54,7 +66,8 @@ def request_timeout(prompt: str) -> float:
 # keeps the pooling benefit within a thread while giving each thread its own
 # jar to race with only itself.
 _thread_local = threading.local()
-_ORIGINAL_REQUESTS_POST = requests.post
+_ORIGINAL_REQUESTS_POST = requests.post if requests is not None else None
+MISSING_EXTRA_MESSAGE = 'LLM summaries need the optional dependencies: pip install "ziplex[llm]"'
 
 
 def _get_session() -> requests.Session:
@@ -70,6 +83,8 @@ def _post(url: str, **kwargs) -> requests.Response:
     connection-pooling session. Honors monkeypatched requests.post (e.g. in
     test suites).
     """
+    if requests is None:
+        raise RuntimeError(MISSING_EXTRA_MESSAGE)
     if requests.post is not _ORIGINAL_REQUESTS_POST:
         return requests.post(url, **kwargs)
     return _get_session().post(url, **kwargs)
@@ -1167,47 +1182,3 @@ Coding rules (style/naming only, secondary context): {rules}
 {{"prompt": "..."}}
 """
     return generate(prompt, label="AI 가이드")
-
-
-# Per-folder caps in a folder-summary prompt: at most this many file
-# entries listed (the rest as "+N more"), each clipped to this length.
-MAX_FOLDER_ENTRIES_LISTED = 25
-MAX_FOLDER_ENTRY_CHARS = 200
-
-
-def format_folder_block(folder: str, entries: list[str]) -> str:
-    """One folder's "Folder: <path>" block, capped per the constants above.
-    folder_summary.py sizes its chunks with this exact text."""
-    shown = [f"- {_clip(entry, MAX_FOLDER_ENTRY_CHARS)}" for entry in entries[:MAX_FOLDER_ENTRIES_LISTED]]
-    if len(entries) > len(shown):
-        shown.append(f"- (+{len(entries) - len(shown)} more)")
-    return "Folder: {}\nFiles:\n{}".format(folder, "\n".join(shown))
-
-
-def _folder_prompt(joined: str, lang: str) -> str:
-    return f"""
-Based on the folders below (each folder's directly-contained files and
-their own one-line summaries), write ONE short sentence per folder
-describing that folder's role in the project -- what kind of code lives
-there and why, not a restatement of the file list.
-Write each summary value in {_lang_name(lang)}. Keep the JSON keys (folder paths) unchanged, exactly as given.
-Respond with JSON only, nothing else.
-
-{joined}
-
-{{"<folder path>": "...", "<another folder path>": "..."}}
-"""
-
-
-# Template size around the folder blocks, for any supported language.
-FOLDER_PROMPT_OVERHEAD_CHARS = max(len(_folder_prompt("", lang)) for lang in LANGUAGE_NAMES)
-
-
-def analyze_folder_summaries(folders: dict[str, list[str]], lang: str = "en") -> str:
-    """folders: {folder path: ["filename: summary", ...]} -- one chunk of a
-    project's folders (folder_summary.py does the chunking), each with its
-    directly-contained files. One "Folder: <path>" block per folder
-    (format_folder_block()); MockProvider echoes those keys back. Returns
-    the raw response text: {folder path: summary}."""
-    joined = "\n\n".join(format_folder_block(folder, entries) for folder, entries in folders.items())
-    return generate(_folder_prompt(joined, lang), label="폴더 요약")

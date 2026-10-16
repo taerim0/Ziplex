@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 FORBIDDEN = [
-    "ziplex.llm", "ziplex.summarizer", "ziplex.packager", "ziplex.cli", "ziplex.settings",
+    "ziplex.enrich.llm", "ziplex.enrich.summarizer", "ziplex.packager", "ziplex.cli", "ziplex.settings",
     "ziplex.progress_i18n", "ziplex.gui", "ziplex.corrector", "ziplex.checkpoint", "ziplex.mcp_server",
     "requests", "flask",
 ]

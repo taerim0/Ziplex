@@ -1,40 +1,16 @@
-// The topbar's fourth destination -- see app.js's header comment for the
-// overall module split. Two settings so far: the Gemini API key (settings.py's
-// `gemini_api_key`, GET/POST /api/settings -- a global credential, not a
-// per-pack parameter, the same reasoning that put the output folder here
-// instead of on the pack form), and the default output folder new packs
-// save to (settings.py's `output_dir`) -- ahead of whatever else (per-project
-// freshness checks, translating a *packed project's* own content -- see the
-// roadmap items this GUI reorg is being driven by) end up living here later.
-// Per-project folder pins aren't edited here at all: typing an explicit path
-// in landing.js's renderPackHome() own "출력 경로" field is what sets one
-// (see pack_service.start_pack_job()) -- this page only ever touches the
-// global fallback every *unpinned* project follows.
-//
-// The GUI's own display language and light/dark theme *used* to live here
-// too (i18n.js's getLang()/setLang(), theme.js's getTheme()/setTheme()) --
-// moved to the topbar itself (app.js's initTopbarToggles(), index.html's
-// #lang-toggle/#theme-toggle) since those are display-only chrome prefs a
-// human might want to flip from anywhere, not pack-behavior settings worth
-// a trip to a whole separate page for. This also means this file no longer
-// imports `route` from router.js (which itself imports renderOptions from
-// here) -- the real, if provably-safe, circular import that import used to
-// create is simply gone now, not just tolerated.
-
-import { app, nav, el, api, apiPost, browseButton } from "../app.js";
+// The topbar's Options page: which LLM provider/model/key `ziplex pack`
+// uses (settings.py, via GET/POST /api/settings). Language and theme live
+// in the topbar toggles instead.
+import { app, nav, el, api, apiPost } from "../app.js";
 import { t } from "../i18n.js";
 
 export function renderOptions() {
   nav.classList.add("hidden");
   app.innerHTML = "";
 
-  const outputDirInput = el("input", { type: "text", placeholder: t("options.outputDirPlaceholder") });
-  const saveButton = el("button", { text: t("options.save") });
-  const savedNote = el("span", { class: "muted hidden", text: t("options.saved") });
-  const errorBox = el("div", { class: "error hidden" });
 
   // --- AI provider selector -------------------------------------------
-  // Three providers today (llm.py's PROVIDERS registry, minus "mock" which
+  // Three providers today (the LLM layer's providers, minus "mock" which
   // is a test-only seam never exposed here): Gemini, an OpenAI-compatible
   // family (covers real OpenAI and anything speaking its API -- Ollama, LM
   // Studio, vLLM, OpenRouter, a local Gemma/Llama served through any of
@@ -79,7 +55,7 @@ export function renderOptions() {
   const openaiModelInput = el("input", { type: "text", placeholder: t("options.openaiModelPlaceholder") });
   // One-click fill for the two local OpenAI-compatible servers people
   // actually run Gemma/Llama/etc. through -- OpenAIProvider already covers
-  // both via base_url alone (llm.py has no per-tool special-casing), but a
+  // both via base_url alone (no per-tool special-casing), but a
   // human still has to know each tool's default port off the top of their
   // head to type it correctly. These just fill openaiBaseUrlInput with the
   // well-known default and hand focus to the model field, since the model
@@ -179,21 +155,6 @@ export function renderOptions() {
   const apiKeySavedNote = el("span", { class: "muted hidden", text: t("options.saved") });
   const apiKeyErrorBox = el("div", { class: "error hidden" });
 
-  saveButton.addEventListener("click", async () => {
-    savedNote.classList.add("hidden");
-    errorBox.classList.add("hidden");
-    saveButton.disabled = true;
-    try {
-      await apiPost("/api/settings", { output_dir: outputDirInput.value.trim() });
-      savedNote.classList.remove("hidden");
-    } catch (e) {
-      errorBox.textContent = e.message;
-      errorBox.classList.remove("hidden");
-    } finally {
-      saveButton.disabled = false;
-    }
-  });
-
   apiKeySaveButton.addEventListener("click", async () => {
     apiKeySavedNote.classList.add("hidden");
     apiKeyErrorBox.classList.add("hidden");
@@ -232,17 +193,9 @@ export function renderOptions() {
       el("div", { class: "copy-row" }, [apiKeySaveButton, apiKeySavedNote]),
       apiKeyErrorBox,
     ]),
-    el("div", { class: "card" }, [
-      el("h2", { text: t("options.outputDirTitle") }),
-      el("p", { class: "muted", text: t("options.outputDirDescription") }),
-      el("div", { class: "input-row" }, [outputDirInput, browseButton(outputDirInput)]),
-      el("div", { class: "copy-row" }, [saveButton, savedNote]),
-      errorBox,
-    ]),
   ]));
 
   api("/api/settings").then(data => {
-    outputDirInput.value = data.output_dir || "";
     apiKeyInput.value = data.gemini_api_key || "";
     geminiModelInput.value = data.gemini_model || "";
     openaiApiKeyInput.value = data.openai_api_key || "";

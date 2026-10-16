@@ -34,206 +34,58 @@ ziplex install claude --hook            # Claude Code에 MCP 서버와 편집 �
 
 첫 명령이 `.ziplex/index.db`를 만듭니다. 이 파일은 자동으로 gitignore 처리됩니다. django(파일 5,700개)는 처음 약 10초가 걸리고, 이후 갱신은 1초 이내입니다. 자세한 내용은 아래 그래프 인덱스, MCP 서버 절과 [CI 템플릿](docs/ci/impacted-tests.yml)을 참고하세요.
 
-## 프로젝트를 aif.json으로 패킹하기 (선택)
-
-Ziplex는 프로젝트를 `aif.json` 하나로 패킹할 수도 있습니다. 파일별 요약(구조 기반이거나, 직접 고른 LLM이 작성), 추론한 코딩 규칙, 프로젝트 가이드, 의존 관계 그래프가 들어가고, 저장하기 전에 GUI에서 검토할 수 있습니다. 도구를 쓸 수 없는 채팅에 프로젝트 구조를 붙여 넣을 때 유용합니다. 도구를 쓰는 에이전트라면 측정상 도움이 되는 쪽은 위의 그래프 명령입니다([EXPERIMENTS](docs/EXPERIMENTS_ko.md) #1-#9).
-
-### 패킹 빠른 시작
+## 설치
 
 ```bash
-pip install ziplex        # 또는: pipx install ziplex (격리된 환경 + PATH 자동 처리)
-# 또는 클론한 저장소에서: venv\Scripts\activate && pip install -e .
-ziplex-gui
+pip install ziplex            # 그래프: index, deps, impact, path, MCP 서버, 에디터 훅
+pip install "ziplex[llm]"     # + `ziplex pack`의 LLM 요약 (requests, python-dotenv, tiktoken)
+pip install "ziplex[gui]"     # + 읽기 전용 뷰어 `ziplex-gui` (flask, pywebview, watchdog)
+pip install "ziplex[all]"     # 둘 다
 ```
 
-네이티브 창이 뜹니다 — 폴더 선택창으로 프로젝트 폴더를 고르고, 어떤 파일을 포함할지 체크박스로 고른 뒤(그냥 기본 안전 목록을 그대로 써도 됨), 패킹하면 끝입니다. 플래그를 외울 필요가 없습니다. API 키를 쓰기 전에 먼저 써보고 싶다면 "LLM 사용 안 함"을 체크하세요 — 가입도 네트워크 호출도 없이, 구조 정보만으로 진짜 `aif.json`이 나옵니다. 체크를 풀면(`.env`에 `GEMINI_API_KEY`를 넣거나 Options 페이지에서 다른 프로바이더를 고르면) 진짜 AI가 쓴 요약, 추론된 코딩 룰, 프로젝트 가이드를 받을 수 있습니다. 패킹은 저장 전에 검토 단계에서 멈추고, 이미 패킹한 프로젝트를 둘러보는 것도 같은 창에서 됩니다 — 전체 흐름은 [GUI](#gui) 참고.
-
-> **설치 후 `ziplex`/`ziplex-gui` 명령을 못 찾는다면?** [pipx](https://pipx.pypa.io/)는 이 문제를 애초에 방지하도록 설계됐습니다 — 격리된 환경에 설치하면서 그 경로를 PATH에 자동으로 추가해줍니다(`pipx ensurepath` 실행 후 터미널을 새로 열면 적용). 그냥 `pip install ziplex`로 설치했는데 Windows에서 전역 Python의 `site-packages`에 쓰기 권한이 없으면(관리자 권한 없이 흔한 상황), pip이 조용히 사용자 단위 설치로 전환되고 그 `Scripts` 폴더가 PATH에 없는 경우가 많습니다 — 설치 중 `WARNING: The script ziplex.exe is installed in '...' which is not on PATH` 같은 줄이 지나가는 걸 볼 수 있습니다. 해결법: `pipx install ziplex`로 바꾸거나, 그 경고에 찍힌 폴더(보통 `%APPDATA%\Python\Python3XX\Scripts`)를 사용자 PATH에 직접 추가한 뒤 터미널을 새로 여세요.
-
-터미널이 더 편하신가요 — 스크립트, CI, GUI 없는 환경이라면?
-
-<details>
-<summary>CLI로 빠르게 시작하기</summary>
-
-**API 키도, 가입도, 네트워크 호출도 없이 지금 바로 써볼 수 있습니다:**
-
-```bash
-ziplex pack ./your-project/ --auto --no-llm
-```
-
-전체 파이프라인(Tree-sitter 압축, 의존성 그래프, 기술 스택 감지)이 그대로 돌아가고 진짜 `aif.json`이 나옵니다 — 요약만 LLM이 쓴 설명 대신 각 파일의 시그니처를 그대로 나열한 구조적인 문장일 뿐입니다. AI가 쓴 버전이 API 키를 쓸 만한 가치가 있는지, 자기 프로젝트에 직접 돌려보고 먼저 판단해보세요.
-
-마음에 드셨다면 `.env`에 `GEMINI_API_KEY=...`를 추가하고(`gemini-flash-latest`가 불안정할 때는 `GEMINI_MODEL=...`도 선택적으로 추가 -- [기술 스택](#기술-스택) 참고) `--no-llm`을 빼면, 진짜 AI가 쓴 요약과 추론된 코딩 룰, 프로젝트 가이드까지 받을 수 있습니다:
-
-```bash
-ziplex pack ./your-project/                        # 전체 파이프라인, 대화형
-ziplex pack ./your-project/ --auto --auto-correct  # 완전 비대화형 (CI, 스크립트용)
-```
-
-`--auto`(대화형 파일 선택 생략)와 `--auto-correct`(대화형 보정 생략)는 서로 독립된 옵션이라 마음대로 조합해서 써도 됩니다. 전에 한 번 pack한 프로젝트를 다시 pack하면, 실제로 내용이 바뀐 파일(콘텐츠 해시 기준)만 다시 요약합니다 — 나머지는 이전 요약을 그대로 재사용해서 LLM을 다시 호출하지 않습니다.
-
-</details>
-
-<details>
-<summary><code>pack</code>의 모든 플래그</summary>
-
-| 플래그 | 효과 |
-|---|---|
-| `--auto` | 대화형 파일 선택 생략, 안전한 파일 전체 포함 |
-| `--auto-correct` | 대화형 보정 생략, LLM 결과를 그대로 사용 |
-| `-o, --output <path>` | 출력 경로 지정 (`<path>` + `.detail.json`/`.cache.json`이 함께 저장됨) |
-| `--no-cache` | 이전 pack 결과 무시하고 모든 파일 요약을 강제로 다시 생성 |
-| `--include <patterns>` | `.ziplex.json`(아래)에 더해, 쉼표로 구분한 glob 패턴에 맞는 파일만 포함 |
-| `--ignore <patterns>` | `.ziplex.json`에 더해, 쉼표로 구분한 glob 패턴을 추가로 제외 |
-| `--max-tokens N` (+ `--max-tokens-model M`) | CI 가드: 패킹 결과가 모델 `M`(기본 GPT-4o) 기준 `N` 토큰을 넘으면 종료 코드 1 |
-| `--no-llm` | `GEMINI_API_KEY`/네트워크 전혀 불필요 — 구조 정보만으로 요약, `rules`/AI 가이드 생략 |
-| `--lang en\|ko` | 각 파일 summary/coding rules/AI 가이드가 *작성될* 언어(기본값이자 권장값 `en`) — 실제 코드나 주석의 언어와는 별개 |
-
-</details>
-
-<details>
-<summary>다른 AI 프로바이더 (OpenAI 호환, Ollama, LM Studio, Claude)</summary>
-
-기본값은 Gemini지만, LLM을 호출하는 모든 단계(요약, 코딩 룰, 프로젝트 가이드)는 다른 프로바이더로도 돌릴 수 있습니다 — `LLM_PROVIDER`(환경변수, CLI/CI용)를 설정하거나 GUI [Options 페이지](#gui)에서 고르면 됩니다(재시작 없이 바로 다음 pack부터 적용됩니다):
-
-| 프로바이더 | `LLM_PROVIDER` | 설정 |
-|---|---|---|
-| Gemini (기본값) | `gemini` | `GEMINI_API_KEY`, 선택적으로 `GEMINI_MODEL` |
-| OpenAI 호환 — 실제 OpenAI, Ollama, LM Studio, vLLM, OpenRouter, Groq, llama.cpp 서버 등 | `openai` | `OPENAI_API_KEY`(로컬 서버는 대부분 불필요), `OPENAI_BASE_URL`, `OPENAI_MODEL` |
-| Claude (Anthropic) | `claude` | `ANTHROPIC_API_KEY`(또는 `CLAUDE_API_KEY`), 선택적으로 `CLAUDE_MODEL` |
-
-로컬 모델(Gemma, Llama, Mistral 등)을 Ollama나 LM Studio로 서빙한다면 그냥 `openai` 프로바이더를 그 서버로 향하게 하면 됩니다 — `OPENAI_BASE_URL=http://localhost:11434/v1`(Ollama) 또는 `http://localhost:1234/v1`(LM Studio), `OPENAI_MODEL`은 해당 서버가 인식하는 이름으로. 둘 다 API 키는 필요 없습니다. GUI의 Options 페이지에는 두 서버 모두 한 번 클릭으로 채워주는 프리셋 버튼이 있습니다.
-
-</details>
-
-### 설정 파일
-
-`ziplex init ./your-project/`를 실행하면 대상 프로젝트(Ziplex 저장소 자체가 아니라) 안에 `.ziplex.json`이 생겨서, `pack`을 돌릴 때마다 `include`/`ignore` 패턴을 다시 타이핑할 필요가 없습니다:
-
-```jsonc
-// your-project/.ziplex.json
-{
-  "include": ["src/**/*.py", "*.md"],  // 비어있으면 제외되지 않은 전부 (기본값)
-  "ignore": ["**/*.generated.*"]        // DEFAULT_IGNORE/.gitignore 외에 추가로 제외할 패턴
-}
-```
-
-`--include`/`--ignore` CLI 플래그는 이 파일의 패턴을 대체하는 게 아니라 더해집니다. `pack`이 뭘 수집할지 미리 보여주는 서브커맨드들(`collect`, `tree`, `tokens`, `search`, `freshness`)도 전부 같은 파일을 읽어서, 실제 `pack`이 보는 것과 어긋나지 않습니다. `aif.json`/`detail.json`처럼(아래 팀에서 사용하기 참고) 프로젝트와 함께 커밋해둘 만합니다 — 이 프로젝트를 어떻게 패킹하는지 그 자체로 문서가 됩니다.
-
-<details>
-<summary>전체 명령어</summary>
-
-목록이 기억 안 나시면? 아무 인자 없이 `ziplex`만 치면 같은 표가 그대로 출력됩니다 — 이 CLI에서 유일하게 영어로 나오는 부분입니다.
-
-| 명령어 | 설명 |
-|---|---|
-| `pack <path>` | 전체 파이프라인 — `ziplex-gui`는 플래그 없이 똑같은 걸 해줍니다 |
-| `init <path>` | 대상 프로젝트에 `.ziplex.json`(`include`/`ignore` glob 패턴) 생성 |
-| `collect <path>` | 파일 수집 + 보안 스캔만 |
-| `tokens <path>` | 압축 전/후 토큰 수 |
-| `tree <path>` | 의존성 트리만 |
-| `search <path> <pattern>` | 안전한 파일 전체에서 정규식 검색 (`--context N`, `--ignore-case`) |
-| `detail <name>.detail.json <file-key>` | 파일 하나의 압축 본문을 부분만 읽기 (`--start`/`--end`) |
-| `freshness <path> <name>.cache.json` | `aif.json`이 디스크의 실제 파일과 맞는지 해시로 확인 — LLM 호출 없음 |
-| `skill <name>.json` | Claude Agent Skill로 내보내기 (`.claude/skills/<slug>/`) — MCP 서버 불필요 |
-| `link <name>.json <file> <target>` / `unlink ...` | 이미 저장된 `aif.json`에 의존 관계 엣지를 추가/삭제 — `pack`을 다시 돌릴 필요 없음 |
-| `settings` / `settings set <key> <value>` | `~/.ziplex/settings.json` 확인/변경 — 출력 폴더, LLM 프로바이더/API 키/모델. GUI Options 페이지의 CLI 버전 |
-| `checkpoint` / `checkpoint clean [<path>\|--all]` | 중단된 `pack`이 남긴 체크포인트 파일 목록 확인/삭제 |
-| `doctor [<path>]` | 환경 점검 — Python 버전, 활성 LLM 프로바이더/API 키, secretlint, 남은 체크포인트. LLM 호출 없음 |
-| `signatures \| dependencies \| api \| compress \| debug <file>` | 파일 하나에 대해 추출 단계 하나만 실행 |
-
-`ziplex --version`(`ziplex-gui --version`/`ziplex-mcp --version`도 동일)으로 설치된 버전을 확인할 수 있습니다.
-
-</details>
-
-## 동작 방식
-
-Ziplex는 프로젝트 파일을 수집하고(빌드 산출물과 `.gitignore`에 걸리는 건 건너뜀), 민감 정보를 보안 스캔한 뒤, 안전한 파일만 Tree-sitter로 파싱해서 시그니처·import·API 라우트를 뽑아냅니다. 함수 본문은 마커 하나로 압축되고, 이어서 LLM이 파일별 한 줄 요약과 프로젝트 전체 코딩 룰, AI용 가이드를 작성합니다. 이 모든 걸 사람이 검토·수정할 수 있는데 — 신뢰도가 낮은 요약만 검토 대상으로 표시되고 전체를 다 보진 않아도 됩니다 — 그런 다음 가벼운 `aif.json`(바로 로드용)과 무거운 `detail.json`(필요할 때만 불러오는 압축 본문)이 저장됩니다.
-
-## 출력 포맷
-
-pack 한 번에 파일 세 개가 나오고, 각각 읽히는 방식이 다릅니다:
-
-| 파일 | 담고 있는 내용 | 언제 읽히나 |
-|---|---|---|
-| `aif.json` | 프로젝트 가이드, 코딩 룰, 토큰 통계, 파일별 요약 + 신뢰도 점수, 전체 의존성 그래프 | 매번 — 처음부터 통째로 로드해도 될 만큼 작음 |
-| `<name>.detail.json` | 파일별 압축된 원본 소스 | 요약만으로 부족할 때 필요한 파일만 (`get_detail`, GUI의 detail 뷰) |
-| `<name>.cache.json` | 패킹된 모든 파일의 콘텐츠 해시 | 사람이 직접 볼 일 없음 — `check_freshness`와 incremental re-pack용 내부 관리 데이터 |
-
-```jsonc
-// aif.json — 작고 가벼워서 바로 로드되는 파일
-{
-  "project": {
-    "name": "...", "prompt": "...",
-    "tech_stack": [{ "manifest": "package.json", "language": "JavaScript/TypeScript", "package_manager": "npm", "dependencies": ["react", "..."], "dependencies_truncated": false }],
-    "security_scan": { "flagged": 0, "included_anyway": 0, "excluded": 0 },
-    "format_notes": "..."  // confidence/⋮---- 등을 다른 맥락 없이 이 파일만 보는 사람에게 설명해주는 고정 문구
-  },
-  "rules": ["..."],
-  "folders": { "src": { "summary": "..." } },  // 각 폴더의 역할을 설명하는 한 문장
-  "tokens": { "GPT-4o": { "original": 3100, "compressed": 749, "saved_pct": 75.8 } },
-  "files": { "src/App.tsx": { "summary": "...", "confidence": 0.83 } },
-  "relationships": { "src/App.tsx": { "internal": ["..."], "external": ["react"] } }
-}
-```
-
-```jsonc
-// out.detail.json — 더 무겁고, 파일을 자세히 들여다봐야 할 때만 가져옵니다
-{
-  "src/App.tsx": { "compressed": "import React ...\n    ⋮----\nexport default App" }
-}
-```
-
-```jsonc
-// out.cache.json — AI가 읽는 파일이 아니라 내부 관리용입니다. check_freshness가
-// 나중에 비교할 수 있도록 패킹 시점 파일 내용의 해시를 저장해둡니다
-{
-  "src/App.tsx": "3b1c2e...(sha256)"
-}
-```
-
-## 주요 기능
-
-- **다국어 구조 인식 압축** — Python, Java, TypeScript, JavaScript, Lua, GDScript, Go, C++, Rust, C#, PHP, Ruby, Bash를 Tree-sitter로, JSON/YAML/Markdown/일반 텍스트/Dockerfile은 전용 압축기로 처리합니다. 구조는 남기고 토큰만 줄입니다. git 저장소가 아니어도, 여러 확장자 파일이 서로 얽혀 있는 로컬 파일 모음이면 뭐든 동작합니다 — 게임 모드, 에셋 프로젝트 포함.
-- **내장 보안 스캔** — 모든 파일이 파이프라인에 들어오기 전에 `secretlint`(정규식 폴백)로 민감 정보를 검사합니다.
-- **검토는 선택 사항, 규모에 안 밀림** — LLM 결과물(요약, 룰, 가이드, 의존성 트리)은 저장 전에 검토·수정할 수 있고, `--auto-correct`로 통째로 건너뛸 수도 있습니다. 신뢰도 낮은 요약만 검토 대상으로 표시되니, 프로젝트가 커져도 검토 시간이 그만큼 늘진 않습니다.
-- **결과물을 쓰는 세 가지 방법** — Claude Code/Cursor 등을 위한 [MCP 서버](#mcp-서버), 터미널 없이 패킹/탐색하는 로컬 [GUI](#gui), 서버 없이도 되는 [Claude Agent Skill 내보내기](#claude-agent-skill-내보내기).
-- **최신 상태 유지가 저렴함** — Incremental re-pack은 실제로 바뀐 파일만 다시 요약하고, LLM이 불안정하면 백오프 후 재시도하며, 실행이 실패해도 체크포인트로 이어서 진행합니다.
-- **원하는 LLM을 골라 쓸 수 있음** — 기본은 Gemini지만, `LLM_PROVIDER`나 GUI Options 페이지로 OpenAI 호환 엔드포인트(실제 OpenAI, Ollama, LM Studio, vLLM, OpenRouter 등)나 Claude로 바로 바꿀 수 있습니다 — API 키도 네트워크도 필요 없는 완전 로컬 구성까지 포함해서요(자세한 내용은 [다른 AI 프로바이더](#패킹-빠른-시작) 참고).
-- **원하면 API 키 없이도** — `pack --no-llm`은 LLM 호출 없이도 구조 요약, 의존성 그래프, 기술 스택 감지를 만들어냅니다. `.ziplex.json`/`--include`/`--ignore`로 범위를 좁히고, `--max-tokens`로 CI 예산을 가드할 수 있습니다.
-
-## 테스트
-
-```bash
-pip install -e ".[dev]"   # 기본 설치에 pytest만 추가됨
-pytest
-```
-
-압축기, Tree-sitter 추출기, collector의 ignore/바이너리 필터링, 의존성 그래프 연산(`build_tree`/`has_cycle`/`move_file`), 순수 `aif` 편집 API까지 — 네트워크나 `GEMINI_API_KEY` 없이 결정적으로 동작하는 핵심 로직을 커버합니다. 여기에 더해 Gemini 대신 네트워크 없는 `MockProvider`로 `pack()` 전체를 실제로 한 번 돌려서, 체크포인트·병렬 요약·토큰 계산까지 실제 LLM 호출의 비용·대기시간 없이 검증합니다.
-
-실제 프로젝트로 `pack`을 빠르게 스모크테스트하고 싶다면: `LLM_PROVIDER=mock ziplex pack <project> --auto --auto-correct`로 1초 안에 네트워크 없이 전체 파이프라인을 돌릴 수 있습니다.
+`pipx install ziplex`로 설치하면 별도 환경에 설치되고 PATH도 자동으로 잡힙니다. Windows에서 `pip install` 후 `ziplex` 명령을 찾지 못한다면, pip가 PATH에 없는 사용자별 `Scripts` 폴더에 설치한 경우입니다(설치 중 경고로 경로를 알려 줍니다). 그 폴더를 PATH에 추가하거나 pipx를 쓰세요.
 
 ## 그래프 인덱스: 의존 관계, 영향받는 테스트, 편집 훅
 
-pack도 LLM도 필요 없습니다. 아래 명령은 `<project>/.ziplex/index.db`에 증분 의존성 그래프 인덱스를 두고 거기서 답합니다. 언제 지워도 되는 캐시이고 자동으로 gitignore됩니다. 프로젝트 경로를 생략하면 현재 폴더를 씁니다.
+pack도 LLM도 필요 없습니다. 이 명령들은 `<project>/.ziplex/index.db`에 증분 의존성 그래프 인덱스를 유지하고 거기서 답합니다. 인덱스는 언제 지워도 되는 캐시이고 자동으로 gitignore 처리됩니다. 프로젝트 경로를 생략하면 현재 디렉터리를 씁니다.
 
 ```bash
-ziplex index [--check]                        # 인덱스 생성/갱신; --check는 바뀐 파일이 있으면 종료 코드 1
-ziplex deps src/app.py                        # 이 파일이 import하는 파일 (라인 번호 포함)
-ziplex deps src/app.py --in --depth 2         # 이 파일에 의존하는 파일 (hop별)
+ziplex index [--check]                        # 인덱스 생성/갱신; --check는 바뀐 게 있으면 종료 코드 1
+ziplex deps src/app.py                        # 이 파일이 import하는 것 (라인 번호 포함)
+ziplex deps src/app.py --in --depth 2         # 이 파일에 의존하는 곳, hop 단위
 ziplex impact                                 # 커밋하지 않은 변경이 영향을 주는 테스트 (= --diff worktree)
+ziplex impact --diff origin/main...HEAD       # 브랜치 단위로
 pytest $(ziplex impact --format paths)        # 그 테스트만 실행
 ziplex path src/app.py src/db.py              # 최단 import 경로
-ziplex install claude --hook                  # Claude Code에 MCP 서버 + 편집 후 훅 등록
+ziplex tree .                                 # 전체 의존성 트리
 ```
 
-선별 실행이 안전하지 않으면(빌드/설정/lock 파일이 바뀌었거나 파일이 삭제됨) `impact --format paths`는 아무것도 출력하지 않습니다. 그래서 위의 `pytest $(...)`는 전체 테스트로 돌아갑니다. 이유는 stderr로 나옵니다. `--format commands`는 바로 실행할 수 있는 `pytest`/`jest`/`go test` 명령을 출력합니다.
+해석하는 것:
+- 상대 경로와 index 파일 import, tsconfig/jsconfig `paths`·`baseUrl`
+- pnpm/npm/yarn workspace 패키지와 `exports`(조건, 와일드카드 포함)
+- 어떤 소스 루트에 있든 Python 패키지(src 레이아웃 포함), `__init__.py`를 통한 re-export
+- `go.mod` 기준 Go 패키지, C/C++ include, Godot `res://` 참조
+- 문서·설정 파일에서 파일 경로를 언급한 것. 이건 따로 보관하고 의존자로는 세지 않습니다.
 
-`ziplex install claude --hook`은 `<project>/.claude/settings.json`에 `PostToolUse` 항목(`ziplex-hook`)을 추가합니다. Claude가 파일을 편집하면, 그 파일에 의존하는 파일 수와 실행할 테스트를 한 줄로 알려 줍니다. 작업을 막지 않고, 인덱스가 없는 프로젝트에서는 아무것도 출력하지 않으며, 같은 파일은 10분에 한 번만 알립니다. `--dry-run`은 아무것도 바꾸지 않고 명령과 settings 변경 내용만 보여 줍니다.
+테스트 판정:
+- 테스트 파일은 각 테스트 러너의 규칙대로 찾습니다.
+- `conftest.py`와 패키지 `__init__.py`는 테스트보다 먼저 실행되는 것으로 칩니다.
+- `if TYPE_CHECKING:`, `import type`, `__main__` 가드 안의 import는 실행되지 않으니 세지 않습니다.
+- 함수 안 import를 거쳐서만 닿는 테스트는 "영향 가능성 있음"으로 따로 표시합니다.
+
+`impact --format paths`는 선별 실행이 안전하지 않을 때(빌드·설정·lockfile 변경, 파일 삭제) 아무것도 출력하지 않습니다. 그래서 위의 `pytest $(...)`는 전체 스위트로 돌아가고, 이유는 stderr로 나옵니다. `--format commands`는 바로 실행할 수 있는 `pytest`/`jest`/`vitest`/`go test` 명령을, `--format json`은 전체 결과를 출력합니다.
+
+**CI**: [`docs/ci/impacted-tests.yml`](docs/ci/impacted-tests.yml)은 PR에서 영향받는 테스트만 돌리고, 필요하면 전체 스위트를 돌립니다. 다만 main이나 야간 빌드에서는 전체 실행을 유지하세요. 동적 import(importlib, 플러그인 레지스트리)는 어떤 정적 그래프에도 보이지 않습니다.
+
+**편집 훅**: `ziplex install claude --hook`은 MCP 서버를 등록하고, `<project>/.claude/settings.json`에 `PostToolUse` 훅(`ziplex-hook`)을 추가합니다. Claude가 파일을 편집하면 그 파일에 의존하는 파일 수와 실행할 테스트를 한 줄로 알려 줍니다. 작업을 막지 않고, 인덱스가 없는 프로젝트에서는 아무것도 출력하지 않으며, 같은 파일은 10분에 한 번만 알립니다. `--dry-run`은 아무것도 바꾸지 않고 명령과 settings 변경 내용만 보여 줍니다.
+
+측정 결과:
+- 영향받는 테스트: 튜닝에 쓰지 않은 저장소의 실제 커밋 99개에서 [recall 0.976](eval/README.md)
+- 인덱스 생성: django(파일 5,700개) 약 10초, 이후 갱신은 1초 이내
 
 ## MCP 서버
 
-`ziplex-mcp`는 Claude Code, Cursor 등 MCP 클라이언트에 위 명령들과 같은 실시간 그래프를 제공합니다. pack이 필요 없고, 호출마다 디스크 기준으로 갱신됩니다.
+`ziplex-mcp`는 Claude Code, Cursor 등 MCP 클라이언트에 같은 실시간 그래프를 제공합니다. pack이 필요 없고, 호출마다 디스크 기준으로 갱신됩니다.
 
 ```bash
 claude mcp add ziplex -- ziplex-mcp --project /abs/path/to/project   # 또는: ziplex install claude
@@ -241,84 +93,118 @@ claude mcp add ziplex -- ziplex-mcp --project /abs/path/to/project   # 또는: z
 
 | 도구 | 답하는 질문 |
 |---|---|
-| `graph_overview(scope?)` | 허브 파일, import 순환, 폴더 간 의존 방향, 해석되지 않은 상대 import -- 처음 보는 저장소라면 여기서 시작 |
-| `who_depends_on(files, depth?, include_mentions?)` | 이 파일을 import하는 곳(import 라인 포함), 또는 hop별로 전이적으로 영향받는 전체 |
-| `dependencies_of(files, external?)` | 이 파일이 import하는 것을 실제 파일로 해석한 결과 (alias, workspace, Python 패키지, Go 패키지) |
+| `graph_overview(scope?)` | 허브 파일, import 순환, 폴더 간 의존 방향, 해석되지 않은 상대 import. 처음 보는 저장소라면 여기서 시작 |
+| `who_depends_on(files, depth?, include_mentions?)` | 이 파일을 import하는 곳(import 라인 포함), 또는 hop 단위로 전이적으로 영향받는 전체 |
+| `dependencies_of(files, external?)` | 이 파일이 import하는 것을 실제 파일로 해석한 결과 |
 | `impacted_tests(files?, diff?)` | 변경이나 git diff로 영향받는 테스트, import 경로, 바로 실행할 명령 |
 | `dependency_path(source, target)` | 두 파일 사이의 최단 import 경로 |
 
-응답은 압축된 텍스트(수십~수백 토큰)이고, 도구 5개의 정의는 세션당 약 720토큰입니다. 경로는 저장소 기준 상대 경로, 절대 경로, 또는 겹치지 않는 끝부분(`query_service.py`)으로 넘기면 됩니다.
+응답은 압축된 텍스트(수십~수백 토큰)이고, 도구 5개의 정의는 세션당 약 720토큰입니다. held-out 저장소에서 이 도구를 쓴 Claude Code는 영향받는 테스트를 묻는 질문에 같은 정확도로 비용을 57% 덜 쓰고 55% 빨리 끝냈습니다([EXPERIMENTS #15](docs/EXPERIMENTS_ko.md)).
 
-**레거시 모드.** `ziplex-mcp --aif <name>.json [--project .]`(또는 `--legacy-tools`)로 실행하면 pack한 `aif.json`을 대상으로 하는 예전 도구 10개(`get_overview`, `list_files`, `get_folders`, `get_relationships`, `get_graph_summary`, `get_dependents`, `get_blast_radius`, `get_detail`, `check_freshness`, `search_project`)를 제공합니다. 기존 등록은 그대로 동작합니다.
+**레거시 모드.** `ziplex-mcp --aif <name>.json [--project .]`(또는 `--legacy-tools`)로 실행하면 pack한 `aif.json`을 대상으로 예전 도구 10개를 제공합니다.
+
+## 프로젝트를 aif.json으로 패킹하기 (선택)
+
+`ziplex pack`은 프로젝트 구조를 파일 하나로 정리합니다. 파일별 요약, 추론한 코딩 규칙, AI 가이드, 폴더 맵, 해석된 의존 관계가 들어갑니다. 도구를 쓸 수 없는 채팅에 붙여 넣거나, 코드 옆에 커밋하거나, GUI로 볼 때 유용합니다. 도구를 *쓸 수 있는* 에이전트라면 측정상 도움이 되는 쪽은 위의 그래프입니다. LLM 요약은 도구를 쓰는 에이전트를 이기지 못했습니다([EXPERIMENTS](docs/EXPERIMENTS_ko.md) #1-#9).
+
+```bash
+ziplex pack ./your-project --no-llm      # API 키 없이: 구조 기반 요약 (파일별 시그니처/의존성)
+ziplex pack ./your-project               # LLM이 쓴 요약, 규칙, 가이드 (ziplex[llm] + 프로바이더 키 필요)
+```
+
+pack은 대화형 단계 없이 진행됩니다.
+- 시크릿 스캔을 통과한 파일은 전부 들어갑니다. 스캔에 걸린 파일은 내용은 빠지지만 import 관계는 그래프에 남습니다.
+- 바뀌지 않은 파일은 내용 해시가 같으면 요약을 재사용합니다.
+- LLM 요약은 받는 즉시 캐시해서, 중간에 멈춰도 이미 받은 요약은 잃지 않습니다.
+- 바뀐 게 없으면 다시 pack해도 바로 끝납니다.
+
+| 플래그 | 효과 |
+|---|---|
+| `--no-llm` | 구조 기반 요약만. API 키·네트워크 불필요 |
+| `--no-cache` | 전부 다시 요약 |
+| `-o, --output <path>` | 출력 경로 (옆에 `.detail.json`/`.cache.json`도 생성). 기본값 `<project>/.ziplex/<name>.json` |
+| `--include` / `--ignore <patterns>` | `.ziplex.json`에 더해 적용할 쉼표 구분 glob |
+| `--lang en\|ko` | 요약·규칙·가이드를 쓸 언어 |
+| `--max-tokens N` (+ `--max-tokens-model M`) | 저장된 aif.json이 N 토큰을 넘으면 종료 코드 1 |
+
+<details>
+<summary>LLM 프로바이더</summary>
+
+| 프로바이더 | `LLM_PROVIDER` | 설정 |
+|---|---|---|
+| Gemini (기본) | `gemini` | `GEMINI_API_KEY`, 선택적으로 `GEMINI_MODEL` |
+| OpenAI 호환: OpenAI, Ollama, LM Studio, vLLM, OpenRouter, Groq, llama.cpp | `openai` | `OPENAI_API_KEY`(로컬은 대개 불필요), `OPENAI_BASE_URL`, `OPENAI_MODEL` |
+| Claude | `claude` | `ANTHROPIC_API_KEY`, 선택적으로 `CLAUDE_MODEL` |
+
+`.env`, 환경 변수, 또는 `ziplex settings set <key> <value>`(`~/.ziplex/settings.json`)로 설정합니다. Ollama/LM Studio의 로컬 모델은 `openai` 프로바이더에 `OPENAI_BASE_URL=http://localhost:11434/v1`(Ollama) 또는 `http://localhost:1234/v1`(LM Studio)을 지정하면 됩니다.
+
+</details>
+
+<details>
+<summary>출력 포맷</summary>
+
+| 파일 | 내용 |
+|---|---|
+| `aif.json` | 프로젝트 가이드, 코딩 규칙, 폴더 맵, 토큰 통계, 파일별 요약, 확실한 의존 관계 |
+| `<name>.detail.json` | 파일별 압축 소스(함수 본문은 `⋮----`로 생략)와 문서 언급(`text_refs`) |
+| `<name>.cache.json` | 파일별 내용 해시. freshness 검사와 증분 pack에 사용 |
+
+</details>
+
+**내보내기.** `ziplex skill <name>.json`은 Claude Code가 스스로 불러오는 [Claude Agent Skill](https://code.claude.com/docs/en/skills)(`.claude/skills/<slug>/`)을 만듭니다. `ziplex flatten <name>.json`은 모든 요약과 압축 본문을 담은 Markdown 파일 하나를 만듭니다.
+
+**팀에서 쓰기.** pack 결과는 그냥 파일입니다. 다른 생성물처럼 커밋하면 됩니다. 커밋된 pack이 코드와 어긋나면 `ziplex freshness <project> <name>.cache.json`이 0이 아닌 종료 코드로 끝납니다([CI 템플릿](docs/ci/freshness-gate.yml)). 충돌이 나면 직접 병합하지 말고 다시 pack하세요([merge-conflicts.md](docs/team/merge-conflicts.md), [gitattributes](docs/team/gitattributes)).
+
+### 설정 파일
+
+`ziplex init ./your-project`가 대상 프로젝트에 `.ziplex.json`을 만듭니다.
+
+```jsonc
+{
+  "include": ["src/**/*.py", "*.md"],     // 비우면 무시 대상이 아닌 전부
+  "ignore": ["**/*.generated.*"],         // 내장 무시 목록과 .gitignore에 더해 적용
+  "exclude_flagged_from_graph": false     // true: 시크릿 스캔에 걸린 파일을 그래프에서도 제외
+}
+```
+
+그래프 인덱스, `pack`, `tree`, `freshness`가 모두 이 파일을 읽습니다.
 
 ## GUI
 
-터미널을 쓰지 않고 프로젝트를 패킹하거나, Claude Code(또는 MCP 자체)를 쓸 수 없지만 브라우저 기반 AI 챗은 쓸 수 있는 환경에서 이미 패킹된 프로젝트를 둘러보는 용도의 로컬 단일 사용자 GUI입니다.
+`ziplex-gui`(`ziplex[gui]` 필요)는 pack한 프로젝트를 보는 로컬 읽기 전용 뷰어입니다. 개요, 요약과 압축 소스가 있는 파일 트리, 의존자와 영향 범위, 의존성 그래프, 검색, 실시간 freshness 배지를 보여 줍니다. `ziplex pack`으로 pack한 뒤 생성된 aif.json을 열면 됩니다. `127.0.0.1`에만 바인딩합니다.
+
+![pack한 프로젝트의 개요 페이지](docs/images/gui-overview.png)
+
+## 기타 명령
+
+| 명령 | 설명 |
+|---|---|
+| `settings` / `settings set <key> <value>` | `~/.ziplex/settings.json` 확인·변경 (LLM 프로바이더, 모델, 키) |
+| `doctor [<path>]` | 환경 점검: Python, LLM 프로바이더·키, secretlint |
+| `dev collect\|tokens\|search\|detail\|signatures\|dependencies\|api\|compress\|debug ...` | 파이프라인 한 단계를 단독으로 실행하는 디버그 도구 |
+| `--version` | 설치된 버전 (`ziplex-mcp --version`도 가능) |
+
+인자 없이 `ziplex`만 실행하면 명령 목록이 나옵니다.
+
+## 근거와 평가
+
+방향을 정한 결정에는 모두 기록된 비교가 있습니다.
+- [`docs/EXPERIMENTS_ko.md`](docs/EXPERIMENTS_ko.md): 16번의 비교, 부정적 결과 포함
+- [`eval/`](eval/README.md): 엣지 정확도 정답 데이터, 실제 커밋 기준 영향 테스트 recall, headless 에이전트 비교
+- 지금 방향을 정한 [2026-10 리뷰](docs/REVIEW-2026-10-14.md)
+
+## 테스트
 
 ```bash
-ziplex-gui                                            # 네이티브 창 (pywebview)
-ziplex-gui --aif out.json --project ./your-project/   # 시작 화면 미리 채우기
-ziplex-gui --no-window                                # 창 대신 일반 브라우저 탭
+pip install -e ".[dev]"
+pytest
 ```
 
-### 프로젝트 패킹하기
-
-![패킹: 프로젝트 설정 — 폴더/출력 경로, 패킹 언어](docs/images/gui-pack-select.png)
-
-네이티브 폴더 선택창으로 프로젝트 폴더를 고르고, 어떤 파일을 포함할지 체크박스로 고른 뒤(`collect`의 보안 스캔이 만드는 것과 같은 safe/dangerous 구분), 패킹 언어(`pack --lang`의 GUI 버전 — summary/rules/AI 가이드가 실제로 *작성될* 언어이며, 상단바의 화면 표시 언어 토글과는 별개)를 고르고, 원하면 "LLM 사용 안 함"(`pack --no-llm`의 GUI 버전)도 체크하고, 백그라운드에서 돌아가는 패킹 과정을 지켜봅니다.
-
-### 저장 전 검토
-
-![패킹: 프로젝트 가이드/룰/폴더·파일별 요약 검토 화면](docs/images/gui-pack-review.png)
-
-분석이 끝나면 저장 전에 검토 단계에서 멈춥니다 — 프로젝트 이름, 가이드, 룰, 폴더·파일별 요약을 고칠 수 있고(CLI와 같은 기준으로 신뢰도가 낮은 것만 검토 대상으로 표시됩니다).
-
-### 의존성 그래프 & 관계 편집
-
-![의존성 트리 및 관계 편집기](docs/images/gui-relationships.png)
-
-의존성 그래프는 먼저 접었다 펼 수 있는 전체 트리로 보여줍니다 — 고칠 파일을 발견하면 그 파일 이름을 클릭해 엣지 하나하나를 잇거나 끊는 편집 화면으로 들어갑니다 (부모가 여러 개인 파일이라도 다른 참조는 그대로 남습니다). 이미 패킹된 프로젝트의 Relationships 페이지도 같은 "전체 트리 먼저, 파일 하나 편집은 그다음" 흐름을 그대로 써서, 패킹이 끝난 뒤에 발견한 관계 문제도 파이프라인을 다시 돌리지 않고 고칠 수 있습니다.
-
-### 기존 pack 둘러보기
-
-![패킹된 프로젝트의 Overview 페이지](docs/images/gui-overview.png)
-
-MCP 서버가 노출하는 overview/files/relationships/detail/search 뷰를 MCP 툴 호출 대신 웹 페이지로 그대로 씁니다. 각 페이지엔 복사 버튼이 있고, 의도된 흐름은 여기서 둘러본 다음 필요한 내용을 별도의 AI 챗에 직접 붙여넣는 것입니다 — GUI가 그 챗과 직접 통신하지는 않습니다.
-
-**파일 접근도 MCP도 없는 순수 웹 채팅에서 디버깅할 때**: 대화 시작 시 `aif.json` 내용을 한 번 통째로 붙여넣으세요 — 요약과 관계만 담아 일부러 작게 만든 파일이라 그대로 붙여넣도록 설계됐습니다. AI가 그 요약/관계를 보고 의심 파일을 하나 짚으면, `detail.json` 전체를 또 붙여넣지 말고 여기서 그 파일 하나의 페이지를 열어 자체 복사 버튼을 누르거나(파일이 크면 `ziplex detail <name>.detail.json <파일경로>`로 원하는 줄 범위만) 그 결과만 같은 채팅에 붙여넣으세요. 물어보지도 않은 나머지 파일들은 전혀 넘기지 않은 채로, 그 한 파일의 압축된 전체 소스를 AI가 갖게 됩니다.
-
-### Options 페이지
-
-![Options 페이지: 출력 폴더, AI 프로바이더](docs/images/gui-options.png)
-
-새로 패킹할 때 기본으로 저장되는 출력 폴더, 그리고 패킹 전체에 쓸 AI 프로바이더(Gemini / OpenAI 호환 / Claude — [다른 AI 프로바이더](#패킹-빠른-시작) 참고)를 고릅니다. Ollama와 LM Studio의 기본 로컬 포트를 한 번 클릭으로 채워주는 프리셋 버튼도 있어서, 완전 로컬 구성도 URL을 직접 타이핑할 필요가 없습니다. 화면 표시 언어와 다크/라이트 테마는 대신 상단바 자체에 있습니다(내비게이션 링크 옆 작은 토글 2개) — 화면 취향일 뿐이라 별도 페이지까지 갈 필요는 없다고 판단했습니다.
-
-`127.0.0.1`에만 바인딩됩니다 — `--host` 옵션이 없고, 네트워크에 노출할 방법도 없습니다.
-
-## Claude Agent Skill 내보내기
-
-패킹된 프로젝트에 접근하는 세 번째 방법입니다 — MCP 서버나 GUI 대신, Claude Code는 쓸 수 있지만 MCP 서버 등록까지는 부담스러운 순간을 위한 것입니다:
-
-```bash
-ziplex skill .ziplex/my-project.json               # .claude/skills/my-project/ 생성
-ziplex skill .ziplex/my-project.json -o some/dir    # 출력 디렉터리 직접 지정
-```
-
-[Claude Agent Skill](https://code.claude.com/docs/en/skills)을 만듭니다 — `SKILL.md`와 `references/overview.md`/`files.md`/`relationships.md`/`detail.json`으로 구성되며, `.claude/skills/` 아래에 두기만 하면 서버 프로세스 없이도 Claude Code가 알아서 인식하고 점진적으로 불러옵니다. [repomix](https://repomix.com/guide/agent-skills-generation)의 동일한 `--skill-generate` 기능과 다른 점: `references/files.md`엔 원본 코드를 통째로 넣지 않습니다 — `aif.json` 자체가 이미 그렇듯 요약과 신뢰도 점수까지만 담고, 압축된 본문은 `references/detail.json`으로만 나갑니다. 생성된 디렉터리를 커밋하는 것도 `aif.json`/`detail.json`을 커밋하는 것과 같은 방식입니다(아래 팀에서 사용하기 참고) — 그냥 파일일 뿐이니까요.
-
-## 팀에서 사용하기
-
-Ziplex는 한 사람의 로컬 스냅샷을 패킹합니다 — 공유 서버나 실시간 동기화는 없습니다. 그렇다고 팀에서 못 쓴다는 건 아닙니다: `aif.json`/`detail.json`/`cache.json`은 그냥 파일이라, 다른 자동 생성 산출물처럼 프로젝트 저장소에 커밋해서 팀이 하나의 기준선을 공유할 수 있습니다.
-
-- 의미 있는 변경 뒤에 `pack`을 돌린 사람이 코드 변경과 함께 새로 생성된 결과물을 커밋합니다.
-- 다른 사람들의 `aif.json`은 마지막으로 커밋된 시점만큼만 최신입니다 — `check_freshness`(또는 위에서 설명한, `project_path`를 넘긴 `get_overview`/`list_files`)로 자기 작업 사본이 커밋된 것과 얼마나 어긋났는지 다시 `pack`하지 않고도 확인할 수 있습니다.
-- 이건 실시간 동기화가 아니라 권장 컨벤션입니다 — Ziplex가 강제하거나 조율하지 않습니다. 병합/충돌 해결도 없고, 두 사람이 각자 커밋하기 전에 따로 `pack`을 돌리면 "누구 결과가 맞는지"도 정해져 있지 않습니다. 실제로 충돌이 나면 JSON을 손으로 병합하지 마세요 — [merge-conflicts.md](docs/team/merge-conflicts.md)에 권장 해결법(충돌 해소 → 재`pack` → 검토)이 있고, [`gitattributes`](docs/team/gitattributes)를 적용해두면 GitHub PR diff에서 이 파일들이 접힌 채로 표시됩니다.
-
-**CI 게이트 (선택):** `ziplex freshness <project> <name>.cache.json`은 커밋된 결과물이 코드와 어긋났을 때 0이 아닌 코드로 종료됩니다 — LLM 호출도, `GEMINI_API_KEY`도 필요 없이 해시 비교만 합니다. PR 체크로 연결해두면([템플릿](docs/ci/freshness-gate.yml)) 오래된 `aif.json`이 재검토 없이 병합되는 걸 막을 수 있습니다. `pack` 자체를 자동화하는 건 아닙니다 — 실제 LLM 비용이 들고 사람의 검토 단계를 건너뛰게 되므로, 의도적으로 수동 단계로 남겨뒀습니다.
+테스트 스위트는 LLM이나 네트워크를 전혀 호출하지 않습니다. `LLM_PROVIDER=mock ziplex pack <project>`로 LLM 경로를 오프라인에서 점검할 수 있습니다.
 
 ## 기술 스택
 
-Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby/Bash 문법, GDScript는 `tree-sitter-language-pack` 경유) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · `requests`를 통한 순수 REST 호출로 Gemini(기본값 `gemini-flash-latest`, `GEMINI_MODEL`로 재정의 가능), OpenAI 호환 엔드포인트(실제 OpenAI, Ollama, LM Studio, vLLM, OpenRouter 등), 또는 Claude 중 선택 — [다른 AI 프로바이더](#패킹-빠른-시작) 참고 · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
+Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby/Bash) · SQLite · [MCP](https://modelcontextprotocol.io/) · `pathspec` · [ruamel.yaml](https://yaml.readthedocs.io/) · 선택: `requests`(Gemini / OpenAI 호환 / Claude), tiktoken, Flask, pywebview, watchdog · 설치되어 있으면 `secretlint`
 
 ## 라이선스
 

@@ -1,124 +1,54 @@
 # AGENTS.md
 
-This file guides AI coding agents (Claude Code, and any tool following the AGENTS.md convention) in this repository. `CLAUDE.md` at each path below is a one-line `@AGENTS.md` import, so Claude Code reads identical content — see [`docs/team/agents-md.md`](docs/team/agents-md.md). Kept lean as a current-state map, not a change log — see `docs/HISTORY.md` for the decision/bug-fix history behind anything below. That file is never auto-loaded; open it only when the "why" actually matters for what you're about to change.
+Guide for AI coding agents in this repository. Every `CLAUDE.md` here is a one-line `@AGENTS.md` import — edit AGENTS.md, never CLAUDE.md ([`docs/team/agents-md.md`](docs/team/agents-md.md)). This is a current-state map; the history behind decisions is in `docs/HISTORY.md`, the evidence in `docs/EXPERIMENTS.md` and `docs/REVIEW-2026-10-14.md` (none auto-loaded — open them when the "why" matters).
 
-Directory-scoped detail lives in nested AGENTS.md files, auto-loaded when working in that subtree (via each directory's own `CLAUDE.md` importing its sibling `AGENTS.md`):
-- `src/ziplex/AGENTS.md` — core pipeline modules directly under `src/ziplex/*.py`: LLM layer, checkpointing, summarization, orchestration (`packager.py`), the pure editing API's callers, freshness/confidence/search, MCP query layer, per-user/per-project config, skill-export/MCP distribution channels.
-- `src/ziplex/core/AGENTS.md` — the graph engine: `GraphBuilder` plus import resolution (Python/TS/Go) and text-reference matching; no LLM/UI imports (layering test).
-- `src/ziplex/extract/code/AGENTS.md` — Tree-sitter code compression/extraction, one language per bullet (Python/Java/TypeScript/JavaScript/Lua/Mlua/GDScript/Go/C++/Rust/C#/PHP/Ruby/Bash).
-- `src/ziplex/extract/text/AGENTS.md` — non-Tree-sitter text compressors (json/yaml/markdown/txt/dockerfile).
-- `src/ziplex/file/AGENTS.md` — file collection, security scanning, dependency-graph API.
-- `src/ziplex/gui/AGENTS.md` — local GUI (Flask + pywebview backend, ES-module frontend).
-
-Packaging: a real installable package (`pyproject.toml`, src-layout — `src/ziplex/` is the actual `ziplex` package). Internal imports are package-relative; nothing under `src/ziplex/` imports a sibling module by bare name. `pip install -e .` registers four console scripts: `ziplex`, `ziplex-gui`, `ziplex-mcp`, `ziplex-hook`.
+Nested docs, auto-loaded in their subtree:
+- `src/ziplex/core/AGENTS.md` — the graph engine: index, query API, resolvers (Python/TS/Go), text references, test mapping. No LLM/UI imports (layering test).
+- `src/ziplex/AGENTS.md` — `pack()`/`save_aif()`, the optional LLM layer (`enrich/`), exports, aif.json query layer, MCP server, hook, CLI, config.
+- `src/ziplex/file/AGENTS.md` — collection, secret scanning, `relationship.py` (stem/relative resolution, `build_tree`, graph algorithms).
+- `src/ziplex/extract/code/AGENTS.md` / `src/ziplex/extract/text/AGENTS.md` — Tree-sitter extraction per language / text compressors.
+- `src/ziplex/gui/AGENTS.md` — the read-only viewer.
 
 ## What this is
 
-Two products sharing one parser/resolver:
-- **The graph (the lead, since 0.6)** — `src/ziplex/core/`: a zero-config, incremental dependency-graph index (`<project>/.ziplex/index.db`) answering "which tests does this change affect / what depends on X / how does A reach B", via the CLI (`index`/`deps`/`impact`/`path`), MCP v2 (`ziplex-mcp`), the editor hook (`ziplex-hook`) and a CI template (`docs/ci/impacted-tests.yml`). No LLM. Evidence for this direction: `docs/REVIEW-2026-10-14.md`, `docs/EXPERIMENTS.md` #10-#16.
-- **The pack** — local project → `aif.json`: Tree-sitter compression/extraction → optional LLM summarization → optional human correction. `aif.json` carries only summaries + relationships, never full per-file code — shape at the bottom of this file. Served by legacy MCP (`ziplex-mcp --aif`), the GUI and skill export.
+Two products on one parser/resolver:
+- **The graph (the lead)** — a zero-config, incremental dependency-graph index (`<project>/.ziplex/index.db`) that answers "which tests does this change affect / what depends on X / how does A reach B": CLI `index`/`deps`/`impact`/`path`, MCP v2 (`ziplex-mcp`), the editor hook (`ziplex-hook`), the CI template `docs/ci/impacted-tests.yml`. No LLM, no network.
+- **The pack** — project → `aif.json` (per-file summaries, rules, AI guide, folder map, relationships) + `<name>.detail.json` + `<name>.cache.json`. Summaries are structural, or LLM-written with the `[llm]` extra. Served by the legacy MCP (`ziplex-mcp --aif`), skill/flat export and the read-only GUI (`[gui]` extra).
+
+Packaging: src-layout (`src/ziplex/` is the `ziplex` package), package-relative imports only. Console scripts: `ziplex`, `ziplex-mcp`, `ziplex-hook`, `ziplex-gui`. Core dependencies cover the graph; `pip install "ziplex[llm]"` adds requests/python-dotenv/tiktoken, `"ziplex[gui]"` adds flask/pywebview/watchdog, `[all]` both, `[dev]` everything + pytest.
 
 ## Commands
 
-Setup (Windows, matches the existing `venv/` in this repo):
+Setup (Windows, matches `venv/`): `venv\Scripts\activate` then `pip install -e ".[dev]"`. Without installing, run subcommands as `PYTHONPATH=src python -m ziplex.cli ...`. A `.env` with `GEMINI_API_KEY=...` (or `ziplex settings set ...`) is only needed for LLM packs.
+
+Graph (project defaults to cwd; an unknown file or git error → stderr + exit 2):
 ```
-venv\Scripts\activate
-pip install -e .                 # editable install: reads pyproject.toml, registers ziplex/ziplex-gui/ziplex-mcp
-pip install -e ".[dev]"          # + pytest
+ziplex index [path] [--check] [--json]          # refresh the index; --check exits 1 if anything differed
+ziplex deps <file...> [--in [--depth N]] [--mentions] [--external] [--json]
+ziplex impact [file...] [--diff worktree|staged|REF] [--format text|json|paths|commands]
+ziplex path <a> <b>                              # shortest import chain; exit 1 when none
+ziplex tree <path>                               # dependency tree
+ziplex install claude [--hook] [--dry-run]       # register ziplex-mcp (+ PostToolUse hook in .claude/settings.json)
+ziplex-mcp [--project PATH]                      # MCP v2, stdio; --aif <name>.json or --legacy-tools for the old aif.json tools
+ziplex-hook                                      # PostToolUse hook: stdin JSON in, additionalContext out, always exit 0
 ```
-`pip install -r requirement.txt` (no "s") is a lighter-weight alternative that skips packaging (no console scripts) — subcommands then run as `PYTHONPATH=src python -m ziplex.cli ...`.
+`impact` always exits 0. When a targeted run is unsafe (`run_all`: build/config/lockfile changed, or a file was deleted) `--format paths` prints nothing so `pytest $(ziplex impact --format paths)` runs everything; `--format commands` prints whole-suite commands. Tests are split into *certain* (import-time) and *possible* (only via a function-local import): text output and the hook run the certain ones, `paths`/`commands`/`json` include all.
 
-Requires a `.env` with `GEMINI_API_KEY=...` (via `python-dotenv`, `src/ziplex/llm.py`); optionally `GEMINI_MODEL=...` to override the default model.
-
-Run any subcommand from repo root (`ziplex ...` after `pip install -e .`; otherwise `PYTHONPATH=src python -m ziplex.cli ...`):
+Pack and exports:
 ```
-ziplex pack <project_path>                              # full pipeline, interactive file selection + correction
-ziplex pack <project_path> --auto                       # skip interactive selection, include all safe files
-ziplex pack <project_path> --auto-correct                # skip interactive correction, auto-accept LLM output
-ziplex pack <project_path> --auto --auto-correct         # non-interactive, for CI/scripted use
-ziplex pack <project_path> --no-cache                   # force-resummarize every file
-ziplex pack <project_path> -o out.json                  # custom output path (+ out.detail.json/out.cache.json)
-ziplex pack <project_path> --include "src/**/*.py,*.md" --ignore "**/*.generated.*"  # one-off scope, on top of .ziplex.json
-ziplex pack <project_path> --max-tokens 50000 --max-tokens-model GPT-4o  # CI guard: non-zero exit if payload exceeds N tokens
-ziplex pack <project_path> --auto --no-llm               # no GEMINI_API_KEY/network -- structural summaries only
-ziplex pack <project_path> --lang ko                     # packed CONTENT language (summaries/rules/AI guide) -- en (default) or ko
-
-ziplex init <project_path>               # scaffold .ziplex.json (include/ignore patterns)
-ziplex collect <project_path>            # just file collection + security scan
-ziplex tokens <project_path>             # token count, before/after compression
-ziplex tree <project_path>                # dependency tree only
-ziplex search <project_path> <pattern> --context 2 --ignore-case
-ziplex detail <name>.detail.json <file-key> --start 10 --end 40   # partial read of one file's compressed body
-ziplex freshness <project_path> <name>.cache.json                # hash-check aif.json against disk, no LLM calls
-ziplex skill <name>.json                                          # export as a Claude Agent Skill (.claude/skills/<slug>/)
-ziplex skill <name>.json --project <project_path>                  # + a free freshness warning if the project has drifted since packing
-ziplex link <name>.json <file> <target>                            # one-shot: add a dependency edge to an already-saved aif.json's relationships
-ziplex unlink <name>.json <file> <target>                          # one-shot: remove that edge
-ziplex summary <name>.json <file> "<text>"                         # one-shot: fix an already-saved file's summary, no re-pack
-ziplex summary <name>.json <folder> "<text>" --folder              # same, for a folder summary (aif["folders"])
-ziplex signatures|dependencies|api|compress|debug <single_file>
-ziplex --version                                                   # print installed version and exit (also ziplex-gui/ziplex-mcp --version)
-ziplex settings                                                    # print ~/.ziplex/settings.json -- CLI counterpart of the GUI Options page
-ziplex settings set <key> <value>                                  # e.g. `ziplex settings set llm_provider openai` -- key must be one of settings.EDITABLE_FIELDS
-ziplex checkpoint                                                  # list leftover checkpoints in ~/.ziplex/checkpoints (+ legacy <repo>/checkpoint): project name, pending file count, size, saved-at
-ziplex checkpoint clean <project_path>                             # delete just that project's checkpoint
-ziplex checkpoint clean --all                                      # delete every checkpoint
-ziplex doctor [project_path]                                       # environment check -- Python version, active LLM provider/model/API key, secretlint, leftover checkpoints (no LLM call); project_path adds .env/git-repo checks
+ziplex pack <path> [--no-llm] [--no-cache] [-o out.json] [--include "a,b"] [--ignore "c"] [--lang en|ko] [--max-tokens N [--max-tokens-model M]]
+ziplex freshness <path> <name>.cache.json        # exit 1 if a saved pack drifted from disk (CI gate: docs/ci/freshness-gate.yml)
+ziplex skill <name>.json [--project <path>]      # Claude Agent Skill export
+ziplex flatten <name>.json                       # one Markdown file
+ziplex init <path> | settings [set <k> <v>] | doctor [path] | --version
+ziplex dev <collect|tokens|search|detail|signatures|dependencies|api|compress|debug> ...   # debug tools
 ```
-Graph index commands (`ziplex.core.api.Graph` over `<project>/.ziplex/index.db`; never pack, never an LLM; `--project`/path defaults to cwd; an unknown file or git error → stderr + exit 2):
-```
-ziplex index [path] [--check] [--json]          # refresh the index, one-line summary; --check exits 1 if any file differed (a brand-new index counts)
-ziplex deps <file...> [--in [--depth N]] [--mentions] [--external] [--json]   # imports of a file, or (--in) its dependents by hop
-ziplex impact [file...] [--diff worktree|staged|REF] [--format text|json|paths|commands]   # impacted tests; no files + no --diff = --diff worktree
-ziplex path <a> <b>                              # shortest import chain; exit 1 when there is none
-ziplex install claude [--hook] [--dry-run]       # `claude mcp add ziplex -- ziplex-mcp --project <abs>` (only printed if `claude` isn't on PATH) + build the index; --hook merges the PostToolUse entry into <project>/.claude/settings.json (idempotent)
-ziplex-hook                                      # the Claude Code PostToolUse hook (src/ziplex/hook.py; `ziplex hook post-edit` is the same, ~0.5s slower): stdin JSON in, additionalContext out, always exit 0
-```
-`impact` always exits 0. When a targeted run is unsafe (`run_all`: a build/config/lockfile changed, or a file was deleted) `--format paths` prints nothing -- so `pytest $(ziplex impact --format paths)` runs the whole suite -- and `--format commands` prints the whole-suite commands (`pytest`, `npx jest`, `go test ./...`); the reason goes to stderr. No affected tests also prints nothing to stdout, so a script that must tell "nothing to run" from "run everything" uses `--format json`. `index --check` is a staleness gate for a *persisted* index (e.g. restored from a CI cache); on a fresh checkout it always exits 1. The hook acts only inside a project that already has `.ziplex/index.db` (nearest ancestor of the edited file), refreshes just that file, and emits at most once per (session, file) per 10 minutes (`.ziplex/hook_state.json`) when the file has dependents or affected tests.
-(`<project_path>` is *any* target project being packed/inspected — `--include "src/**/*.py"` is that target project's own `src/`, unrelated to Ziplex's own.)
+`pack` is always non-interactive (`--auto`/`--auto-correct` are accepted, hidden no-ops), skips work when the previous pack is still current, and reuses summaries by content hash. Network-free smoke test: `LLM_PROVIDER=mock ziplex pack <path>`.
 
-MCP server (v2 by default: five live-graph tools over the index; `--aif`/`--legacy-tools` serves the old ten aif.json tools -- see `src/ziplex/AGENTS.md`'s `mcp_server.py`):
-```
-ziplex-mcp [--project PATH]                 # stdio transport, project defaults to cwd
-claude mcp add ziplex -- ziplex-mcp --project <abs path>
-```
+GUI (read-only viewer of a saved pack): `ziplex-gui [--aif out.json --project ./p] [--no-window]`.
 
-Local GUI (browse an already-packed project, or pack one interactively — see `src/ziplex/gui/AGENTS.md`):
-```
-ziplex-gui                                            # native window (pywebview)
-ziplex-gui --aif out.json --project ./your-project    # prefill the landing page
-ziplex-gui --no-window                                # plain browser tab instead of a pywebview window
-```
-`--auto --auto-correct` makes `pack` fully non-interactive: `checkpoint.py`'s `handle_llm_failure()`/`resume_checkpoint_choice()` both take an `interactive` flag (from `--auto-correct`) and skip straight to their non-interactive default (checkpoint-and-exit; always-resume) instead of calling `input()` against a closed stdin.
+Tests: `pytest` (`pytest.ini` puts `src/` on the path). Nothing calls a real LLM or the network. `tests/` mirrors the package: `tests/core/`, `tests/enrich/`, `tests/extract/{code,text}/`, `tests/file/`, `tests/gui/`; root-level modules' tests sit flat in `tests/`. Graph regression nets: `tests/test_graph_golden.py`, `tests/core/test_index.py` (incremental == fresh build), `tests/core/test_layering.py`. Measurement scripts (not tests): `eval/` — see `eval/README.md`.
 
-Tests (`tests/`, pytest via `pytest.ini` which puts `src/` on `pythonpath`):
-```
-pip install -r requirement-dev.txt   # or: pip install -e ".[dev]"
-pytest
-```
-Covers the deterministic, non-LLM logic: compressors, extractor, `file/collector.py`'s filtering, `config.py`, `file/relationship.py`, `edits.py`, `search.py`, `freshness.py`, `confidence.py`, `skill_export.py`, `text_references.py`, `tech_stack.py`, `cli.py`'s argument-level wiring (via `monkeypatch`-injected fakes), `summarizer.py`, `tokenizer.py`, `checkpoint.py`'s non-interactive paths. `tests/test_pack_integration.py` runs the full `pack()` pipeline end to end against `llm.MockProvider`. `tests/test_mcp_server.py`/`tests/gui/test_pack_service.py`/`tests/gui/test_gui_server.py` cover the MCP and GUI layers on top of that. Nothing in the suite calls Gemini or needs `GEMINI_API_KEY`. `testfiles/` holds sample input for manual CLI runs, not part of the suite.
+## Shapes
 
-`tests/` mirrors `src/ziplex/`'s own subpackage layout past the flat core-pipeline modules: `tests/core/`, `tests/extract/code/`, `tests/extract/text/`, `tests/file/`, `tests/gui/` hold that subpackage's tests (e.g. `tests/file/test_relationship.py` ↔ `src/ziplex/file/relationship.py`), everything testing a root-level `src/ziplex/*.py` module (`checkpoint.py`, `packager.py`, `llm.py`, ...) stays flat directly under `tests/`. `conftest.py`'s autouse fixture applies to every test regardless of depth. Keep new test files following whichever side of that split their target module is on.
-
-Manual smoke test against a real project without waiting on Gemini: `LLM_PROVIDER=mock ziplex pack <project_path> --auto --auto-correct` — network-free, under a second.
-
-## Architecture
-
-`cli.py` is a thin argparse dispatcher (`_build_parser()` + one `_cmd_*` function per subcommand, dispatched via a `_COMMANDS` dict) — all real logic lives in the modules it calls. `pack` runs the full pipeline end to end. Steps 3-7 and 9 (the modules living directly under `src/ziplex/*.py`) are covered in full detail in **`src/ziplex/AGENTS.md`** — read that file before touching any of them; this list is only a map.
-
-1. **`file/collector.py` → `file/scanner.py` → `file/selector.py`** — collect, security-scan, and (unless `--auto`) interactively select files. Detail: `src/ziplex/file/AGENTS.md`.
-2. **`extract/code/*`** + **`extract/text/*`** — Tree-sitter signature/dependency/API extraction and body-stripping compression for code; structure-preserving compression for JSON/YAML/Markdown/plain text/Dockerfile. Detail: `src/ziplex/extract/code/AGENTS.md` / `src/ziplex/extract/text/AGENTS.md`.
-3. **`tokenizer.py`** — counts tokens per model, before vs. after compression and before vs. payload. Detail: `src/ziplex/AGENTS.md`.
-4. **`llm.py`** — the provider layer (Gemini/OpenAI/Claude/Mock), retry/backoff, per-language prompts. Detail: `src/ziplex/AGENTS.md`.
-5. **`checkpoint.py`** — `pack()`'s checkpoint/resume system. Detail: `src/ziplex/AGENTS.md`.
-6. **`summarizer.py`** — batched LLM summary generation, plus the `use_llm=False` structural fallback. Detail: `src/ziplex/AGENTS.md`.
-7. **`packager.py`** (`pack()`) — orchestrates 1–6 plus `text_references.py`/`folder_summary.py`; the pipeline stitcher. Detail: `src/ziplex/AGENTS.md`.
-8. **`edits.py`** + **`file/relationship.py`** — the pure, I/O-free editing API and dependency-graph ops (`build_tree`/`move_file`/`has_cycle`). Detail: `src/ziplex/file/AGENTS.md` (`has_cycle`'s traversal direction is easy to get backwards).
-9. **`corrector.py`** — the interactive CLI wrapper around 8. Detail: `src/ziplex/AGENTS.md`.
-10. **`packager.py`** (`save_aif()`) — splits `compressed` per file → `<name>.detail.json`, manifest → `<name>.cache.json`.
-
-Beyond the numbered pipeline, `src/ziplex/core/AGENTS.md` covers the graph engine (`graph.py`, `text_references.py`/`go_packages.py`/`ts_paths.py`/`py_imports.py`/`import_context.py`), and `src/ziplex/AGENTS.md` also covers: `tech_stack.py`/`folder_summary.py` (free project-level fact blocks), `freshness.py`/`doctor.py`/`search.py`/`confidence.py` (staleness, environment checks, search, summary-trust scoring), `query_service.py` (the read-only query core behind MCP and the GUI), `config.py`/`settings.py` (per-project/per-user config), and `skill_export.py`/`mcp_server.py` (the two distribution channels beyond the GUI).
-
-The final `aif.json` shape: `{ project: {name, prompt, tech_stack: [...], security_scan: {flagged, included_anyway, excluded}, scope: {include: [...], ignore: [...]}, format_notes, language}, rules: [...], folders: {folder-path: {summary, confidence, file_count}} (multi-file folders only), tokens: {...}, files: {name: {summary, confidence?}} (confidence omitted when 1.0), relationships: {file: {internal, external}} (certain edges only; prose-mention edges live in detail.json's `text_refs` -- see `src/ziplex/AGENTS.md`'s `aif_io.py`) }`, with siblings `<name>.detail.json` shaped `{ file-name: {compressed, text_refs?}, ... }` and `<name>.cache.json` shaped `{ file-name: content-hash, ... }` (both flat, same file-name keys as `files` — not nested under a `files` key). `project.security_scan`/`project.format_notes`/`project.scope` are small free additions explained in `src/ziplex/AGENTS.md`'s closing paragraph, attached so `aif.json` is self-explanatory even outside any tool session.
-
-Every LLM-facing function in `llm.py` follows the same contract: prompt says "JSON only, nothing else," caller does `json.loads()` and falls back to a default (`{}`, `[]`, `""`) on `JSONDecodeError` — callers in `packager.py` loop until they get a non-empty result or the user intervenes via `checkpoint.handle_llm_failure`.
+aif.json: `{project: {name, prompt, tech_stack, security_scan: {flagged, included_anyway, excluded}, scope: {include, ignore}, format_notes, language, ziplex_version, llm}, rules, folders: {path: {summary, file_count}} (multi-file folders), tokens, files: {name: {summary}}, relationships: {file: {internal, external}} (certain edges only)}`; detail.json `{file: {compressed, text_refs?}}` (text_refs = prose mentions); cache.json `{file: content-hash}`. Readers of a saved graph go through `aif_io.attach_weak_edges()`; writers through `aif_io.write_aif()`.

@@ -4,8 +4,7 @@ belonging to any one module.
 
 import pytest
 
-from ziplex import checkpoint
-from ziplex import llm
+from ziplex.enrich import llm
 from ziplex import progress_i18n
 from ziplex import settings as app_settings
 
@@ -67,13 +66,3 @@ def _isolate_ziplex_settings(tmp_path, monkeypatch):
     """
     monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / ".ziplex-test-settings.json")
 
-
-@pytest.fixture(autouse=True)
-def _isolate_checkpoints(tmp_path, monkeypatch):
-    """Checkpoints default to ~/.ziplex/checkpoints and are also *read* from
-    the legacy REPO_ROOT/checkpoint -- a real dev checkout can hold genuine
-    leftovers there. Tests that monkeypatch CHECKPOINT_DIR themselves still
-    win (they run after this fixture); the legacy dir is always isolated.
-    """
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / ".ziplex-test-checkpoints")
-    monkeypatch.setattr(checkpoint, "LEGACY_CHECKPOINT_DIR", tmp_path / ".ziplex-test-legacy-checkpoints", raising=False)

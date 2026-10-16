@@ -5,18 +5,14 @@ import json
 
 import pytest
 
-from ziplex import checkpoint, packager
-from ziplex.edits import finalize_aif
-
-
+from ziplex import packager
 def _graph(tmp_path, monkeypatch, files: dict[str, str]) -> dict[str, list[str]]:
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
     root = tmp_path / "repo"
     for rel, content in files.items():
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-    aif = finalize_aif(packager.pack(str(root), auto=True, interactive=False, use_llm=False, use_cache=False))
+    aif = (packager.pack(str(root), auto=True, interactive=False, use_llm=False, use_cache=False))
     return {
         name: sorted(set(rel["internal"]) - set(rel.get("internal_text_refs", [])))
         for name, rel in aif["relationships"].items()

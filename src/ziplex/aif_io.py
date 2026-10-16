@@ -175,38 +175,3 @@ def load_aif_full(aif_path: str) -> dict:
     return attach_weak_edges(aif, read_detail_or_none(aif_path))
 
 
-def save_relationships_edit(aif_path: str, edit) -> dict:
-    """The one saved-project read-modify-write for `relationships`:
-    `edit(relationships) -> relationships` runs against the full in-memory
-    shape, then the certain edges are written back to aif.json and the weak
-    ones to detail.json's `text_refs`. Everything else in both files is
-    written back untouched (a detail.json that's gone is left absent rather
-    than recreated with empty `compressed` bodies). Callers needing mutual
-    exclusion (gui/pack_service.py) wrap this in their own lock.
-    Returns the full-shape relationships.
-    """
-    with open(aif_path, "r", encoding="utf-8") as f:
-        aif = json.load(f)
-    detail = _read_detail_for_write(aif_path)
-
-    full = attach_weak_edges(aif, detail)
-    relationships = edit(full.get("relationships", {}))
-
-    # No detail.json means nowhere to persist the weak edges -- keep the full
-    # (duplicated) shape in aif.json rather than silently dropping them.
-    if detail is None:
-        aif["relationships"] = relationships
-        weak = {}
-    else:
-        aif["relationships"], weak = detach_weak_edges(relationships)
-    write_aif(aif_path, aif)
-
-    if detail is not None:
-        for name, entry in detail.items():
-            entry.pop(WEAK_KEY, None)
-            if name in weak:
-                entry[WEAK_KEY] = weak[name]
-        with open(detail_path_for(aif_path), "w", encoding="utf-8") as f:
-            json.dump(detail, f, ensure_ascii=False, indent=2)
-
-    return relationships

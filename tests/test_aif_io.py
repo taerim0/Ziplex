@@ -5,9 +5,7 @@ from ziplex.aif_io import (
     attach_weak_edges,
     detach_weak_edges,
     expand_relationships,
-    save_relationships_edit,
 )
-from ziplex.file.relationship import add_relationship, remove_relationship
 from ziplex.packager import save_aif
 
 
@@ -119,43 +117,6 @@ def test_saved_graph_still_loads_when_detail_json_is_gone(tmp_path):
     assert query_service.get_dependents(str(out), "a.py") == ["b.py"]
 
 
-def test_edit_roundtrip_keeps_weak_edges_and_touches_nothing_else(tmp_path):
-    out = _save(tmp_path)
-    before_detail = json.loads((tmp_path / "demo.detail.json").read_text(encoding="utf-8"))
-
-    save_relationships_edit(str(out), lambda rel: add_relationship(rel, "c.py", "a.py"))
-
-    saved = json.loads(out.read_text(encoding="utf-8"))
-    after_detail = json.loads((tmp_path / "demo.detail.json").read_text(encoding="utf-8"))
-    assert saved["relationships"]["c.py"] == {"internal": ["a.py"], "external": []}
-    assert after_detail["README.md"]["text_refs"] == ["a.py"]  # weak edge survived a strong-edge edit
-    assert {n: e["compressed"] for n, e in after_detail.items()} == {n: e["compressed"] for n, e in before_detail.items()}
-
-
-def test_editing_away_a_weak_edge_removes_it_from_detail_json(tmp_path):
-    out = _save(tmp_path)
-
-    save_relationships_edit(str(out), lambda rel: remove_relationship(rel, "README.md", "a.py"))
-
-    detail = json.loads((tmp_path / "demo.detail.json").read_text(encoding="utf-8"))
-    assert "text_refs" not in detail["README.md"]
-    assert query_service.get_dependents(str(out), "a.py") == ["b.py"]
-
-
-def test_edit_without_a_detail_json_keeps_weak_edges_in_aif_json_instead_of_dropping_them(tmp_path):
-    out = _save(tmp_path)
-    (tmp_path / "demo.detail.json").unlink()
-    # start from a full-shape aif.json, as a pre-slim pack would have left
-    aif = json.loads(out.read_text(encoding="utf-8"))
-    aif["relationships"] = _full()
-    out.write_text(json.dumps(aif), encoding="utf-8")
-
-    save_relationships_edit(str(out), lambda rel: add_relationship(rel, "c.py", "a.py"))
-
-    saved = json.loads(out.read_text(encoding="utf-8"))
-    assert saved["relationships"]["README.md"]["internal_text_refs"] == ["a.py"]
-
-
 def test_a_pre_slim_aif_json_still_loads_and_queries(tmp_path):
     out = tmp_path / "old.json"
     out.write_text(json.dumps(_aif_with(_full())), encoding="utf-8")
@@ -203,32 +164,3 @@ def test_dumps_aif_is_much_smaller_than_indent_2():
     assert len(dumps_aif(aif)) < len(json.dumps(aif, indent=2)) * 0.8
 
 
-def test_every_writer_of_a_saved_aif_uses_the_same_layout(tmp_path):
-    out = _save(tmp_path)
-    layout_after_save = out.read_text(encoding="utf-8")
-
-    save_relationships_edit(str(out), lambda rel: rel)  # a no-op edit must not reflow the file
-
-    assert out.read_text(encoding="utf-8") == layout_after_save
-
-
-def test_save_relationships_edit_refuses_to_run_on_an_unreadable_detail_json(tmp_path):
-    # A truncated/locked detail.json used to be treated as absent: the weak
-    # edges were written inline into aif.json, and expand_relationships()
-    # then ignored detail.json's text_refs forever -- every prose-mention
-    # edge permanently lost over a transient read error.
-    import pytest
-
-    out = _save(tmp_path)
-    detail_path = tmp_path / "demo.detail.json"
-    good_detail = detail_path.read_text(encoding="utf-8")
-    detail_path.write_text(good_detail[: len(good_detail) // 2], encoding="utf-8")
-    before = out.read_text(encoding="utf-8")
-
-    with pytest.raises(ValueError):
-        save_relationships_edit(str(out), lambda rels: rels)
-    assert out.read_text(encoding="utf-8") == before  # nothing written
-
-    detail_path.write_text(good_detail, encoding="utf-8")
-    rels = query_service.get_relationships(str(out), include_text_refs=True)
-    assert rels["README.md"]["internal_text_refs"] == ["a.py"]

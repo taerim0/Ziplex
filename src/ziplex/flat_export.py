@@ -32,7 +32,6 @@ directly testable without touching a filesystem.
 from pathlib import Path
 
 from .aif_io import attach_weak_edges, detail_path_for
-from .confidence import project_confidence_summary, REVIEW_THRESHOLD
 from .skill_export import graph_summary_md
 
 # Common extension -> Markdown fenced-code-block language tag, for a nicer
@@ -60,13 +59,11 @@ def _header_md(aif: dict) -> str:
     project = aif.get("project", {})
     rules = aif.get("rules", [])
     files = aif.get("files", {})
-    confidence_summary = project_confidence_summary(files)
 
     lines = [
         f"# {project.get('name') or '(unnamed)'}", "",
         (project.get("prompt") or "").strip() or "(no AI guide generated)", "",
-        f"**{len(files)} files** -- confidence {confidence_summary['average']:.2f} average, "
-        f"{confidence_summary['needs_review_count']} flagged for review (see each file's own confidence below).",
+        f"**{len(files)} files**",
         "",
     ]
 
@@ -86,7 +83,7 @@ def _header_md(aif: dict) -> str:
             summary = (info.get("summary") or "").replace("\n", " ")
             count = info.get("file_count")
             count_text = f"{count} file(s)" if count is not None else "file count unknown"
-            lines.append(f"- `{path}` ({count_text}, confidence {info.get('confidence', 1.0):.2f}): {summary}")
+            lines.append(f"- `{path}` ({count_text}): {summary}")
         lines.append("")
 
     return "\n".join(lines)
@@ -104,9 +101,7 @@ def _files_md(aif: dict, detail: dict) -> str:
     for name in sorted(files):
         data = files[name]
         summary = (data.get("summary") or "").strip()
-        confidence = data.get("confidence", 1.0)
-        flag = " ⚠️ low confidence -- verify against the code below" if confidence < REVIEW_THRESHOLD else ""
-        lines += [f"### `{name}` (confidence: {confidence:.2f}){flag}", "", summary or "(no summary)", ""]
+        lines += [f"### `{name}`", "", summary or "(no summary)", ""]
 
         body = (detail.get(name) or {}).get("compressed")
         if body:
