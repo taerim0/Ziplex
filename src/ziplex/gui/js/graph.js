@@ -1,11 +1,7 @@
-// Dependency-graph visualization + editing -- see app.js's header comment
-// for the overall module split. This file: svgEl()/truncateTail()/
-// shortLabels() (small SVG/label helpers, internal to this module), and
-// the three exported components -- renderMiniGraph() (one file's ego-
-// graph), renderDependencyTreeOverview() (read-only, collapsible, shown
-// first), and renderRelationshipEditor() (master-detail, reached by
-// clicking a file in the overview). Used by both the pack review flow
-// (pack.js) and the post-pack Relationships page (pages/relationships.js).
+// Read-only dependency-graph views for pages/relationships.js:
+// renderMiniGraph() (one file's ego-graph), renderDependencyTreeOverview()
+// (whole-project collapsible tree) and renderRelationshipViewer()
+// (master-detail: searchable file list + the selected file's edges).
 
 import { el } from "./app.js";
 import { t } from "./i18n.js";
@@ -60,7 +56,7 @@ function shortLabels(names) {
 // utils module with 50 dependents, say) can't blow up the SVG -- the text
 // lists below the graph already enumerate everything; this is a visual aid
 // for spotting the shape of a file's relationships at a glance, not the
-// source of truth. Clicking an internal neighbor node jumps the editor's
+// source of truth. Clicking an internal neighbor node jumps the viewer's
 // selection to it (via onSelect), so a human can walk the graph instead of
 // re-searching the file list for every hop.
 const REL_GRAPH_MAX_NEIGHBORS = 6;
@@ -154,53 +150,17 @@ export function renderMiniGraph(name, parents, children, onSelect) {
   return svg;
 }
 
-// Read-only "whole project at a glance" view over the same build_tree()-
-// shaped dependency tree ({file: {internal: [...], external: [...]}})
-// renderRelationshipEditor below edits -- shown first when a pack review's
-// relationship section loads (see pack.js's showReviewState()), instead of
-// jumping straight into per-file edit mode for the first flagged file the
-// way an earlier version did. The idea: let a human spot what actually
-// looks wrong by eye across the *whole* tree first, and only drop into the
-// edit UI for a file once they've decided (by looking, not by clicking
-// through a search list one file at a time) that it needs a change.
-//
-// Same roots-first + cycle-guarded traversal as corrector.py's terminal
-// print_current_tree() (a "root" is any file nothing else's `internal` list
-// points at) -- kept in sync with that function deliberately, since the two
-// are the browser and terminal versions of the identical judgment call.
-// Rendered with native <details>/<summary> so expand/collapse needs no JS
-// of its own and a large project (dozens of files) stays scannable by
-// collapsing subtrees rather than becoming one long scroll.
-//
-// Clicking a file's own row (icon + name) calls onSelectFile(name) instead
-// of toggling the <details> it may sit inside -- event.preventDefault() in
-// that row's click handler suppresses the native disclosure-triangle
-// toggle for clicks on the row itself, while a click on the actual triangle
-// (part of <summary>, not this row) still expands/collapses normally, the
-// same split VS Code's own file tree uses (chevron toggles, label opens).
-//
-// A true cycle (buildNode()'s `ancestors.has(dep)` branch -- the same file
-// reappearing on the current root-to-here path) is visually distinct from
-// the far more common, non-cyclic "already shown" row (a file merely shared
-// by two dependents, deduped via `seen`): a 🔁 flag + accent-colored name,
-// same visual language as the existing ⚠️ confidence flag, plus a one-line
-// "N circular references found" banner prepended once the whole tree is
-// built -- without this, both cases previously read as identical muted
-// text, so a genuine mutual-import cycle (worth fixing) was indistinguishable
-// from ordinary sharing (not a problem) unless you read the parenthetical.
-export function renderDependencyTreeOverview(tree, allFiles, flaggedFiles, onSelectFile) {
-  const flagged = new Set(flaggedFiles);
-  // Counts true cycles (buildNode()'s `ancestors.has(dep)` branch below) as
-  // they're found during the walk, purely to drive the summary banner
-  // prepended once the whole tree is built -- distinct from `seen`, which
-  // counts a much more common, non-cyclic case (a file shared by two
-  // dependents) that isn't a problem worth flagging.
-  let cycleCount = 0;
+// Whole-project tree over a {file: {internal, external}} map, roots first
+// (a root is a file nothing else imports). Native <details> handles
+// expand/collapse; clicking a file row calls onSelectFile(name). A file
+// already rendered elsewhere shows as a shallow "already shown" row, and a
+// true cycle on the current path is flagged (🔁) with a summary banner.
+export function renderDependencyTreeOverview(tree, allFiles, onSelectFile) {
+  let cycleCount = 0; // true cycles only, for the banner
 
   function fileRow(name, note, isCycle) {
-    const row = el("div", { class: `tree-row${flagged.has(name) ? " tree-flagged" : ""}${isCycle ? " tree-cycle" : ""}` }, [
+    const row = el("div", { class: `tree-row${isCycle ? " tree-cycle" : ""}` }, [
       el("span", { text: "📄 " }),
-      flagged.has(name) ? el("span", { class: "tree-flag", text: "⚠️ " }) : null,
       isCycle ? el("span", { class: "tree-flag", text: "🔁 " }) : null,
       el("span", { class: "tree-name", text: name }),
       note ? el("span", { class: `${isCycle ? "tree-cycle-note" : "muted"}`, text: ` ${note}` }) : null,
@@ -209,28 +169,10 @@ export function renderDependencyTreeOverview(tree, allFiles, flaggedFiles, onSel
     return row;
   }
 
-  // `ancestors` guards against a true cycle -- the same file reappearing
-  // on the *current* root-to-here path (a -> b -> a). `seen` is a second,
-  // separate guard: a flat set shared across every root's own call to
-  // buildNode(), marking a file as fully expanded the *first* time it's
-  // rendered anywhere in the whole overview. Without it, a file genuinely
-  // shared by many dependents (a common utils module, say) has its own
-  // full subtree re-expanded once per dependent -- and if *that* subtree
-  // also shares files with siblings, the duplication compounds at every
-  // level. This isn't hypothetical: packing Ziplex's own repo (a real,
-  // richly cross-referenced ~90-file project, not a toy fixture) hung the
-  // GUI's review screen outright, the browser tab unresponsive to even a
-  // screenshot for 50+ seconds -- traced to exactly this, a file
-  // (`extract/text/json.py`) whose in-degree got additionally inflated by
-  // a real resolve_dependency() bug (see file/relationship.py) that let
-  // it fan out into dozens of "dependents." `seen` bounds total rendered
-  // nodes to the size of the graph (files + edges) regardless of how
-  // shared any one file is, the same way a real dependency-tree UI
-  // (`npm ls`, VS Code's explorer) dedupes a shared subtree rather than
-  // reprinting it in full at every reference. A file caught by `seen`
-  // still gets its own row (so "what does X depend on" is still
-  // answerable by clicking into it via the editor view) -- only the
-  // recursive re-expansion of its *own* children is skipped.
+  // `ancestors`: files on the current root-to-here path (cycle guard).
+  // `seen`: shared across the whole render; a file expands only the first
+  // time it appears, which bounds rendered nodes to the graph's size (a
+  // heavily shared file used to re-expand per dependent and hang the page).
   function buildNode(name, ancestors, seen) {
     const deps = tree[name] || { internal: [], external: [] };
     const children = [];
@@ -265,25 +207,11 @@ export function renderDependencyTreeOverview(tree, allFiles, flaggedFiles, onSel
 
   const box = el("div", { class: "tree-overview" });
   let roots = allFiles.filter(name => !isChild.has(name));
-  // Every file is somebody's dependency -- a full cycle with no natural
-  // root (see file/relationship.py's own docstring re: mutual-import
-  // cycles). corrector.py's terminal tree has the identical gap; rather
-  // than silently rendering nothing here, fall back to a flat list so
-  // "what files exist" still has an obvious answer.
+  // Fully cyclic graph with no natural root: fall back to every file.
   if (!roots.length && allFiles.length) roots = allFiles;
 
-  // One `seen` set for the whole overview, not one per root -- a file
-  // shared *across* two different roots' subtrees (not just within one)
-  // needs deduping too. The `seen.has(name)` check right here (not just
-  // inside buildNode()'s own loop over a node's dependencies) matters for
-  // the "no roots" fallback just above: a fully-cyclic component with
-  // nothing else (A <-> B, no third file) makes *both* A and B into
-  // "roots" with nothing to distinguish them. Without this check, root A
-  // fully expands (marking B seen along the way, since B is A's own
-  // dependency), and then root B's own top-level loop iteration would
-  // still render B's *entire* subtree a second time from scratch -- the
-  // exact duplicate rendering this whole seen-set fix exists to prevent,
-  // just bounded (linear) instead of unbounded like the original bug.
+  // Checked at the root level too: in the all-roots fallback, a root may
+  // already have been expanded under an earlier root.
   const seen = new Set();
   for (const name of roots) {
     if (seen.has(name)) {
@@ -294,64 +222,32 @@ export function renderDependencyTreeOverview(tree, allFiles, flaggedFiles, onSel
     box.appendChild(buildNode(name, new Set([name]), seen));
   }
   if (!roots.length) box.appendChild(el("p", { class: "muted", text: t("graph.tree.empty") }));
-  // Prepended after the walk, not built up front -- cycleCount is only
-  // fully known once every buildNode() call above has run.
   if (cycleCount > 0) {
     box.prepend(el("div", { class: "tree-cycles-banner", text: t("graph.tree.cyclesSummary", { n: cycleCount }) }));
   }
   return box;
 }
 
-// Master-detail editor over a build_tree()-shaped dependency tree
-// ({file: {internal: [...], external: [...]}}). Rendering every file's full
-// edge list at once (an earlier version did this) doesn't scale past a
-// couple dozen files: the page turns into one long scroll, and each file's
-// "add dependency" dropdown lists every other file in the project with no
-// way to search it. This instead shows a searchable file list on the left
-// and, on the right, only the selected file's own relationships -- an ego
-// graph (renderMiniGraph, above) plus the same edit controls the old
-// version had, so the amount rendered no longer grows with project size.
-// `dependencies` is a graph, not a tree -- a file can legitimately be
-// depended on by more than one other file -- so this still edits one edge
-// (file -> target) at a time instead of reparenting a whole nested subtree
-// the way an earlier drag-and-drop version did (that collapsed ALL of a
-// shared file's references down to wherever it got dropped, which is almost
-// never what you want). onLink/onUnlink(file, target) are called on each
-// add/remove click; the caller is expected to redraw via the returned
-// .setTree() once the server confirms the change (see /api/pack/link,
-// /api/pack/unlink in pack.js's showReviewState).
-export function renderRelationshipEditor(tree, allFiles, onLink, onUnlink, initialSelected) {
+// Master-detail viewer: a searchable file list on the left and, on the
+// right, only the selected file's ego-graph and edge lists, so the amount
+// rendered doesn't grow with project size.
+export function renderRelationshipViewer(tree, allFiles, initialSelected) {
   const box = el("div", { class: "rel-master-detail" });
-  let currentTree = tree;
   let selected = initialSelected && allFiles.includes(initialSelected) ? initialSelected : (allFiles[0] || null);
 
   const searchInput = el("input", { type: "text", placeholder: t("graph.editor.searchPlaceholder") });
   const listPane = el("div", { class: "rel-file-list" });
   const detailPane = el("div", { class: "rel-detail-pane" });
 
-  // Everyone whose own `internal` list points at `name` -- the tree only
-  // records outgoing edges per file, so "who depends on me" (shown as the
-  // graph's left/parent side) has to be derived by scanning every file
-  // rather than looked up directly. Precomputed once per currentTree
-  // (buildReverseDeps(), called on setup and again in setTree()) instead of
-  // rescanning allFiles from dependentsOf() itself -- drawList() calls it
-  // once per visible row, and the search box's "input" listener re-runs
-  // drawList() on every keystroke, so an O(n) scan per row made a full
-  // relationship-editor redraw O(n²) in the file count.
-  let reverseDeps = new Map();
-  function buildReverseDeps() {
-    reverseDeps = new Map();
-    for (const f of allFiles) {
-      for (const dep of currentTree[f]?.internal || []) {
-        if (!reverseDeps.has(dep)) reverseDeps.set(dep, []);
-        reverseDeps.get(dep).push(f);
-      }
+  // The tree only records outgoing edges; precompute "who imports me" once.
+  const reverseDeps = new Map();
+  for (const f of allFiles) {
+    for (const dep of tree[f]?.internal || []) {
+      if (!reverseDeps.has(dep)) reverseDeps.set(dep, []);
+      reverseDeps.get(dep).push(f);
     }
   }
-  function dependentsOf(name) {
-    return reverseDeps.get(name) || [];
-  }
-  buildReverseDeps();
+  const dependentsOf = (name) => reverseDeps.get(name) || [];
 
   function selectFile(name) {
     selected = name;
@@ -366,7 +262,7 @@ export function renderRelationshipEditor(tree, allFiles, onLink, onUnlink, initi
     for (const name of allFiles) {
       if (q && !name.toLowerCase().includes(q)) continue;
       shown++;
-      const deps = currentTree[name] || { internal: [], external: [] };
+      const deps = tree[name] || { internal: [], external: [] };
       const hasEdges = deps.internal.length > 0 || deps.external.length > 0 || dependentsOf(name).length > 0;
       listPane.appendChild(el("div", {
         class: `rel-list-row${name === selected ? " active" : ""}`,
@@ -386,23 +282,22 @@ export function renderRelationshipEditor(tree, allFiles, onLink, onUnlink, initi
       return;
     }
     const name = selected;
-    const deps = currentTree[name] || { internal: [], external: [] };
+    const deps = tree[name] || { internal: [], external: [] };
     const parents = dependentsOf(name);
     const children = [
       ...deps.internal.map(c => ({ name: c, external: false })),
       ...deps.external.map(c => ({ name: c, external: true })),
     ];
 
-    detailPane.appendChild(el("div", { class: "file-edit-name", text: `📄 ${name}` }));
+    detailPane.appendChild(el("div", { class: "file-edit-name" }, [
+      el("a", { href: `#/files/${encodeURIComponent(name)}`, text: `📄 ${name}` }),
+    ]));
     detailPane.appendChild(renderMiniGraph(name, parents, children, selectFile));
 
     const edgeList = el("div", { class: "rel-edges" });
     for (const child of deps.internal) {
-      const unlinkButton = el("button", { class: "secondary", text: t("graph.editor.unlink") });
-      unlinkButton.addEventListener("click", () => onUnlink(name, child));
-      edgeList.appendChild(el("div", { class: "rel-edge" }, [
-        el("span", { text: `→ 📄 ${child}` }), unlinkButton,
-      ]));
+      edgeList.appendChild(el("div", { class: "rel-edge rel-edge-link", onclick: () => selectFile(child) },
+        el("span", { text: `→ 📄 ${child}` })));
     }
     for (const ext of deps.external) {
       edgeList.appendChild(el("div", { class: "rel-edge muted" }, el("span", { text: `→ 📦 ${ext}` })));
@@ -415,16 +310,6 @@ export function renderRelationshipEditor(tree, allFiles, onLink, onUnlink, initi
     if (parents.length) {
       detailPane.appendChild(el("p", { class: "muted", text: t("graph.editor.dependentsOf", { n: parents.length, list: parents.join(", ") }) }));
     }
-
-    const targetListId = "rel-target-options";
-    const targetInput = el("input", { type: "text", list: targetListId, placeholder: t("graph.editor.linkSearchPlaceholder") });
-    const targetOptions = el("datalist", { id: targetListId },
-      allFiles.filter(f => f !== name && !deps.internal.includes(f)).map(f => el("option", { value: f })));
-    const linkButton = el("button", { class: "secondary", text: t("graph.editor.addLink"), onclick: () => {
-      const target = targetInput.value.trim();
-      if (target && target !== name) onLink(name, target);
-    } });
-    detailPane.appendChild(el("div", { class: "toolbar" }, [targetInput, targetOptions, linkButton]));
   }
 
   searchInput.addEventListener("input", drawList);
@@ -433,9 +318,5 @@ export function renderRelationshipEditor(tree, allFiles, onLink, onUnlink, initi
 
   box.appendChild(el("div", { class: "rel-list-pane" }, [searchInput, listPane]));
   box.appendChild(detailPane);
-
-  return {
-    el: box,
-    setTree: (tree) => { currentTree = tree; buildReverseDeps(); drawList(); drawDetail(); },
-  };
+  return box;
 }
