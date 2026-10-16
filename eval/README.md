@@ -142,3 +142,44 @@ python eval/agent_compare.py report --out <scratch>/ac/rich
 | Date | Repos | Runs | F1 C0 / C1 | Impact questions C1/C0 (cost, calls, time) | Importer questions C1/C0 (cost, time) | Uptake |
 |---|---|---|---|---|---|---|
 | 2026-10-16 | rich + flask (17 q) | 102 | 0.997 / 1.000 | 0.43 / 0.20 / 0.45 | 1.12 / 0.87 | 51/51 |
+
+## t3_bugfix.py (T3: real bug fixes, hidden tests)
+
+Real upstream fix commits replayed as tasks. C0 = headless Claude Code
+(`--restricted --tools Read,Grep,Glob,Edit,Write,Bash`, Bash allowed only for
+`<venv python> -m pytest`), C1 = C0 + `ziplex-mcp --project <worktree>`
+(index pre-built), C2 = C1 + the PostToolUse hook via `--settings`. Same
+neutral prompt (task text + how to run pytest), prompt on stdin.
+
+- **mine**: last 400 non-merge commits whose message names a fix, touching 1-3
+  non-test source `.py` files (<= 60 changed lines) plus at least one test
+  file. Task text = the linked issue's title + body (`gh api`, via the commit
+  or its PR; ```diff blocks dropped), else the commit message with
+  change-describing lines stripped. Never the diff or test names.
+- **validate**: worktree at the parent + the fix's test-file changes only ->
+  those tests must fail (pytest rc 1, no collection error); + the fix's source
+  changes -> they must pass. The full suite at parent + hidden tests is the
+  regression baseline (failing node ids, runtime). Selection: round-robin
+  over repos, issue-framed tasks first, suites <= 120s, <= 4 per repo;
+  `--reject id:reason` drops a task after reading its hidden tests (e.g. they
+  assert an internal name the issue never mentions). `PYTEST_ADDOPTS` ignores
+  `PytestRemovedIn10Warning` so older commits collect under today's pytest.
+- **run**: fresh worktree at the parent per (task, condition, rep); after the
+  agent, hidden tests are applied (overwriting any agent edits to them):
+  `solved` = they all pass; `regressions` = full-suite failures not in the
+  baseline, outside the hidden test files. Raw streams in `<work>/streams/`.
+  C2 runs with `--include-hook-events`; a hook that exits non-zero aborts the
+  run (the hook command needs forward slashes: it runs under Git Bash).
+- **report**: solve rate with Wilson CI, regressions, paired per-task solve
+  difference and cost/calls/time ratios vs. C0 with bootstrap CIs, uptake.
+
+```bash
+python eval/t3_bugfix.py mine --work <scratch>/t3 --repos-root <scratch>/repos
+python eval/t3_bugfix.py validate --work <scratch>/t3 --repos-root <scratch>/repos --venvs-root <scratch>/venvs --target 12
+python eval/t3_bugfix.py run --work <scratch>/t3 --repos-root <scratch>/repos --venvs-root <scratch>/venvs \
+    --conditions C0,C1,C2 --reps 3 --claude <claude.cmd> --ziplex-mcp <ziplex-mcp.exe> --ziplex-hook <ziplex-hook.exe>
+python eval/t3_bugfix.py report --work <scratch>/t3
+```
+
+Clones and venvs are the T2 ones (`<venvs>/<repo>/Scripts/python.exe`,
+package editable + pytest); clones are never checked out in place.
