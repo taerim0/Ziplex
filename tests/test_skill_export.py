@@ -95,16 +95,6 @@ def test_files_md_lists_every_file_sorted_with_escaped_summary():
     # the pipe/newline in utils.py's summary would otherwise break the
     # Markdown table it's embedded in
     assert "Helpers \\| with a pipe and a newline." in files_md
-    assert "0.90" in files_md
-    assert "0.30" in files_md
-
-
-def test_overview_md_reports_confidence_summary():
-    # _sample_aif() has two files: confidence 0.9 (auto-kept) and 0.3
-    # (below REVIEW_THRESHOLD) -- average 0.60, one flagged.
-    overview_md = generate_skill_files(_sample_aif(), {})["references/overview.md"]
-    assert "0.60 average" in overview_md
-    assert "1 file(s) flagged for review" in overview_md
 
 
 def test_overview_md_omits_folders_section_when_field_absent():
@@ -123,8 +113,8 @@ def test_overview_md_lists_folders_when_present():
     overview_md = generate_skill_files(aif, {})["references/overview.md"]
 
     assert "## Folders" in overview_md
-    assert "`.` (1 file(s), confidence 1.00): Top-level files." in overview_md
-    assert "`src` (2 file(s), confidence 0.50): Core logic." in overview_md
+    assert "`.` (1 file(s)): Top-level files." in overview_md
+    assert "`src` (2 file(s)): Core logic." in overview_md
 
 
 def test_overview_md_omits_tech_stack_section_when_field_absent():

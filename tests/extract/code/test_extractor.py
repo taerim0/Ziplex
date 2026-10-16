@@ -247,34 +247,6 @@ def test_extract_signatures_ignores_a_plain_object_creation_java_field(tmp_path)
     assert extract_signatures(str(file_path)) == []
 
 
-def test_java_field_registrations_fix_the_real_low_confidence_case(tmp_path):
-    # End-to-end proof of the actual motivating case (see
-    # _java_field_handler's docstring): a real, accurate LLM summary of a
-    # registry-style class used to score a misleadingly low confidence
-    # because extract_signatures() had nothing but one incidental helper
-    # method to check it against -- this closes that specific gap.
-    from ziplex.confidence import estimate_confidence, REVIEW_THRESHOLD
-
-    file_path = tmp_path / "ModItems.java"
-    file_path.write_text(
-        "public class ModItems {\n"
-        '    public static final Item RUBY_TOOL = register("ruby_tool", new ToolItem());\n'
-        "    public static boolean isRubyTool(Item item) {\n"
-        "        return item == RUBY_TOOL;\n"
-        "    }\n"
-        "}\n",
-        encoding="utf-8",
-    )
-    summary = "Defines and registers custom items and helper methods for the mod."
-
-    sigs = extract_signatures(str(file_path))
-    with_fields = estimate_confidence(summary, sigs)
-    without_fields = estimate_confidence(summary, [s for s in sigs if "register" not in s])
-
-    assert without_fields < REVIEW_THRESHOLD  # the real, historical false-flag case
-    assert with_fields >= REVIEW_THRESHOLD   # no longer flagged for human review
-
-
 def test_extract_dependencies_from_python_file(tmp_path):
     # Not stdlib names -- see test_extract_dependencies_excludes_stdlib_
     # imports() below for the "os"/"pathlib" case this used to (wrongly)

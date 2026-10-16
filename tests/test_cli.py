@@ -3,7 +3,6 @@ import sys
 
 import pytest
 
-from ziplex import checkpoint as app_checkpoint
 from ziplex import cli
 from ziplex.enrich import llm
 from ziplex import settings as app_settings
@@ -486,63 +485,6 @@ def test_settings_set_empty_string_clears_a_field_back_to_unset(tmp_path, monkey
     assert "미설정" in capsys.readouterr().out
 
 
-def test_checkpoint_list_prints_project_name_and_pending_count(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(app_checkpoint, "CHECKPOINT_DIR", tmp_path)
-    app_checkpoint.save_checkpoint(
-        str(tmp_path / "proj"), {"project": {"name": "proj"}, "files_data": {"a.py": {}}}
-    )
-    monkeypatch.setattr(sys, "argv", ["cli.py", "checkpoint"])
-
-    cli.main()  # must not raise SystemExit
-
-    out = capsys.readouterr().out
-    assert "proj" in out
-    assert "1개" in out  # pending_files count
-
-
-def test_checkpoint_list_reports_none_when_dir_is_empty(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(app_checkpoint, "CHECKPOINT_DIR", tmp_path / "never-created")
-    monkeypatch.setattr(sys, "argv", ["cli.py", "checkpoint", "list"])
-
-    cli.main()
-
-    assert "없음" in capsys.readouterr().out
-
-
-def test_checkpoint_clean_with_path_removes_only_that_projects_checkpoint(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(app_checkpoint, "CHECKPOINT_DIR", tmp_path)
-    proj1, proj2 = tmp_path / "proj1", tmp_path / "proj2"
-    app_checkpoint.save_checkpoint(str(proj1), {"project": {"name": "proj1"}})
-    app_checkpoint.save_checkpoint(str(proj2), {"project": {"name": "proj2"}})
-    monkeypatch.setattr(sys, "argv", ["cli.py", "checkpoint", "clean", str(proj1)])
-
-    cli.main()
-
-    assert app_checkpoint.load_checkpoint(str(proj1)) is None
-    assert app_checkpoint.load_checkpoint(str(proj2)) is not None  # untouched
-
-
-def test_checkpoint_clean_all_removes_every_checkpoint(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(app_checkpoint, "CHECKPOINT_DIR", tmp_path)
-    app_checkpoint.save_checkpoint(str(tmp_path / "proj1"), {"project": {"name": "proj1"}})
-    app_checkpoint.save_checkpoint(str(tmp_path / "proj2"), {"project": {"name": "proj2"}})
-    monkeypatch.setattr(sys, "argv", ["cli.py", "checkpoint", "clean", "--all"])
-
-    cli.main()
-
-    assert app_checkpoint.list_checkpoints() == []
-
-
-def test_checkpoint_clean_without_path_or_all_errors_out(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(app_checkpoint, "CHECKPOINT_DIR", tmp_path)
-    monkeypatch.setattr(sys, "argv", ["cli.py", "checkpoint", "clean"])
-
-    with pytest.raises(SystemExit) as exc_info:
-        cli.main()
-
-    assert exc_info.value.code == 2  # argparse-style usage error, not a crash
-
-
 def test_doctor_prints_python_and_provider_status(monkeypatch, capsys):
     from ziplex.enrich import llm
 
@@ -588,185 +530,9 @@ def _write_test_aif(path, relationships):
     return aif
 
 
-def test_link_adds_a_dependency_edge_and_saves_it(tmp_path, monkeypatch, capsys):
-    aif_path = tmp_path / "test.json"
-    _write_test_aif(aif_path, {
-        "a.py": {"internal": [], "external": [], "internal_text_refs": []},
-        "b.py": {"internal": [], "external": [], "internal_text_refs": []},
-    })
-    monkeypatch.setattr(sys, "argv", ["cli.py", "link", str(aif_path), "a.py", "b.py"])
-
-    cli.main()  # must not raise SystemExit
-
-    assert "연결됨" in capsys.readouterr().out
-    saved = json.loads(aif_path.read_text(encoding="utf-8"))
-    assert saved["relationships"]["a.py"]["internal"] == ["b.py"]
-
-
-def test_unlink_removes_a_dependency_edge_and_saves_it(tmp_path, monkeypatch, capsys):
-    aif_path = tmp_path / "test.json"
-    _write_test_aif(aif_path, {
-        "a.py": {"internal": ["b.py"], "external": [], "internal_text_refs": []},
-        "b.py": {"internal": [], "external": [], "internal_text_refs": []},
-    })
-    monkeypatch.setattr(sys, "argv", ["cli.py", "unlink", str(aif_path), "a.py", "b.py"])
-
-    cli.main()
-
-    assert "연결 해제됨" in capsys.readouterr().out
-    saved = json.loads(aif_path.read_text(encoding="utf-8"))
-    assert saved["relationships"]["a.py"]["internal"] == []
-
-
-def test_link_never_touches_unrelated_aif_fields(tmp_path, monkeypatch):
-    # _edit_saved_relationship must rewrite the file byte-for-byte
-    # identical apart from `relationships` -- never routed through
-    # packager.save_aif(), which would wipe fields this shape doesn't have
-    # (see the function's own docstring).
-    aif_path = tmp_path / "test.json"
-    aif = _write_test_aif(aif_path, {
-        "a.py": {"internal": [], "external": [], "internal_text_refs": []},
-        "b.py": {"internal": [], "external": [], "internal_text_refs": []},
-    })
-    aif["project"]["prompt"] = "some AI guide"
-    aif["rules"] = ["a rule"]
-    aif_path.write_text(json.dumps(aif), encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", ["cli.py", "link", str(aif_path), "a.py", "b.py"])
-
-    cli.main()
-
-    saved = json.loads(aif_path.read_text(encoding="utf-8"))
-    assert saved["project"]["prompt"] == "some AI guide"
-    assert saved["rules"] == ["a rule"]
-
-
-def test_link_rejects_an_unknown_file(tmp_path, monkeypatch, capsys):
-    aif_path = tmp_path / "test.json"
-    _write_test_aif(aif_path, {"a.py": {"internal": [], "external": [], "internal_text_refs": []}})
-    monkeypatch.setattr(sys, "argv", ["cli.py", "link", str(aif_path), "a.py", "does-not-exist.py"])
-
-    with pytest.raises(SystemExit) as exc_info:
-        cli.main()
-
-    assert exc_info.value.code == 1
-    assert "does-not-exist.py" in capsys.readouterr().out
-
-
-def test_link_rejects_an_edge_that_would_close_a_cycle(tmp_path, monkeypatch, capsys):
-    aif_path = tmp_path / "test.json"
-    _write_test_aif(aif_path, {
-        "a.py": {"internal": ["b.py"], "external": [], "internal_text_refs": []},
-        "b.py": {"internal": [], "external": [], "internal_text_refs": []},
-    })
-    # b.py -> a.py would close a.py -> b.py -> a.py
-    monkeypatch.setattr(sys, "argv", ["cli.py", "link", str(aif_path), "b.py", "a.py"])
-
-    with pytest.raises(SystemExit) as exc_info:
-        cli.main()
-
-    assert exc_info.value.code == 1
-    assert "cycle" in capsys.readouterr().out
-
-
-def test_link_on_an_aif_without_relationships_errors_out(tmp_path, monkeypatch, capsys):
-    aif_path = tmp_path / "test.json"
-    aif_path.write_text(json.dumps({"project": {"name": "x"}, "files": {}}), encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", ["cli.py", "link", str(aif_path), "a.py", "b.py"])
-
-    with pytest.raises(SystemExit) as exc_info:
-        cli.main()
-
-    assert exc_info.value.code == 1
-    assert "relationships" in capsys.readouterr().out
-
-
-def test_link_on_a_missing_aif_path_errors_out(tmp_path, monkeypatch, capsys):
-    missing = tmp_path / "does-not-exist.json"
-    monkeypatch.setattr(sys, "argv", ["cli.py", "link", str(missing), "a.py", "b.py"])
-
-    with pytest.raises(SystemExit) as exc_info:
-        cli.main()
-
-    assert exc_info.value.code == 1
-
-
 # Real gap found by code review: link/unlink already had this post-save
 # escape hatch for a wrong relationship edge -- summaries didn't, even
 # though a one-line text fix is a smaller edit than a graph edge.
-def test_summary_edits_a_file_summary_and_saves_it(tmp_path, monkeypatch, capsys):
-    aif_path = tmp_path / "test.json"
-    aif_path.write_text(json.dumps({
-        "project": {"name": "x"},
-        "files": {"a.py": {"summary": "old", "confidence": 0.1}},
-        "relationships": {"a.py": {"internal": [], "external": []}},
-    }), encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", ["cli.py", "summary", str(aif_path), "a.py", "new summary"])
-
-    cli.main()  # must not raise SystemExit
-
-    assert "a.py" in capsys.readouterr().out
-    saved = json.loads(aif_path.read_text(encoding="utf-8"))
-    assert saved["files"]["a.py"]["summary"] == "new summary"
-    assert saved["files"]["a.py"]["confidence"] == 0.1  # untouched, same as set_file_summary()
-
-
-def test_summary_rejects_an_unknown_file(tmp_path, monkeypatch, capsys):
-    aif_path = tmp_path / "test.json"
-    aif_path.write_text(json.dumps({
-        "project": {"name": "x"},
-        "files": {"a.py": {"summary": "old"}},
-        "relationships": {"a.py": {"internal": [], "external": []}},
-    }), encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", ["cli.py", "summary", str(aif_path), "missing.py", "new summary"])
-
-    with pytest.raises(SystemExit) as exc_info:
-        cli.main()
-
-    assert exc_info.value.code == 1
-    assert "missing.py" in capsys.readouterr().out
-
-
-def test_summary_with_folder_flag_edits_a_folder_summary(tmp_path, monkeypatch, capsys):
-    aif_path = tmp_path / "test.json"
-    aif_path.write_text(json.dumps({
-        "project": {"name": "x"},
-        "files": {"a.py": {"summary": "old"}},
-        "folders": {".": {"summary": "old folder summary", "confidence": 1.0}},
-        "relationships": {"a.py": {"internal": [], "external": []}},
-    }), encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", ["cli.py", "summary", str(aif_path), ".", "new folder summary", "--folder"])
-
-    cli.main()
-
-    saved = json.loads(aif_path.read_text(encoding="utf-8"))
-    assert saved["folders"]["."]["summary"] == "new folder summary"
-
-
-def test_summary_never_touches_unrelated_aif_fields(tmp_path, monkeypatch):
-    aif_path = tmp_path / "test.json"
-    aif_path.write_text(json.dumps({
-        "project": {"name": "x", "prompt": "some AI guide"},
-        "rules": ["a rule"],
-        "files": {"a.py": {"summary": "old"}},
-        "relationships": {"a.py": {"internal": [], "external": []}},
-    }), encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", ["cli.py", "summary", str(aif_path), "a.py", "new summary"])
-
-    cli.main()
-
-    saved = json.loads(aif_path.read_text(encoding="utf-8"))
-    assert saved["project"]["prompt"] == "some AI guide"
-    assert saved["rules"] == ["a rule"]
-
-
-def test_summary_on_a_missing_aif_path_errors_out(tmp_path, monkeypatch):
-    missing = tmp_path / "does-not-exist.json"
-    monkeypatch.setattr(sys, "argv", ["cli.py", "summary", str(missing), "a.py", "new summary"])
-
-    with pytest.raises(SystemExit) as exc_info:
-        cli.main()
-
-    assert exc_info.value.code == 1
 
 
 def test_pack_main_fails_loudly_when_max_tokens_requested_but_pack_never_completed(tmp_path, monkeypatch):
@@ -1182,3 +948,18 @@ def test_hook_command_always_exits_zero(monkeypatch, capsys):
     monkeypatch.setattr(sys, "stdin", io.StringIO("{broken"))
     assert _run_cli(monkeypatch, "hook", "post-edit") == 0
     assert capsys.readouterr().out == ""
+
+
+def test_dev_prefix_runs_the_debug_tool(tmp_path, monkeypatch, capsys):
+    f = tmp_path / "m.py"
+    f.write_text("def hello(x):\n    return x\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["cli.py", "dev", "signatures", str(f)])
+    cli.main()
+    assert "hello(x)" in capsys.readouterr().out
+
+
+def test_removed_commands_are_gone(monkeypatch):
+    for command in ("checkpoint", "link", "unlink", "summary"):
+        monkeypatch.setattr(sys, "argv", ["cli.py", command])
+        with pytest.raises(SystemExit):
+            cli.main()

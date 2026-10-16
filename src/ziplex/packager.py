@@ -1,67 +1,48 @@
-import contextvars
-import json
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
-from typing import Callable
+"""`pack()`: project -> aif.json (per-file summaries, rules, AI guide, folder
+map, relationships), plus `save_aif()` splitting it into aif.json /
+<name>.detail.json / <name>.cache.json.
 
-from .file.collector import collect_files
-from .file.scanner import scan_files
-from .file.selector import select_files, review_dangerous_files
-from .file.media import classify_media_file, media_summary
-from .file.textutil import relative_key as _rel_key, cached_reads
-from .extract.code.extractor import extract_all
-from .core.text_references import merge_text_references
-from .core.graph import GraphBuilder, code_dependencies_of
-from .tokenizer import analyze_tokens_with_payload, count_tokens_for_model
-from .aif_io import detach_weak_edges, dumps_aif, write_aif, WEAK_KEY
-from .enrich.llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES, reset_usage, get_usage
-from .freshness import build_manifest, load_previous_summaries
-from .confidence import estimate_confidence, REVIEW_THRESHOLD
-from .config import collection_kwargs, load_config
-from .tech_stack import detect_tech_stack
-from .paths import REPO_ROOT
+Always non-interactive: every safe file is packed, security-flagged files
+enter the graph only (`_graph_only_entries()`), and an LLM failure degrades
+to a placeholder that the next pack retries -- never a prompt, never a
+checkpoint. LLM summaries are persisted per content hash as they arrive
+(`_SummaryCache`), so an interrupted pack loses nothing it already paid for.
+"""
+import json
+import os
+import threading
+from pathlib import Path
+
 from . import __version__
-from .progress_i18n import pick, set_current as _set_progress_lang
-from . import checkpoint as ckpt
+from .aif_io import WEAK_KEY, detach_weak_edges, dumps_aif, write_aif
+from .config import collection_kwargs, load_config
+from .core.graph import GraphBuilder
+from .core.index import ensure_gitignore
+from .core.text_references import merge_text_references
 from .enrich import summarizer
-from . import folder_summary
+from .enrich.llm import LANGUAGE_NAMES, analyze_prompt, analyze_rules, get_usage, reset_usage
+from .extract.code.extractor import extract_all
+from .file.collector import collect_files
+from .file.media import classify_media_file, media_summary
+from .file.relationship import build_tree
+from .file.scanner import scan_files
+from .file.textutil import cached_reads, relative_key as _rel_key
+from .folder_summary import generate_structural_folder_summaries, group_files_by_folder
+from .freshness import build_manifest, load_previous_summaries
+from .paths import REPO_ROOT
+from .progress_i18n import pick, set_current as _set_progress_lang
+from .tech_stack import detect_tech_stack
+from .tokenizer import analyze_tokens_with_payload, count_tokens_for_model
+
+__all__ = ["pack", "save_aif", "resolve_output_path", "get_usage", "DEFAULT_OUTPUT_SUBDIR"]
 
 DEFAULT_OUTPUT_SUBDIR = ".ziplex"
 
-# Legacy fallback only, now -- resolve_output_path()/pack()'s own use_cache
-# lookup (effective_result_dir, below) both default to DEFAULT_OUTPUT_SUBDIR
-# *inside the project actually being packed* instead, and every real caller
-# (cli.py, gui/pack_service.py) always has that project path on hand and
-# passes it through. This constant only still matters for a caller that
-# somehow doesn't -- and, for a real (non-editable) pip/pipx install, it's
-# not even a *sensible* fallback any more: REPO_ROOT (paths.py) resolves to
-# "three levels above wherever this package's own files happen to sit,"
-# which for an editable dev checkout is the repo root (so this "just
-# worked" for every dev/CI run so far, RESULT_DIR always landing inside
-# Ziplex's own checkout) but for a real installed wheel is some directory
-# three levels above site-packages -- verified directly against a real,
-# non-editable install: REPO_ROOT resolved to the venv's own Lib/ folder,
-# meaning a plain `pip install ziplex` user running `ziplex pack <project>`
-# with no `-o` would previously have had aif.json/detail.json/cache.json
-# silently written inside their Python environment, nowhere near the
-# project they packed -- a real, confirmed bug for exactly the "just pip
-# install and go" flow the README's own Quick start advertises, not a
-# hypothetical one. DEFAULT_OUTPUT_SUBDIR fixes this at the root: a
-# project-relative default can never land somewhere this nonsensical, and
-# (a second, independently reported concern) a generic "result" folder
-# name is far more likely to collide with some *other* tool's own output
-# in the same project than a Ziplex-namespaced dotfolder is.
+# Last-resort output location when neither -o nor a project path is known.
 RESULT_DIR = REPO_ROOT / "result"
 
-# The AI-guide text a structural-only pack (use_llm=False) ships in place of
-# an actual analyze_prompt() result -- so a reader (human or agent) sees why
-# `project.prompt` reads like this instead of assuming the pack half-failed.
-# One entry per supported packed-content language (llm.LANGUAGE_NAMES) --
-# this is Ziplex's own fixed text, never an LLM call, so it follows the
-# chosen `lang` the same way summarizer.py's structural-summary labels and
-# SUMMARY_FAILED_PLACEHOLDERS do, rather than always shipping in English
-# regardless of what language the rest of a Korean-language pack is in.
+SUMMARY_CACHE_FILE = "summaries.json"
+
 STRUCTURAL_ONLY_NOTE: dict[str, str] = {
     "en": (
         "This is a structural-only pack (--no-llm): no AI guide or coding-rule "
@@ -76,821 +57,245 @@ STRUCTURAL_ONLY_NOTE: dict[str, str] = {
     ),
 }
 
-# A fixed (not LLM-generated) legend attached to every pack -- unlike
-# STRUCTURAL_ONLY_NOTE above (explains one specific mode), this always ships,
-# since aif.json is meant to survive outside any one tool session: committed
-# to a repo, handed to a colleague, pasted cold into a web chat with none of
-# Ziplex's own docs (this AGENTS.md, the MCP tool descriptions, the GUI's
-# color-coded confidence badges) loaded alongside it. Without this, a reader
-# in that position has no way to know what "confidence" means, what
-# threshold is worth worrying about, what the compressed body's own
-# "⋮----" marker stands for, or that project.security_scan is worth
-# checking at all -- all context that's otherwise only ever conveyed
-# out-of-band. A generic "analyze this project" prompt has no reason to go
-# looking for a field it's never been told matters: confirmed directly by a
-# real Gemini analysis of Ziplex's own self-pack that summarized tech stack/
-# architecture/rules in detail but never once mentioned security_scan, even
-# though the field ships unconditionally in every aif.json. project.tech_stack/
-# project.security_scan (see the aif assembly step below) are the same idea
-# applied to *facts about this particular pack*; this is the one piece that's
-# identical across every pack Ziplex has ever produced for a given language,
-# so each language's version lives as one shared string instead of being
-# computed per run -- same per-language dict shape as STRUCTURAL_ONLY_NOTE
-# above, and for the same consistency reason.
+# Ships in every aif.json so the file explains itself to a cold reader.
 FORMAT_NOTES: dict[str, str] = {
     "en": (
-        "This file (and its sibling <name>.detail.json) was generated by Ziplex "
-        "(https://github.com/taerim0/Ziplex) and human-reviewed before shipping "
-        "-- edit it via `ziplex pack`'s correction step or the GUI review "
-        "screen, not by hand. Each file's `confidence` (0.0-1.0) is a "
-        f"heuristic: a score below {REVIEW_THRESHOLD} means the summary's "
-        "wording didn't overlap much with the file's own extracted signatures, "
-        "worth double-checking before trusting it. A file or folder with no `confidence` "
-        "key scored 1.0 (the key is omitted to save tokens). detail.json's compressed "
-        "body uses '⋮----' to mark a function body Ziplex elided to save "
-        "tokens -- everything else (signatures, imports, decorators) is left "
-        "untouched. project.security_scan records files Ziplex's scanner "
-        "flagged as possibly sensitive during collection -- a non-zero "
-        "`included_anyway` means a human deliberately shipped a flagged "
-        "file's real, unredacted content anyway, worth calling out to "
-        "whoever's reading this rather than passing over silently. "
-        "`relationships` lists only certain edges (real imports and structural "
-        "references); where a file merely mentions another's filename in prose, "
-        "that weaker link is kept out of this file and stored as `text_refs` on "
-        "the mentioning file's entry in detail.json -- so a file with no "
+        "Generated by Ziplex (https://github.com/taerim0/Ziplex). Re-run `ziplex pack` "
+        "rather than editing by hand. detail.json's compressed body uses '⋮----' to "
+        "mark a function body Ziplex elided to save tokens -- signatures, imports and "
+        "decorators are left untouched. project.security_scan counts files the secret "
+        "scanner flagged; their content is never packed, but their imports still appear "
+        "in `relationships`. `relationships` lists only certain edges (imports and "
+        "structural references); a prose mention of another file's name is stored as "
+        "`text_refs` on the mentioning file's entry in detail.json, so a file with no "
         "dependents here can still be named in a README or config."
     ),
     "ko": (
-        "이 파일(및 형제 파일 <name>.detail.json)은 Ziplex "
-        "(https://github.com/taerim0/Ziplex)가 생성하고 사람이 검토한 뒤 만든 "
-        "결과입니다 -- 직접 수정하지 말고 `ziplex pack`의 보정 단계나 GUI 리뷰 "
-        f"화면을 통해 수정하세요. 각 파일의 `confidence`(0.0-1.0)는 휴리스틱 "
-        f"점수입니다: {REVIEW_THRESHOLD} 미만이면 summary의 표현이 그 파일의 "
-        "실제 시그니처와 많이 겹치지 않았다는 뜻이니 신뢰하기 전에 다시 확인하는 "
-        "것이 좋습니다. `confidence` 키가 없는 파일·폴더는 1.0점입니다(토큰 절감을 위해 "
-        "키를 생략함). detail.json의 compressed 본문에서 '⋮----'는 Ziplex가 "
-        "토큰 절감을 위해 생략한 함수 본문을 표시합니다 -- 그 외(시그니처, "
-        "import, 데코레이터)는 그대로 남아 있습니다. project.security_scan은 "
-        "수집 단계에서 Ziplex의 보안 스캐너가 민감할 수 있다고 표시한 파일을 "
-        "기록합니다 -- `included_anyway`가 0보다 크면 사람이 그 파일의 실제 "
-        "원문을(수정 없이) 포함시키기로 결정했다는 뜻이니, 조용히 넘기지 말고 "
-        "이 내용을 읽는 사람에게 짚어주는 것이 좋습니다. "
-        "`relationships`에는 확실한 엣지(실제 import와 구조적 참조)만 담깁니다. "
-        "다른 파일의 이름이 문서에 언급만 된 약한 연결은 이 파일에서 빼서 "
-        "detail.json의 해당(언급한) 파일 항목에 `text_refs`로 저장합니다 -- "
-        "그래서 여기서 의존자가 없는 파일도 README나 설정에서는 언급되고 있을 수 있습니다."
+        "Ziplex(https://github.com/taerim0/Ziplex)가 생성한 파일입니다. 직접 고치지 말고 "
+        "`ziplex pack`을 다시 실행하세요. detail.json의 compressed 본문에서 '⋮----'는 "
+        "토큰 절감을 위해 생략한 함수 본문을 뜻합니다 -- 시그니처, import, 데코레이터는 "
+        "그대로입니다. project.security_scan은 시크릿 스캐너가 표시한 파일 수이고, 그 "
+        "파일의 내용은 절대 들어가지 않지만 import 관계는 `relationships`에 남습니다. "
+        "`relationships`에는 확실한 엣지(import와 구조적 참조)만 있고, 다른 파일 이름을 "
+        "문서에서 언급만 한 경우는 detail.json의 해당 파일 항목에 `text_refs`로 저장합니다 "
+        "-- 그래서 여기서 의존자가 없는 파일도 README나 설정에서는 언급될 수 있습니다."
     ),
 }
-
-
-# Cap on how many per-file summaries feed analyze_prompt()'s own
-# "architecture" context -- keeps a genuinely large project's prompt from
-# growing unbounded (every other capped list in this codebase -- tech_stack's
-# MAX_DEPENDENCIES, the relationship editor's REL_GRAPH_MAX_NEIGHBORS -- takes
-# the same "enough real signal, not a full dump" stance). Ziplex's own stated
-# audience (solo/personal-GitHub/small-team, see the roadmap's scope note)
-# means most real projects stay well under this anyway.
-MAX_ARCHITECTURE_FILES = 80
-
-# analyze_rules()'s own cap, same value/rationale as MAX_ARCHITECTURE_FILES
-# but kept as its own named constant since it bounds a different prompt's
-# input (raw per-file signatures, not summary lines) -- confirmed via a
-# real self-packed run: a 502-source-file project's uncapped signatures_map
-# repr alone ran to ~94k tokens, past what the model could return as a
-# complete JSON response, so analyze_rules() came back truncated/malformed
-# on *every* attempt (not a transient 429/503 -- generate() only retries
-# HTTP-level failures, and this "succeeded" at that level every time),
-# which non-interactive pack() has no way to tell apart from a real repeated
-# failure, so it checkpoints and exits deterministically on any large
-# enough project.
-MAX_RULES_FILES = 80
-# Per-file cap on signatures sent to analyze_rules(): coding rules are a
-# project-wide pattern, visible from a sample of each file's API.
-MAX_RULES_SIGNATURES_PER_FILE = 20
-
-
-def _build_architecture_summary(files_data: dict, tech_stack: list[dict]) -> list[str]:
-    """Real project-understanding signal for analyze_prompt() -- what it used
-    to always receive as an empty list (a dead parameter, never actually
-    populated anywhere), which is the confirmed root cause of a real,
-    reported problem: an AI guide reading like a coding-style blurb rather
-    than a "what is this project" summary, since project_name plus a list of
-    naming-convention rules is *all* analyze_prompt() ever had to work with.
-
-    Built from each file's own already-generated `summary` (this runs after
-    the summary-generation step, so every file_data entry has one) plus the
-    free tech_stack fact block -- both already paid for or free, no new LLM
-    call needed to gather this. Capped at MAX_ARCHITECTURE_FILES, keeping
-    dict insertion order (roughly collection order) rather than sorting,
-    since this is prompt input, not a displayed list a human reads in order.
-    """
-    lines = []
-    for stack in tech_stack:
-        # tech_stack.detect_tech_stack()'s own shape -- one dict per
-        # manifest found, not a flat list of dependency-name strings.
-        deps = ", ".join(stack.get("dependencies", []))
-        lines.append(f"Tech stack ({stack.get('language', '?')}, {stack.get('manifest', '?')}): {deps}")
-
-    file_lines = [f"{name}: {data['summary']}" for name, data in files_data.items() if data.get("summary")]
-    if len(file_lines) > MAX_ARCHITECTURE_FILES:
-        remaining = len(file_lines) - MAX_ARCHITECTURE_FILES
-        file_lines = file_lines[:MAX_ARCHITECTURE_FILES]
-        file_lines.append(f"... ({remaining} more files not shown)")
-    lines.extend(file_lines)
-    return lines
-
-
-def _confirm_regenerate_failed_summaries(failed_names: list[str], interactive: bool) -> bool:
-    """Asks whether to drop the cached failure placeholder
-    (summarizer.is_summary_failed_placeholder()/SUMMARY_FAILED_PLACEHOLDERS)
-    for `failed_names` so this run retries them for real, instead of
-    load_previous_summaries() silently carrying the same failure text
-    forward pack after pack until the file's content itself happens to
-    change.
-
-    Same shape as checkpoint.resume_checkpoint_choice() -- a numbered
-    menu, non-interactive callers get a safe default with no prompt.
-    Defaults to leaving them cached (not regenerating): a repeated LLM
-    failure isn't retried automatically anywhere else in the pipeline
-    either (see generate_summaries()'s own docstring -- review is what's
-    supposed to catch it, not a silent retry loop), and confidence.py
-    already forces these to 0.0 so a human reviewing the pack sees them
-    flagged regardless of which way this defaults.
-    """
-    if not interactive:
-        return False
-
-    print(pick(
-        f"\n  ⚠️  {len(failed_names)} file(s) with a failed summary from a previous pack are in the cache:",
-        f"\n  ⚠️  이전 pack에서 요약 생성에 실패한 파일 {len(failed_names)}개가 캐시에 있습니다:",
-    ))
-    for name in failed_names:
-        print(f"      - {name}")
-    print(pick("  [1] Try regenerating", "  [1] 다시 생성 시도"))
-    print(pick("  [2] Leave as-is (check during review)", "  [2] 그대로 둠 (검토 단계에서 확인)"))
-    choice = input(pick("  Choice: ", "  선택: ")).strip()
-    return choice == "1"
-
-
-def _maybe_stop(
-    check_cancelled: Callable[[], str | None] | None,
-    root_path: str, root: Path, files_data: dict, rules: list | None = None, prompt: str = "",
-    lang: str = "en",
-) -> bool:
-    """True if `check_cancelled` says to stop -- checkpointing first
-    (reusing checkpoint.build_snapshot(), the exact shape handle_llm_failure()
-    already checkpoints, so a stopped-and-saved run auto-resumes next time
-    exactly like a failed one does) unless it said "discard". False (never
-    stops) when check_cancelled wasn't given at all -- the CLI's synchronous
-    run has no external thread to ask it to stop from in the first place;
-    only a caller that runs pack() on a background thread (the GUI -- see
-    gui/pack_service.py's request_cancel()) needs this, since a real Python
-    thread can't be safely killed from outside once started.
-
-    lang is recorded into the checkpoint (build_snapshot()) so a later
-    pack() resuming it can tell whether it was saved under the same
-    language selection as the resuming run -- see pack()'s own
-    `lang_matches` for why that comparison matters.
-    """
-    if check_cancelled is None:
-        return False
-    action = check_cancelled()
-    if action is None:
-        return False
-    if action == "save":
-        ckpt.save_checkpoint(root_path, ckpt.build_snapshot(root, files_data, rules, prompt, lang))
-    return True
-
-
-def _resolve_checkpoint(
-    root_path: str, use_cache: bool, discard_checkpoint: bool | None,
-    interactive: bool, preselected: list[str] | None, use_llm: bool, lang: str,
-) -> tuple[str, dict, bool, list[str] | None]:
-    """Loads, validates, and (if trusted) unpacks a leftover checkpoint for
-    this project -- the steps that used to open pack() itself. Returns
-    (restored_prompt, restored_files_data, lang_matches, carried_rules):
-    everything the rest of pack() needs to decide what to trust from a
-    resumed run, with no further checkpoint file I/O of its own past this
-    point.
-
-    use_cache=False means "ignore anything cached from before, pack this
-    fully fresh," which includes a leftover checkpoint from an interrupted
-    run, not just previous summaries (see pack()'s own use_cache docstring,
-    further down). Short-circuits before ever calling
-    resume_checkpoint_choice() in that case, so a non-cached run never gets
-    an interactive resume-or-discard prompt (or a silent auto-resume,
-    non-interactively) for something the caller already said to ignore.
-    discard_checkpoint (see pack()'s own docstring) lets a caller override
-    just this half of use_cache's effect -- the GUI's retry-after-failure
-    flow forces False here so retrying a job that started with "완전히
-    재패킹" checked doesn't discard the checkpoint that same job just saved
-    on its own failure.
-
-    Any run with a caller-given preselected file set (every GUI job, forced
-    resume or not) still has to actually be *this* run's own checkpoint
-    before it's trusted -- checkpoints are keyed by project path only
-    (checkpoint._checkpoint_path()), never by which job produced them, so
-    two overlapping pack attempts for the same project (a second browser
-    tab, or a fresh "패킹 시작" started on a different file selection while
-    an earlier failed job's checkpoint is still sitting there) could
-    otherwise let this run silently resume a *different* attempt's partial
-    progress instead of its own -- a real gap caught by code review, and
-    (a second review pass) one that used to only guard the GUI's explicit
-    retry-after-failure path (discard_checkpoint is False), leaving every
-    ordinary fresh job with use_cache=True's default (discard_checkpoint is
-    None) exposed to the identical scenario. A checkpoint whose own
-    restored file set isn't a subset of what this run is actually about to
-    select clearly belongs to a different run; discard it unconditionally
-    in that case -- "does this checkpoint belong to me" and "should I trust
-    my own summary cache" (use_cache) are independent questions, so falling
-    back to `not use_cache` here (a second code-review pass caught this:
-    with use_cache=True, `not use_cache` is False, silently un-doing the
-    very mismatch this check just detected and resuming the foreign
-    checkpoint's rules/prompt anyway) is wrong regardless of use_cache.
-
-    carried_rules preserves not just the restored rules but *whether they
-    were ever actually computed* -- a checkpoint saved before rules
-    extraction ran must not be treated by _extract_rules() (or a later
-    _maybe_stop()) as if `restored_rules` (always a list, `[]` by default)
-    were itself a genuine, computed answer. `None` means "never computed,"
-    distinguishable from a genuinely empty (but real) `[]` answer -- a
-    list is never `None`, so `carried_rules is not None` alone tells the
-    caller which case this is, without also needing restored_rules_computed
-    threaded through separately.
-    """
-    should_discard_checkpoint = (not use_cache) if discard_checkpoint is None else discard_checkpoint
-    checkpoint = ckpt.load_checkpoint(root_path)
-    if checkpoint and preselected is not None:
-        _, _, candidate_files_data, _, _ = ckpt.unpack_snapshot(checkpoint)
-        if not set(candidate_files_data.keys()) <= set(preselected):
-            should_discard_checkpoint = True
-    if checkpoint and (should_discard_checkpoint or not ckpt.resume_checkpoint_choice(interactive)):
-        checkpoint = None
-        ckpt.delete_checkpoint(root_path)
-
-    # restore from checkpoint
-    restored_rules, restored_prompt, restored_files_data, restored_lang, restored_rules_computed = ckpt.unpack_snapshot(checkpoint)
-    # True only when there's actually a checkpoint to compare against -- a
-    # fresh run (no checkpoint) has nothing stale to discard, so restored_*
-    # (already the ""/[]/{} defaults from unpack_snapshot(None)) are used
-    # as-is regardless of this flag. When a checkpoint *does* exist but was
-    # saved under a different `lang` (a forgotten --lang flag, a changed
-    # selection on resume), its rules/prompt/per-file summaries are written
-    # in a stale language -- reusing them verbatim would ship an aif.json
-    # whose `project.language` claims one language while some content is
-    # actually in another, the same self-contradiction class this codebase
-    # already fixed once for rules/prompt vs. `use_llm` (see below).
-    lang_matches = restored_lang == lang
-    if checkpoint and not lang_matches:
-        print(pick(
-            f"  ⚠️  Checkpoint was generated in a different language ({restored_lang}) -- regenerating rules/AI guide/summaries in {lang}",
-            f"  ⚠️  체크포인트가 다른 언어({restored_lang})로 생성됨 -- rules/AI 가이드/요약을 {lang}(으)로 다시 생성합니다",
-        ))
-
-    carried_rules = restored_rules if (restored_rules_computed and use_llm and lang_matches) else None
-    # Dropped here, at the source, like carried_rules above: the GUI's
-    # stop-and-save (_maybe_stop) re-checkpoints whatever restored_prompt
-    # holds, stamped with the *current* lang -- a stale-language guide used
-    # to be saved that way and then trusted as matching on the next resume.
-    if not lang_matches:
-        restored_prompt = ""
-    return restored_prompt, restored_files_data, lang_matches, carried_rules
-
-
-def _select_files(
-    root_path: str, root: Path, include: list[str] | None, ignore: list[str] | None,
-    auto: bool, interactive: bool, preselected: list[str] | None,
-) -> tuple[list[str], list[dict], list[str], list[str]]:
-    """Steps 1-3 of the pipeline: collect -> security scan -> select.
-    Returns (selected, dangerous, included_anyway, safe_files) -- `selected` may come
-    back empty; pack() itself (not this function) decides what an empty
-    selection means for the rest of the run.
-    """
-    # 1. Collect files
-    print(pick("\n📁 Collecting files...", "\n📁 파일 수집 중..."))
-    files = collect_files(root_path, **collection_kwargs(root_path, extra_include=include, extra_ignore=ignore))
-
-    # 2. Security scan
-    print(pick("🔒 Security scanning...", "🔒 보안 스캔 중..."))
-    scan_result = scan_files(files, root=root_path)
-    safe_files = scan_result["safe"]
-    dangerous = scan_result["dangerous"]
-    included_anyway = []
-
-    if dangerous:
-        # Only ever asked when interactive (--auto-correct's *absence*) --
-        # the same gate as every other "can we ask the terminal something"
-        # decision already in this pipeline (checkpoint resume,
-        # handle_llm_failure, the regenerate-cached-summary confirm),
-        # independent of `auto` -- auto only changes *how* the already-safe
-        # set gets selected below, not whether a human can still be asked
-        # about a security decision. Non-interactive callers (--auto-correct)
-        # keep today's behavior: excluded, no prompt, no way back short of
-        # a second interactive run.
-        included_anyway = review_dangerous_files(dangerous, root_path) if interactive else []
-        if included_anyway:
-            safe_files = safe_files + included_anyway
-
-    # 3. Select files
-    if preselected is not None:
-        # Trusts a name from `dangerous` too, not just safe_files: naming
-        # one here already *is* the caller's explicit decision -- the GUI's
-        # file-selection screen shows the same reason/matched-line detail
-        # review_dangerous_files() prints above, just as a checkbox a human
-        # ticks before ever calling start_pack_job(), not a prompt pack()
-        # itself raises. A scripted/CI caller that builds `preselected`
-        # without a human in the loop simply never names a dangerous file's
-        # key in the first place.
-        #
-        # Excludes anything already folded into safe_files via
-        # included_anyway above -- interactive=True plus a preselected list
-        # both naming the same dangerous file isn't a real call site today
-        # (the GUI always passes interactive=False), but without this a
-        # file approved both ways would appear twice in `candidates` and
-        # get selected (and summarized) twice.
-        wanted = set(preselected)
-        candidates = safe_files + [d["file"] for d in dangerous if d["file"] not in included_anyway]
-        selected = [f for f in candidates if _rel_key(f, root) in wanted]
-        print(pick(f"  ✅ {len(selected)} file(s) selected (from the given list)", f"  ✅ {len(selected)}개 파일 선택됨 (지정된 목록 기준)"))
-    elif auto:
-        selected = safe_files
-        print(pick(f"  ✅ All {len(selected)} file(s) selected", f"  ✅ 전체 {len(selected)}개 파일 선택됨"))
-    else:
-        selected = select_files(safe_files, root_path)
-
-    # Logged against the *actual* final outcome (dangerous file not in
-    # `selected`), not `included_anyway` -- a real bug reported directly:
-    # `included_anyway` only ever gets populated by the interactive
-    # CLI-prompt path (review_dangerous_files(), just above), so for a
-    # preselected (GUI) caller it stays [] regardless of what was actually
-    # checked, and the old version of this log printed every dangerous
-    # file as "excluded" unconditionally right after the scan -- before
-    # `preselected` ever got a chance to include one of them. The pack
-    # itself was never wrong (a checked "include anyway" box really did
-    # end up in `selected`), just this log message, confusingly claiming
-    # the opposite of what was about to happen. `security_scan` (the aif
-    # assembly step, further down) already computes its own counts from
-    # `selected` for the identical reason -- this log now matches it.
-    if dangerous:
-        selected_set = set(selected)
-        excluded = [d["file"] for d in dangerous if d["file"] not in selected_set]
-        if excluded:
-            print(pick(f"  ⚠️  Sensitive files excluded: {len(excluded)}", f"  ⚠️  민감 파일 제외: {len(excluded)}개"))
-            for f in excluded:
-                print(f"  ❌ {Path(f).name}")
-
-    return selected, dangerous, included_anyway, safe_files
-
-
-def _collapse_deselected(deselected: list[str], selected: list[str]) -> list[str]:
-    """`project.scope.deselected` for aif.json: each left-unchecked file,
-    collapsed to its topmost folder ("tests/") when nothing under that
-    folder was selected. Uncollapsed, picking 25 files out of a 4,000-file
-    repo wrote ~3,975 paths into aif.json -- an artifact meant to be
-    token-reduced, returned whole by get_overview(). A folder entry also
-    means a file created there later isn't reported as "added" by
-    freshness (freshness.is_deselected()) -- the folder was left out as a
-    whole, so that's the intended reading.
-    """
-    selected_dirs = set()
-    for key in selected:
-        parts = key.split("/")[:-1]
-        for i in range(1, len(parts) + 1):
-            selected_dirs.add("/".join(parts[:i]) + "/")
-    result = set()
-    for key in deselected:
-        parts = key.split("/")[:-1]
-        entry = key
-        for i in range(1, len(parts) + 1):
-            folder = "/".join(parts[:i]) + "/"
-            if folder not in selected_dirs:
-                entry = folder
-                break
-        result.add(entry)
-    return sorted(result)
-
-
-def _extract_rules(
-    files_data: dict, signatures_map: dict, root: Path, root_path: str, lang: str,
-    use_llm: bool, carried_rules: list[str] | None, interactive: bool,
-) -> list[str] | None:
-    """Infers coding rules from every file's own signatures (restored from
-    _resolve_checkpoint()'s carried_rules if trusted). Returns the rules
-    list, or `None` as the "must exit" sentinel -- pack() itself returns
-    `{}` in that case, mirroring handle_llm_failure()'s own "EXIT" string
-    (typed as None here since a real answer is always a list, never a
-    string, so the two can never be confused).
-
-    use_llm=False ignores restored rules outright, even if a checkpoint
-    left over from an earlier use_llm=True run has real inferred rules --
-    pack(use_llm=False)'s documented contract is that rules always ends
-    up [] (and prompt always ends up STRUCTURAL_ONLY_NOTE, see
-    _generate_prompt() below). Restoring a genuine prior LLM result here
-    would silently ship an aif.json with real coding rules alongside a
-    prompt asserting no LLM inference ever happened -- a direct
-    self-contradiction in the same document. lang_matches (already folded
-    into carried_rules by _resolve_checkpoint()) is the same guard for the
-    same reason: a checkpoint saved under a different `lang` has rules
-    written in that stale language, which would contradict the
-    `project.language` this run is about to claim.
-
-    have_restored_rules -- not just `rules` truthiness -- is what decides
-    whether extraction actually needs to run: `rules` is always a list
-    (never None, for backward-compat callers), so a checkpoint that
-    legitimately restored a real, empty rules=[] answer is otherwise
-    indistinguishable from "nothing was ever restored" (also rules=[]),
-    and used to silently re-run analyze_rules() -- a real LLM call --
-    every time a resumed run's own checkpoint happened to have already
-    answered "no rules for this project." `carried_rules is not None` is
-    the actual signal (a list is never None, so this is exactly the
-    restored_rules_computed/use_llm/lang_matches condition
-    _resolve_checkpoint() already computed once, not a second copy of it).
-    """
-    have_restored_rules = carried_rules is not None
-    rules = carried_rules if have_restored_rules else []
-    if not have_restored_rules and use_llm:
-        print(pick("  📋 Extracting coding rules...", "  📋 코딩 룰 추출 중..."))
-        # Capped the same way _build_architecture_summary() caps its own
-        # per-file input -- see MAX_RULES_FILES's own comment. Coding rules
-        # are an implicit, project-wide pattern; a sample of the project's
-        # own files is enough to infer them from, so truncating here (kept
-        # in dict insertion order, same as the architecture cap) doesn't
-        # need a "N more not shown" note the way a human-facing list would.
-        # Keyed by project-relative path (a GUI pack's keys are absolute:
-        # `C:\Users\<name>\<client>\...` went to a third-party API and
-        # cost tokens on every key) and capped per file -- a class with
-        # hundreds of methods sent all of them.
-        # Most informative first (most signatures, then path -- deterministic),
-        # since analyze_rules() drops whatever overflows its char budget.
-        ranked = sorted(
-            ((_rel_key(fp, root), sigs) for fp, sigs in signatures_map.items()),
-            key=lambda item: (-len(item[1]), item[0]),
-        )
-        scoped_signatures_map = {}
-        for rel, sigs in ranked[:MAX_RULES_FILES]:
-            shown = list(sigs[:MAX_RULES_SIGNATURES_PER_FILE])
-            if len(sigs) > MAX_RULES_SIGNATURES_PER_FILE:
-                shown.append(f"(+{len(sigs) - MAX_RULES_SIGNATURES_PER_FILE} more)")
-            scoped_signatures_map[rel] = shown
-        # Same capped "file: summary" lines analyze_prompt() gets, in the same
-        # priority order -- see analyze_rules()'s docstring for why
-        # signatures alone weren't enough.
-        rel_data = sorted(
-            ((_rel_key(fp, root), data) for fp, data in files_data.items()),
-            key=lambda item: (-len(item[1].get("signatures") or []), item[0]),
-        )
-        rules_summaries = _build_architecture_summary(dict(rel_data), [])
-        while not rules:
-            rules_response = analyze_rules(scoped_signatures_map, lang=lang, summaries=rules_summaries)
-            try:
-                rules_data = json.loads(rules_response)
-            except json.JSONDecodeError:
-                rules_data = None
-
-            # isinstance, not just key presence: `{"rules": null}` (seen from
-            # small local models) made `rules` None -- pack()'s own "must
-            # exit" sentinel -- so the run stopped silently with no
-            # checkpoint and every paid summary was lost. A non-list value
-            # is a failed call like any other.
-            # Items checked too: `{"rules": [{"rule": "..."}]}` (also small
-            # local models) otherwise shipped as "{'rule': ...}" in exports
-            # and "[object Object]" in the GUI.
-            if (
-                isinstance(rules_data, dict)
-                and isinstance(rules_data.get("rules"), list)
-                and all(isinstance(r, str) for r in rules_data["rules"])
-            ):
-                # The "rules" key being present at all -- even paired with
-                # an empty list -- means this is a real answer (a trivial
-                # project can legitimately have no inferable coding rules),
-                # not generate()'s own failure sentinel ("{}", returned on
-                # a retry-exhausted or malformed-response error): that
-                # sentinel parses fine too but never carries this key.
-                # `while not rules:` alone can't tell these apart, since an
-                # empty list and a missing key are both equally falsy --
-                # treating a correct empty answer as a failure used to send
-                # an otherwise-successful --auto/--auto-correct run
-                # straight into handle_llm_failure's checkpoint-and-exit.
-                rules = rules_data["rules"]
-                break
-
-            result = ckpt.handle_llm_failure(
-                "rules", pick("coding rules", "코딩 룰"),
-                ckpt.build_snapshot(root, files_data, lang=lang),
-                root_path,
-                interactive=interactive,
-            )
-            if result == "EXIT":
-                return None
-            elif result is None:
-                continue
-            else:
-                # Filtered, not just stripped: "".split(",") is ['']
-                # (a one-element list holding an empty string, not an
-                # empty list) -- pressing Enter with no input at this
-                # prompt used to silently become a single bogus
-                # empty-string rule instead of re-prompting, since
-                # `while not rules:` only re-loops on a genuinely
-                # empty list.
-                rules = [r.strip() for r in result.split(",") if r.strip()]
-    elif have_restored_rules:
-        print(pick("  📋 Coding rules (restored from checkpoint)", "  📋 코딩 룰 (체크포인트에서 복원)"))
-    else:
-        print(pick("  📋 Skipping coding rule extraction (--no-llm)", "  📋 코딩 룰 추출 건너뜀 (--no-llm)"))
-    return rules
-
-
-def _generate_prompt(
-    files_data: dict, root: Path, root_path: str, lang: str, use_llm: bool,
-    project_name: str, rel_files_data: dict, tech_stack: list[dict], rules: list[str],
-    restored_prompt: str, lang_matches: bool, interactive: bool,
-) -> str | None:
-    """Generates the AI guide (restored from checkpoint if trusted). Returns
-    the prompt string, or `None` as the "must exit" sentinel -- same
-    convention as _extract_rules() above; a real answer here is always a
-    string (STRUCTURAL_ONLY_NOTE's own fallback included), so `None` can
-    never be confused with one.
-    """
-    # Same use_llm/lang_matches guard as _extract_rules(), and for the same reason.
-    prompt = restored_prompt if (use_llm and lang_matches) else ""
-    if not prompt and use_llm:
-        print(pick("  ✍️  Generating AI guide...", "  ✍️  AI 가이드 생성 중..."))
-        while not prompt:
-            prompt_response = analyze_prompt(
-                project_name=project_name,
-                architecture=_build_architecture_summary(rel_files_data, tech_stack),
-                rules=rules,
-                lang=lang,
-            )
-            try:
-                prompt_data = json.loads(prompt_response)
-            except json.JSONDecodeError:
-                prompt_data = None
-
-            # isinstance, same as the rules check above: a bare JSON string
-            # made `"prompt" in prompt_data` a substring test, and
-            # `prompt_data["prompt"]` then raised TypeError -- crashing
-            # pack() after every summary was paid for, with no checkpoint.
-            if isinstance(prompt_data, dict) and isinstance(prompt_data.get("prompt"), str):
-                # Same "key present, even if its value is falsy, means a
-                # real answer" distinction rules extraction above needs --
-                # see that block's comment. Less likely in practice for a
-                # 2-3 sentence guide than for a rules list, but the same
-                # generate() failure sentinel ("{}") is indistinguishable
-                # from a genuine (if empty) `{"prompt": ""}` otherwise.
-                prompt = prompt_data["prompt"]
-                if prompt:
-                    break
-
-            result = ckpt.handle_llm_failure(
-                "prompt", pick("AI guide", "AI 가이드"),
-                ckpt.build_snapshot(root, files_data, rules, lang=lang),
-                root_path,
-                interactive=interactive,
-            )
-            if result == "EXIT":
-                return None
-            elif result is None:
-                continue
-            else:
-                prompt = result
-    elif prompt:
-        print(pick("  ✍️  AI guide (restored from checkpoint)", "  ✍️  AI 가이드 (체크포인트에서 복원)"))
-    else:
-        print(pick("  ✍️  Skipping AI guide generation (--no-llm)", "  ✍️  AI 가이드 생성 건너뜀 (--no-llm)"))
-        prompt = STRUCTURAL_ONLY_NOTE.get(lang, STRUCTURAL_ONLY_NOTE["en"])
-    return prompt
-
-
-def _announce_folders(use_llm: bool) -> None:
-    """_generate_folders()'s progress line, printed on pack()'s own thread
-    before the side thread starts so it never interleaves mid-line."""
-    print(pick("  🗂️  Generating folder summaries...", "  🗂️  폴더 요약 생성 중...") if use_llm else pick(
-        "  🗂️  Generating folder summaries (structural info only)...",
-        "  🗂️  폴더 요약 생성 중 (구조 정보 기반)...",
-    ))
-
-
-def _generate_folders(
-    rel_files_data: dict, lang: str, use_llm: bool, should_stop: Callable[[], bool] | None = None,
-) -> tuple[dict, dict, dict]:
-    """Per-folder summaries + their aggregate confidence + how many files
-    each one directly contains -- see folder_summary.py's own module
-    docstring for why the summary step is best-effort (structural fallback
-    per folder on any failure), not wired into the checkpoint/resume system
-    rules/prompt/per-file summaries all get. Read-only on rel_files_data, so
-    pack() runs it on a side thread alongside rules -> prompt; `should_stop`
-    skips LLM chunks not yet started once pack() is exiting early. Prints
-    nothing itself (see _announce_folders()).
-    """
-    folders = (
-        folder_summary.generate_folder_summaries(rel_files_data, lang=lang, should_stop=should_stop)
-        if use_llm
-        else folder_summary.generate_structural_folder_summaries(rel_files_data, lang=lang)
-    )
-    # Aggregate, not independently verified -- see group_confidence_by_folder()'s
-    # own docstring. Computed from rel_files_data, which already carries every
-    # file's real confidence.estimate_confidence() score by this point.
-    folder_confidences = folder_summary.group_confidence_by_folder(rel_files_data)
-    # How many files this folder's one-line summary is actually compressing
-    # -- a real gap found dogfooding Ziplex on its own repo: src/ziplex/
-    # alone has 49 files under one generic sentence, with no signal in the
-    # response to tell a reader (human or MCP caller) that the summary is
-    # a coarse rollup rather than a faithful one-to-one description, unlike
-    # a folder with 2-3 files where a single sentence can actually cover
-    # everything. Same grouping generate_folder_summaries() already builds
-    # internally, just also surfaced here rather than only used and discarded.
-    folder_file_counts = {
-        folder: len(entries) for folder, entries in folder_summary.group_files_by_folder(rel_files_data).items()
-    }
-    return folders, folder_confidences, folder_file_counts
-
-
-def _compute_security_scan(dangerous: list[dict], selected: list[str], root: Path) -> dict:
-    """Security-scan transparency: how many files step 2's scan_files()
-    flagged (`dangerous`), and what actually happened to them by the time
-    file selection settled -- included after a human/GUI override, or left
-    excluded. Computed from the final `selected` list rather than
-    `_select_files()`'s own `included_anyway`, since that variable only
-    covers the interactive-CLI-prompt path; a preselected (GUI) caller can
-    also name a dangerous file directly without ever touching
-    included_anyway. Always returned, `{0, 0, 0}` when nothing was ever
-    flagged -- same "always present, zero/empty when N/A" convention
-    tech_stack already uses, so a reader can tell "scanned, found nothing"
-    apart from "was this even scanned at all," the same distinction
-    repomix's own toggle-based security-check notice exists to make, but
-    backed by real counts instead of an on/off flag, since Ziplex's scan
-    always runs.
-    """
-    dangerous_names = {_rel_key(d["file"], root) for d in dangerous}
-    selected_names = {_rel_key(fp, root) for fp in selected}
-    security_included = len(dangerous_names & selected_names)
-    return {
-        "flagged": len(dangerous_names),
-        "included_anyway": security_included,
-        "excluded": len(dangerous_names) - security_included,
-    }
-
 
 FLAGGED_SUMMARY = {
     "en": "[content withheld: flagged by the security scan; imports kept for the dependency graph]",
     "ko": "[내용 제외: 보안 스캔에 걸린 파일. 의존성 그래프용 import만 유지]",
 }
 
+MAX_ARCHITECTURE_FILES = 80
+MAX_RULES_FILES = 80
+MAX_RULES_SIGNATURES_PER_FILE = 20
 
-def _graph_only_entries(
-    graph_only: list[str], root: Path, graph: GraphBuilder, current_manifest: dict[str, str], lang: str,
-) -> dict:
-    """files_data entries for flagged files excluded from the pack: resolved
-    import edges plus a fixed placeholder summary, never any content."""
+
+class _SummaryCache:
+    """LLM summaries keyed by (lang, content hash), flushed to
+    <project>/.ziplex/summaries.json as they arrive."""
+
+    FLUSH_EVERY = 8
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.lock = threading.Lock()
+        self.pending_writes = 0
+        try:
+            self.entries = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(self.entries, dict):
+                self.entries = {}
+        except (OSError, ValueError):
+            self.entries = {}
+
+    @staticmethod
+    def _key(lang: str, digest: str | None) -> str:
+        return f"{lang}:{digest}"
+
+    def get(self, lang: str, digest: str | None) -> str:
+        return self.entries.get(self._key(lang, digest), "") if digest else ""
+
+    def put(self, lang: str, digest: str | None, summary: str) -> None:
+        if not digest:
+            return
+        with self.lock:
+            self.entries[self._key(lang, digest)] = summary
+            self.pending_writes += 1
+            if self.pending_writes >= self.FLUSH_EVERY:
+                self._flush_locked()
+
+    def flush(self) -> None:
+        with self.lock:
+            self._flush_locked()
+
+    def _flush_locked(self) -> None:
+        self.pending_writes = 0
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            ensure_gitignore(self.path.parent)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.entries, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.path)
+        except OSError:
+            pass  # a cache that can't be written only costs a re-summarize
+
+
+def _build_architecture_summary(files_data: dict, tech_stack: list[dict]) -> list[str]:
+    """What analyze_prompt() gets as project context: the tech stack plus
+    every file's summary, capped at MAX_ARCHITECTURE_FILES."""
+    lines = []
+    for stack in tech_stack:
+        deps = ", ".join(stack.get("dependencies", []))
+        lines.append(f"Tech stack ({stack.get('language', '?')}, {stack.get('manifest', '?')}): {deps}")
+    file_lines = [f"{name}: {data['summary']}" for name, data in files_data.items() if data.get("summary")]
+    if len(file_lines) > MAX_ARCHITECTURE_FILES:
+        remaining = len(file_lines) - MAX_ARCHITECTURE_FILES
+        file_lines = file_lines[:MAX_ARCHITECTURE_FILES] + [f"... ({remaining} more files not shown)"]
+    return lines + file_lines
+
+
+def _select_files(root_path: str, include, ignore) -> tuple[list[str], list[dict]]:
+    """collect -> security scan. Returns (safe files, flagged entries)."""
+    print(pick("\n📁 Collecting files...", "\n📁 파일 수집 중..."))
+    files = collect_files(root_path, **collection_kwargs(root_path, extra_include=include, extra_ignore=ignore))
+    print(pick("🔒 Security scanning...", "🔒 보안 스캔 중..."))
+    scan_result = scan_files(files, root=root_path)
+    safe, dangerous = scan_result["safe"], scan_result["dangerous"]
+    print(pick(f"  ✅ {len(safe)} file(s) selected", f"  ✅ {len(safe)}개 파일 선택됨"))
+    if dangerous:
+        print(pick(
+            f"  ⚠️  {len(dangerous)} flagged file(s): content withheld, imports kept in the graph",
+            f"  ⚠️  보안 스캔에 걸린 파일 {len(dangerous)}개: 내용 제외, import는 그래프에 유지",
+        ))
+        for d in dangerous:
+            print(f"  ❌ {Path(d['file']).name}")
+    return safe, dangerous
+
+
+def _parse_json_field(response: str, field: str):
+    try:
+        data = json.loads(response)
+    except json.JSONDecodeError:
+        return None
+    return data.get(field) if isinstance(data, dict) else None
+
+
+def _extract_rules(files_data: dict, signatures_map: dict, root: Path, lang: str, use_llm: bool) -> list[str]:
+    """Cross-file coding conventions inferred by the LLM, or [] (no LLM, or
+    the call failed -- the next pack tries again)."""
+    if not use_llm:
+        print(pick("  📋 Skipping coding rule extraction (--no-llm)", "  📋 코딩 룰 추출 건너뜀 (--no-llm)"))
+        return []
+    print(pick("  📋 Extracting coding rules...", "  📋 코딩 룰 추출 중..."))
+    ranked = sorted(
+        ((_rel_key(fp, root), sigs) for fp, sigs in signatures_map.items()),
+        key=lambda item: (-len(item[1]), item[0]),
+    )
+    scoped = {}
+    for rel, sigs in ranked[:MAX_RULES_FILES]:
+        shown = list(sigs[:MAX_RULES_SIGNATURES_PER_FILE])
+        if len(sigs) > MAX_RULES_SIGNATURES_PER_FILE:
+            shown.append(f"(+{len(sigs) - MAX_RULES_SIGNATURES_PER_FILE} more)")
+        scoped[rel] = shown
+    rel_data = sorted(
+        ((_rel_key(fp, root), data) for fp, data in files_data.items()),
+        key=lambda item: (-len(item[1].get("signatures") or []), item[0]),
+    )
+    summaries = _build_architecture_summary(dict(rel_data), [])
+    rules = _parse_json_field(analyze_rules(scoped, lang=lang, summaries=summaries), "rules")
+    if isinstance(rules, list) and all(isinstance(r, str) for r in rules):
+        return rules
+    print(pick("  ⚠️  Coding rule extraction failed -- left empty", "  ⚠️  코딩 룰 추출 실패 -- 비워 둠"))
+    return []
+
+
+def _generate_prompt(project_name: str, rel_files_data: dict, tech_stack: list[dict], rules: list[str],
+                     lang: str, use_llm: bool) -> str:
+    """The AI guide, or STRUCTURAL_ONLY_NOTE (no LLM, or the call failed)."""
+    note = STRUCTURAL_ONLY_NOTE.get(lang, STRUCTURAL_ONLY_NOTE["en"])
+    if not use_llm:
+        print(pick("  ✍️  Skipping AI guide generation (--no-llm)", "  ✍️  AI 가이드 생성 건너뜀 (--no-llm)"))
+        return note
+    print(pick("  ✍️  Generating AI guide...", "  ✍️  AI 가이드 생성 중..."))
+    prompt = _parse_json_field(analyze_prompt(
+        project_name=project_name,
+        architecture=_build_architecture_summary(rel_files_data, tech_stack),
+        rules=rules,
+        lang=lang,
+    ), "prompt")
+    if isinstance(prompt, str) and prompt:
+        return prompt
+    print(pick("  ⚠️  AI guide generation failed -- structural note used", "  ⚠️  AI 가이드 생성 실패 -- 구조 안내문 사용"))
+    return note
+
+
+def _compute_security_scan(dangerous: list[dict], selected: list[str], root: Path) -> dict:
+    """{flagged, included_anyway, excluded}. A flagged file's content is
+    never packed, so included_anyway is 0 (kept for readers of old packs)."""
+    flagged = {_rel_key(d["file"], root) for d in dangerous}
+    included = len(flagged & {_rel_key(fp, root) for fp in selected})
+    return {"flagged": len(flagged), "included_anyway": included, "excluded": len(flagged) - included}
+
+
+def _graph_only_entries(graph_only: list[str], root: Path, graph: GraphBuilder,
+                        current_manifest: dict[str, str], lang: str) -> dict:
+    """files_data entries for flagged files: resolved import edges plus a
+    fixed placeholder summary, never any content."""
     entries = {}
     for file_path in graph_only:
         name = _rel_key(file_path, root)
         deps = [] if classify_media_file(file_path) else graph.code_dependencies(file_path)
         entries[file_path] = {
-            "signatures": [],
-            "dependencies": deps,
-            "api": [],
-            "compressed": "",
+            "signatures": [], "dependencies": deps, "api": [], "compressed": "",
             "summary": FLAGGED_SUMMARY.get(lang, FLAGGED_SUMMARY["en"]),
-            "confidence": 1.0,
             "content_hash": current_manifest.get(name),
         }
     return entries
 
 
-def _assemble_aif(
-    project_name: str, prompt: str, tech_stack: list[dict], security_scan: dict,
-    include: list[str] | None, ignore: list[str] | None, lang: str, rules: list[str],
-    folders: dict, folder_confidences: dict, folder_file_counts: dict, token_results: dict,
-    files_data: dict, root: Path, selected: list[str], root_path: str, current_manifest: dict[str, str],
-    deselected: list[str] | None = None, use_llm: bool = True,
-) -> dict:
-    """Step 7: assembles the final in-memory aif dict from every piece the
-    earlier stages already computed -- no new logic of its own past this
-    point, just relaying already-named values into the shipped shape (see
-    the root AGENTS.md's own note on this final shape).
-    """
+def _assemble_aif(project_name: str, prompt: str, tech_stack: list[dict], security_scan: dict,
+                  include, ignore, lang: str, rules: list[str], folders: dict, folder_file_counts: dict,
+                  token_results: dict, files_data: dict, root: Path, current_manifest: dict[str, str],
+                  use_llm: bool) -> dict:
+    files = {
+        _rel_key(fp, root): {
+            "summary": data["summary"],
+            "dependencies": data["dependencies"],
+            **({"text_dependencies": data["text_dependencies"]} if data.get("text_dependencies") else {}),
+            "compressed": data["compressed"],
+        }
+        for fp, data in files_data.items()
+    }
+    relationships = build_tree(files)
+    for data in files.values():
+        data.pop("dependencies", None)
+        data.pop("text_dependencies", None)
     return {
         "project": {
             "name": project_name,
             "prompt": prompt,
-            # Free (no LLM call), manifest-based fact block -- see
-            # tech_stack.py's own docstring for why this exists alongside
-            # `rules` rather than folding into it. Computed once, earlier
-            # above (analyze_prompt() also uses it as architecture context),
-            # not recomputed here.
             "tech_stack": tech_stack,
             "security_scan": security_scan,
-            # The one-off --include/--ignore CLI extras this specific pack
-            # ran with, on top of whatever .ziplex.json already says (that
-            # file persists on disk, so a later freshness check can already
-            # re-derive it -- these extras otherwise can't, since nothing
-            # else remembers them). Always attached ({[], []} when none were
-            # given), same "cheap fact, zero/empty when N/A" convention
-            # tech_stack/security_scan already use -- check_freshness_scoped()
-            # accepts them back as extra_include/extra_ignore so a later
-            # freshness check (CLI, MCP, GUI) can reconstruct the exact scope
-            # this pack used instead of diffing against an unscoped full
-            # file tree and reporting every out-of-scope file as spuriously
-            # "added"/"removed".
-            # `deselected`: safe files a human left unchecked (GUI picker,
-            # interactive select_files()), collapsed to folders where
-            # possible (_collapse_deselected()) -- present only when there
-            # are any. Without it every one of them showed up as "added" in
-            # every later freshness check, so a partial pack was stale
-            # forever (CI gate always failing, a permanent GUI badge).
-            "scope": {
-                "include": include or [], "ignore": ignore or [],
-                **({"deselected": deselected} if deselected else {}),
-            },
+            "scope": {"include": include or [], "ignore": ignore or []},
             "format_notes": FORMAT_NOTES.get(lang, FORMAT_NOTES["en"]),
-            # What language every LLM-written value (summaries/rules/prompt)
-            # -- and, for use_llm=False, STRUCTURAL_ONLY_NOTE/the structural
-            # summaries themselves -- was actually written in. See pack()'s
-            # own `lang` param docstring for why this is always attached.
             "language": lang,
-            # Lets a later `pack` tell whether this output is still what the
-            # same command would produce (cli._up_to_date_pack()).
+            # Lets a later `pack` tell whether this output is still current (cli._up_to_date_pack()).
             "ziplex_version": __version__,
             "llm": use_llm,
         },
         "rules": rules,
-        # {folder path: {"summary": "...", "confidence": float, "file_count": int}},
-        # one entry per folder that directly contains at least one collected
-        # file -- see folder_summary.py for how each summary is generated
-        # and how `confidence` is aggregated (the average of its own member
-        # files' already-scored confidence, not an independent signal).
-        # `file_count` (a real gap found dogfooding Ziplex on its own repo --
-        # see _generate_folders()'s own comment) is what lets a reader tell
-        # "one sentence faithfully covers this folder" apart from "one
-        # sentence is compressing dozens of files" without opening
-        # list_files(folder=...) first just to find out which case this is.
-        # Editable via edits.set_folder_summary() the same way per-file
-        # summaries/rules/prompt are (corrector.py's terminal flow,
-        # pack_service.py's GUI review flow) -- and, like per-file
-        # summaries, triaged by confidence.triage() rather than always
-        # shown in full. set_folder_summary() only ever touches `summary`,
-        # so `file_count` (like `confidence`) survives a human's edit
-        # untouched.
         "folders": {
-            folder: {
-                "summary": summary,
-                "confidence": folder_confidences.get(folder, 1.0),
-                "file_count": folder_file_counts.get(folder, 0),
-            }
+            folder: {"summary": summary, "file_count": folder_file_counts.get(folder, 0)}
             for folder, summary in folders.items()
-            # A one-file folder's summary just restates that file's own (6 of
-            # Ziplex's 24 folders, ~2% of aif.json) -- nothing to roll up.
-            if folder_file_counts.get(folder, 0) != 1
+            if folder_file_counts.get(folder, 0) != 1  # a one-file folder just restates that file
         },
         "tokens": {
-            model: {
-                "original": data["original"],
-                "compressed": data["compressed"],
-                "saved_pct": data["saved_pct"],
-                # Claude/Gemini have no public tiktoken encoding -- their
-                # count is a character-based estimate (tokenizer.py's
-                # is_approx_model()/APPROX_CHARS_PER_TOKEN), not an exact
-                # one. Carried into the saved aif.json (not just the
-                # in-memory `tokens` CLI command's own result) so every
-                # reader -- cli.py's pack-summary/--max-tokens print sites,
-                # the GUI's Overview token table -- can label it as such
-                # instead of presenting a guess with the same confidence as
-                # a real tiktoken count.
-                "approx": data["approx"],
-            }
+            model: {k: data[k] for k in ("original", "compressed", "saved_pct", "approx")}
             for model, data in token_results.items()
         },
-        "files": {
-            _rel_key(fp, root): {
-                "summary": data["summary"],
-                "confidence": data["confidence"],
-                "signatures": data["signatures"],
-                "dependencies": data["dependencies"],
-                # Present only for a file text_references.py actually found
-                # a match for (packager.py's earlier merge step never adds
-                # the key otherwise) -- working state, same as
-                # signatures/dependencies/api, pruned by finalize_aif() once
-                # build_tree() has folded it into `relationships` as
-                # internal_text_refs.
-                **({"text_dependencies": data["text_dependencies"]} if "text_dependencies" in data else {}),
-                "api": data["api"],
-                "compressed": data["compressed"]
-            }
-            for fp, data in files_data.items()
-        },
-        # Working state, not part of the shipped aif.json: a {file: content
-        # hash} snapshot of exactly what was packed, so a later
-        # freshness.check_freshness() call can tell whether this output has
-        # drifted from the files on disk without re-running any of the above.
-        # save_aif() pulls this out into a sibling <name>.cache.json, the
-        # same way it pulls `compressed` out into <name>.detail.json.
-        # Passed in already-computed (pack()'s own current_manifest,
-        # hashed once right after `selected` was finalized) rather than
-        # calling build_manifest(selected, root_path) again here -- this
-        # function used to re-hash the same file set a second time per pack
-        # run, for the exact same result, a real gap found by code review.
+        "files": files,
+        "relationships": relationships,
         "_manifest": current_manifest,
     }
 
@@ -898,547 +303,130 @@ def _assemble_aif(
 @cached_reads
 def pack(
     root_path: str,
-    auto: bool = False,
-    interactive: bool = True,
+    auto: bool = True,
+    interactive: bool = False,
     use_cache: bool = True,
     use_llm: bool = True,
-    preselected: list[str] | None = None,
     include: list[str] | None = None,
     ignore: list[str] | None = None,
-    check_cancelled: Callable[[], str | None] | None = None,
     result_dir: str | Path | None = None,
     lang: str = "en",
-    discard_checkpoint: bool | None = None,
     progress_lang: str = "ko",
 ) -> dict:
-    """include/ignore are extra glob patterns (gitignore syntax -- see
-    collect_files()'s own docstring for exactly how each is applied),
-    unioned with whatever's already in the target project's .ziplex.json
-    (config.py) rather than replacing it -- typically sourced from a CLI
-    --include/--ignore flag for a one-off scope without editing the config
-    file. Both apply before file selection (auto/preselected/interactive
-    picker all choose from the same already-filtered candidate set), so a
-    file excluded here never reaches the security scan or shows up as a
-    choice at all, the same as one excluded by DEFAULT_IGNORE/.gitignore.
+    """Packs `root_path` and returns the in-memory aif (relationships
+    included; write it with save_aif()). Returns {} only when nothing is
+    left to pack.
 
-    auto controls file selection (skip the interactive picker, include all
-    safe files); interactive controls whether a failing LLM call can prompt
-    for input at all. The two are independent: `--auto` alone still lets
-    checkpoint.handle_llm_failure() ask what to do on a repeated failure,
-    while interactive=False makes that automatic (checkpoint + return {})
-    even with file selection left interactive. `cli.py`'s `--auto-correct`
-    sets both this and whether corrector.py's interactive review runs
-    afterward, since both boil down to the same question: is there a
-    terminal to prompt?
-
-    preselected, when given, wins over both auto and the interactive
-    select_files() picker: a list of relative names (the same keys aif.json
-    ends up keyed by) to include, already decided by the caller. This is
-    gui_server.py's seam -- pack_service.py's file-selection screen runs
-    collect_files()/scan_files() itself to show a human the safe/dangerous
-    split in the browser, then passes back what they checked, since
-    select_files()'s input()-based picker has no terminal to read from over
-    HTTP. An empty list is valid input (selects nothing, same as an empty
-    picker response) and not the same as None (which falls through to
-    auto/select_files()).
-
-    use_cache controls incremental reuse (staleness stage 2): when a
-    previous successful pack is found at the conventional <root_path>/
-    .ziplex path for this project (or result_dir, if given -- see this
-    function's own note on that param, further down), any file whose
-    content hash still matches gets its
-    summary reused instead of spending another LLM call on it. Only summary
-    is reused -- signatures/dependencies/api/compressed are always
-    freshly extracted, so a human's prior manual reparenting
-    (corrector.py's move_file()) never silently gets skipped along with an
-    unchanged file's dependency data; a fresh pack always rebuilds
-    `relationships` from scratch regardless of this flag, same as before
-    incremental reuse existed. use_cache=False (CLI: `pack --no-cache`)
-    also discards a leftover checkpoint from an interrupted previous run,
-    not just previous summaries -- "ignore anything cached from before"
-    means the checkpoint too; without this, a non-interactive caller (the
-    GUI, always) would silently auto-resume that checkpoint regardless of
-    use_cache, which read as a bug from the outside (a "완전히 재패킹"
-    checkbox not actually starting fresh) even though each half worked as
-    designed in isolation.
-
-    discard_checkpoint overrides just that second half of use_cache's
-    effect, independent of the first: `None` (every CLI call, and the GUI's
-    own fresh "패킹 시작") keeps today's behavior (`not use_cache` decides
-    it); an explicit `False` forces a leftover checkpoint to always be
-    resumed regardless of what use_cache says. This exists specifically for
-    the GUI's "다시 시도" (retry-after-failure) button, which reposts a
-    failed job's own original settings verbatim -- including whatever
-    use_cache value that job started with. Without this override, retrying
-    a job that started with "완전히 재패킹" checked would discard the very
-    checkpoint that same job had just saved seconds earlier on its own LLM
-    failure, silently re-billing every file's summary from scratch on every
-    retry -- a real bug reported directly, and a case use_cache was never
-    meant to cover: "완전히 재패킹" is about distrusting an *old, unrelated*
-    prior pack's cache, not about discarding a checkpoint this exact retry
-    exists to resume.
-
-    use_llm=False (CLI: `pack --no-llm`) skips every LLM call entirely --
-    no GEMINI_API_KEY, no network, no Gemini rate limits -- for the
-    "structural-only" mode floated as a mitigation for the biggest
-    non-developer onboarding barrier (getting an API key at all; see the
-    `ziplex-roadmap` memory's target-audience discussion). Everything
-    Tree-sitter/regex-based already runs unaffected (extraction,
-    compression, tech_stack detection, the dependency graph); only the
-    three LLM-touching steps change: each file's `summary` comes from
-    summarizer.generate_structural_summaries() instead (a deterministic
-    listing of its own signatures/dependencies -- see that function's
-    docstring for exactly why this isn't pretending to be a real
-    description), `rules` stays `[]` (nothing to infer without an LLM
-    reading signature patterns), and `prompt` becomes STRUCTURAL_ONLY_NOTE
-    instead of an AI-written guide, so a reader sees *why* those fields
-    look like this rather than assuming the pack half-failed. use_cache
-    still applies independently -- a file whose previous *real* summary is
-    still fresh gets that reused rather than downgraded to a structural
-    placeholder, since reusing a better answer already on hand is strictly
-    an improvement, not a contradiction of "don't call the LLM now." One
-    exception: a reused summary that's exactly summarizer's failure
-    placeholder never got a real answer in the first place, so it isn't
-    "reuse" so much as re-caching a miss -- see
-    _confirm_regenerate_failed_summaries() below.
-
-    A recognized media asset (image/video/audio/font -- file/media.py's
-    classify_media_file(), extension and content both confirmed) is
-    unconditionally structural-only regardless of
-    use_llm: it never reaches Tree-sitter extraction (nothing to parse) or
-    an LLM call (describing what an image/video actually *shows* would need
-    a vision-capable model, real per-file cost this pipeline deliberately
-    doesn't pay -- see media.py's own docstring). Its `summary` is a free,
-    deterministic metadata line (kind, size, and pixel dimensions for the
-    image formats media.py knows how to header-parse) filled in during
-    extraction itself, which is what keeps it out of the LLM/structural
-    `pending` set below either way.
-
-    check_cancelled, if given, is polled at a few natural checkpoints (once
-    per file during extraction, once more right before the LLM summary
-    step, and once right after it) and should return None to keep going, or
-    "save"/"discard" to stop early -- see _maybe_stop()'s own docstring for
-    exactly what each does. The third checkpoint exists specifically so a
-    stop requested *during* the summary step (typically the longest-running
-    one, and the one with no way to interrupt its own thread pool mid-
-    flight) still takes effect the moment that step finishes, instead of
-    sitting unconsumed for the rest of the run. Only meaningful for a caller running pack() on its own background
-    thread with no other way to interrupt it (gui/pack_service.py's
-    "running"-state stop buttons); a plain CLI run has no such caller and
-    just leaves this unset, same as `interactive` prompts never firing for
-    the GUI's own non-interactive `pack()` calls. Not instant either way --
-    a network-bound LLM call already in flight when a stop is requested
-    still completes before the next checkpoint is reached.
-
-    result_dir overrides where use_cache's incremental-reuse lookup
-    (load_previous_summaries(), just below) looks for a previous successful
-    pack -- not where *this* run's own aif.json ends up (that's always
-    whatever save_aif() is called with separately, after pack() returns).
-    Only meaningful together with a caller that also saves to a non-default
-    folder: gui/pack_service.py's start_pack_job() resolves a project's
-    effective output folder (settings.py's per-project pin, else its global
-    default, else nothing configured) once, up front, and passes the exact
-    same folder both here and to save_aif() later, so cache lookup and the
-    actual save destination never drift apart. None (the CLI's only call
-    shape, and the GUI's own when neither a pin nor a global default is
-    configured) falls back to `<root_path>/DEFAULT_OUTPUT_SUBDIR`
-    unconditionally -- matching resolve_output_path()'s own default, since
-    that's what save_aif() actually wrote to on the previous run this is
-    trying to find (see DEFAULT_OUTPUT_SUBDIR's own comment for why this
-    used to be a fixed, Ziplex-install-relative RESULT_DIR instead, and why
-    that was a real bug for anyone using a real, non-editable install).
-
-    lang picks which language every LLM-written value (each file's summary,
-    `rules`, `prompt`) is actually written in -- llm.py's LANGUAGE_NAMES
-    holds the supported set ("en"/"ko" as of this writing), "en" both the
-    default and the recommended choice (see that dict's own comment for
-    why). Also picks the language of Ziplex's own fixed strings that ship
-    alongside them for consistency: STRUCTURAL_ONLY_NOTE/FORMAT_NOTES above
-    and summarizer.SUMMARY_FAILED_PLACEHOLDERS. Silently normalized to "en"
-    if not a recognized key (a stale GUI request, a hand-built API call)
-    rather than raising -- the CLI's own `--lang` flag and the GUI's pack-
-    form dropdown both already restrict input to LANGUAGE_NAMES's keys, so
-    this is just a defensive fallback, not the primary validation. Recorded
-    verbatim as `project.language` in the assembled aif (see the aif
-    assembly step, further down) for the same transparency reason
-    project.tech_stack/security_scan/format_notes are always attached --
-    a reader with no other context should be able to tell what language a
-    pack's own content is in without guessing from the text itself.
-
-    progress_lang is a wholly separate concern from `lang` above -- which
-    language this call's own progress/status `print()`s (llm.py's retry
-    messages, checkpoint.py's save/failure notices, summarizer.py's
-    per-file lines, this function's own stage headers) are written in, not
-    what language ends up *inside* aif.json. Defaults to "ko" (this
-    project's own long-standing CLI convention -- see AGENTS.md); the GUI
-    passes its own current display-language setting instead
-    (`pack_service.start_pack_job()`), so a human watching the GUI's pack-
-    progress log sees it match whatever language the rest of that page is
-    already in, rather than always-Korean regardless of that setting -- a
-    real gap reported directly (the log stayed Korean even with English
-    picked on the Options page, since that page's language switcher only
-    ever translates the GUI's own chrome, and this log is just captured
-    stdout from these same prints). See progress_i18n.py's own docstring
-    for the mechanism (a contextvars.ContextVar, set here, read via
-    progress_i18n.pick() at each print site instead of threading a new
-    parameter through every function in between).
+    include/ignore are extra gitignore-style patterns on top of
+    .ziplex.json. use_cache reuses each unchanged file's previous summary
+    (the previous pack at `result_dir`, else <project>/.ziplex, plus the
+    per-hash LLM summary cache); use_llm=False writes structural summaries
+    and skips rules/guide. `lang` is the language summaries/rules/guide are
+    written in (en/ko), `progress_lang` the language of progress output.
+    `auto`/`interactive` are accepted from old callers and ignored: packing
+    is always non-interactive.
     """
     _set_progress_lang(progress_lang)
-    if lang not in LANGUAGE_NAMES:
-        lang = "en"
-    root = Path(root_path)
-    # .resolve() specifically for the display/save name -- root itself stays
-    # unresolved so _rel_key(fp, root) below stays consistent with
-    # collector.py's own separately-unresolved root (both relative when
-    # root_path is relative, both absolute when it's absolute). Path(".").name
-    # is "" (no name component at all), so an unresolved root_path of "."
-    # (packing a project from inside its own folder, a common real pattern)
-    # used to silently save an empty project name -- result/.json, an aif.json
-    # with project.name == "", etc.
-    project_name = Path(root_path).resolve().name
-    effective_result_dir = Path(result_dir) if result_dir else root / DEFAULT_OUTPUT_SUBDIR
-
-    # Real-usage tracking starts fresh for this run, before any generate()
-    # call anywhere below (rules/prompt/folder-summary calls, and every
-    # summarizer.py thread) can happen -- see llm.usage_tracker's own
-    # docstring for why this exists: analyze_tokens_with_payload() below
-    # only ever measures the *packed artifact's* size, never what the LLM
-    # API itself was actually billed to produce it.
     reset_usage()
+    lang = lang if lang in LANGUAGE_NAMES else "en"
+    root = Path(root_path)
+    project_name = root.resolve().name
+    effective_result_dir = Path(result_dir) if result_dir is not None else root / DEFAULT_OUTPUT_SUBDIR
 
-    # auto-detect and (if trusted) unpack a leftover checkpoint -- see
-    # _resolve_checkpoint()'s own docstring for the full "does this
-    # checkpoint belong to me" story.
-    restored_prompt, restored_files_data, lang_matches, carried_rules = _resolve_checkpoint(
-        root_path, use_cache, discard_checkpoint, interactive, preselected, use_llm, lang,
-    )
-
-    # Steps 1-3: collect -> security scan -> select. _select_files()'s own
-    # included_anyway isn't used here -- _compute_security_scan() below
-    # recomputes the equivalent set from `selected`/`dangerous` directly
-    # instead (see that function's own docstring for why), so this third
-    # return value was dead state left over from the pack()/main()
-    # decomposition, a real gap caught by code review.
-    selected, dangerous, _included_anyway, safe_files = _select_files(
-        root_path, root, include, ignore, auto, interactive, preselected,
-    )
-    selected_set = set(selected)
-    deselected = _collapse_deselected(
-        [_rel_key(f, root) for f in safe_files if f not in selected_set],
-        [_rel_key(f, root) for f in selected],
-    )
-
+    selected, dangerous = _select_files(root_path, include, ignore)
     if not selected:
         print(pick("No files selected.", "선택된 파일 없음."))
         return {}
-
-    # Flagged files left out of the pack still contribute their imports to
-    # the graph: paths and module names aren't secrets, and dropping them
-    # lost 17% of Ziplex's own Python edges. Their content never reaches a
-    # summary, detail.json, a text-reference scan, or an LLM prompt.
-    graph_only = [] if load_config(root_path).get("exclude_flagged_from_graph") else [
-        d["file"] for d in dangerous if d["file"] not in selected_set
-    ]
-
-    # Hashed once here and threaded through to both load_previous_summaries()
-    # (staleness stage 2, just below) and _assemble_aif()'s own final
-    # `_manifest` (step 7) -- both used to independently re-hash every
-    # selected file's content, a real gap found by code review: identical
-    # work done twice per pack run for zero behavioral difference, since
-    # neither call mutates `selected` in between.
+    graph_only = [] if load_config(root_path).get("exclude_flagged_from_graph") else [d["file"] for d in dangerous]
     current_manifest = build_manifest(selected + graph_only, root_path)
 
-    # incremental reuse (staleness stage 2): {relative key: summary} for
-    # files whose content hasn't changed since the last successful pack
-    previous_summaries = load_previous_summaries(
+    previous = load_previous_summaries(
         root_path, selected, effective_result_dir, lang=lang, current_manifest=current_manifest,
     ) if use_cache else {}
-    if previous_summaries:
+    previous = {
+        n: s for n, s in previous.items()
+        if not summarizer.is_summary_failed_placeholder(s) and not (use_llm and summarizer.is_structural_summary(s))
+    }
+    cache = _SummaryCache(root / DEFAULT_OUTPUT_SUBDIR / SUMMARY_CACHE_FILE) if (use_llm and use_cache) else None
+    if previous:
         print(pick(
-            f"  ♻️  Found {len(previous_summaries)} unchanged file(s) from a previous pack — reusing their summaries",
-            f"  ♻️  이전 pack에서 변경 없는 파일 {len(previous_summaries)}개 발견 — 요약 재사용",
+            f"  ♻️  Reusing {len(previous)} unchanged file(s)' summaries from the previous pack",
+            f"  ♻️  이전 pack에서 변경 없는 파일 {len(previous)}개의 요약 재사용",
         ))
 
-        failed_previously = [
-            name for name, summary in previous_summaries.items()
-            if summarizer.is_summary_failed_placeholder(summary)
-        ]
-        if failed_previously and _confirm_regenerate_failed_summaries(failed_previously, interactive):
-            for name in failed_previously:
-                del previous_summaries[name]
-
-        # A previous --no-llm pack's structural lines ("Defines: a, b") are
-        # a stand-in for a missing summary, not one -- an LLM run (e.g.
-        # right after adding an API key) must replace them, not keep them
-        # forever for every unchanged file.
-        if use_llm:
-            structural = [n for n, s in previous_summaries.items() if summarizer.is_structural_summary(s)]
-            for name in structural:
-                del previous_summaries[name]
-            if structural:
-                print(pick(
-                    f"  📐 {len(structural)} of them were --no-llm structural summaries -- regenerating with the LLM",
-                    f"  📐 그중 {len(structural)}개는 --no-llm 구조 요약 -- LLM으로 다시 생성",
-                ))
-
-    # 4. Tree-sitter analysis
     print(pick("\n🔍 Analyzing code structure...", "\n🔍 코드 구조 분석 중..."))
-    files_data = {}
-    signatures_map = {}
-
-    # One resolution context for every file whose edges enter the graph
-    # (core/graph.py), graph-only flagged files included so imports of them
-    # resolve too.
     graph = GraphBuilder(root_path, selected + graph_only)
-
+    files_data: dict[str, dict] = {}
+    signatures_map: dict[str, list[str]] = {}
     for file_path in selected:
-        if _maybe_stop(check_cancelled, root_path, root, files_data, carried_rules, restored_prompt, lang):
-            return {}
-
         name = _rel_key(file_path, root)
-        # Media files have no text to scan; classified once, reused below.
+        digest = current_manifest.get(name)
+        reused = previous.get(name, "") or (cache.get(lang, digest) if cache else "")
         media_kind = classify_media_file(file_path)
-        text_refs = [] if media_kind else graph.text_references(file_path)
-
-        # restore from checkpoint -- unless the file changed since that
-        # checkpoint was written: restoring it would ship the old summary/
-        # body while `_manifest` (cache.json) records today's hash, so
-        # freshness would report it as up to date forever. A checkpoint
-        # written before content_hash existed has no hash to compare and
-        # is trusted as before.
-        restored_hash = restored_files_data.get(name, {}).get("content_hash")
-        if name in restored_files_data and restored_hash not in (None, current_manifest.get(name)):
-            print(pick(
-                f"  🔄 {name} (changed since checkpoint, re-analyzing)",
-                f"  🔄 {name} (체크포인트 이후 변경됨, 다시 분석)",
-            ))
-        elif name in restored_files_data:
-            print(pick(f"  ✅ {name} (restored from checkpoint)", f"  ✅ {name} (체크포인트에서 복원)"))
-            files_data[file_path] = dict(restored_files_data[name])
-            files_data[file_path]["dependencies"], files_data[file_path]["text_dependencies"] = merge_text_references(
-                code_dependencies_of(files_data[file_path]), text_refs,
-            )
-            if summarizer.is_summary_failed_placeholder(files_data[file_path].get("summary", "")):
-                # A failure placeholder is unfinished work, not a result --
-                # left in place, `pending` below would skip it and a resume
-                # after e.g. fixing an out-of-quota key would never retry it.
-                files_data[file_path]["summary"] = ""
-            if not lang_matches and files_data[file_path].get("summary"):
-                # A summary already captured in a stale-language checkpoint
-                # is exactly as wrong here as one reused across a language
-                # change via load_previous_summaries() (freshness.py) would
-                # be -- discard it so it falls into `pending` below and gets
-                # regenerated in the currently requested `lang`.
-                # signatures/dependencies/api/compressed aren't language-
-                # dependent, so those are kept as-is.
-                files_data[file_path]["summary"] = ""
-            # Same condition the fresh-extraction branch below uses (`sigs
-            # or deps`, not just `sigs`) -- this used to check "signatures"
-            # alone, silently excluding a checkpoint-restored file that has
-            # dependencies but no functions (e.g. a thin index.ts that's
-            # just top-level imports) from analyze_rules()'s input. That
-            # made the inferred coding rules depend on whether a run
-            # happened to get interrupted and resumed, for an otherwise
-            # identical pack.
-            if files_data[file_path].get("signatures") or code_dependencies_of(files_data[file_path]):
-                signatures_map[file_path] = files_data[file_path].get("signatures", [])
-            continue
-
-        # Media assets (images/video/audio/fonts, see file/media.py) never
-        # reach Tree-sitter extraction or an LLM call at all -- there's no
-        # code to parse and, deliberately, no vision-model call to make (see
-        # media.py's own docstring for why that's out of scope). `summary`
-        # is filled in right here with a free, deterministic metadata
-        # description, which is what keeps it out of `pending` below (only
-        # entries with no summary yet get one generated) -- this is the
-        # actual mechanism that makes a media file cost nothing to pack.
-        # media_kind was already computed above, before the checkpoint-
-        # restore check -- reused here rather than calling
-        # classify_media_file() a second time.
         if media_kind:
-            reused_summary = previous_summaries.get(name, "")
             files_data[file_path] = {
-                "signatures": [],
-                "dependencies": [],
-                "api": [],
-                "compressed": "",
-                "summary": reused_summary or media_summary(file_path, media_kind),
-                "content_hash": current_manifest.get(name),
+                "signatures": [], "dependencies": [], "api": [], "compressed": "",
+                "summary": reused or media_summary(file_path, media_kind), "content_hash": digest,
             }
-            if reused_summary:
-                print(pick(f"  ♻️  {name} (unchanged, reusing previous summary)", f"  ♻️  {name} (변경 없음, 이전 요약 재사용)"))
-            else:
-                print(pick(f"  🖼️  {name} (media file, no LLM used)", f"  🖼️  {name} (미디어 파일, LLM 미사용)"))
             continue
-
-        # extract_all() shares one read_text()/parser.parse() call across
-        # signatures/dependencies/api/compressed -- calling
-        # extract_signatures()/extract_dependencies()/extract_api()/
-        # compress_file() separately here used to tree-sitter-parse the
-        # same file 4 times per pack, a real efficiency gap found by code
-        # review (see extract_all()'s own docstring).
         extracted = extract_all(file_path)
-        sigs = extracted["signatures"]
         code_deps = graph.code_dependencies(file_path, extracted["dependencies"])
-        deps, text_deps = merge_text_references(code_deps, text_refs)
-        apis = extracted["api"]
-        compressed = extracted["compressed"]
-        reused_summary = previous_summaries.get(name, "")
-
+        deps, text_deps = merge_text_references(code_deps, graph.text_references(file_path))
         files_data[file_path] = {
-            "signatures": sigs,
-            "dependencies": deps,
-            "text_dependencies": text_deps,
-            "api": apis,
-            "compressed": compressed,
-            "summary": reused_summary,
-            # Carried into any checkpoint (build_snapshot() stores entries
-            # whole) so a resume can tell this file changed since -- see the
-            # restore branch above. Never copied into aif.json itself.
-            "content_hash": current_manifest.get(name),
+            "signatures": extracted["signatures"], "dependencies": deps, "text_dependencies": text_deps,
+            "api": extracted["api"], "compressed": extracted["compressed"], "summary": reused,
+            "content_hash": digest,
         }
-
-        if sigs or code_deps:
-            signatures_map[file_path] = sigs
-
-        if reused_summary:
-            print(pick(f"  ♻️  {name} (unchanged, reusing previous summary)", f"  ♻️  {name} (변경 없음, 이전 요약 재사용)"))
+        if extracted["signatures"] or code_deps:
+            signatures_map[file_path] = extracted["signatures"]
+        if reused:
+            print(pick(f"  ♻️  {name} (unchanged, reusing summary)", f"  ♻️  {name} (변경 없음, 요약 재사용)"))
         else:
             print(f"  ✅ {name}")
 
-    if _maybe_stop(check_cancelled, root_path, root, files_data, carried_rules, restored_prompt, lang):
-        return {}
-
-    # 5. Summary generation -- LLM-based (the default) or, with use_llm=False,
-    # a deterministic structural fallback that never touches the network at
-    # all (see this function's own docstring for the full use_llm story).
-    # Each LLM-generated summary is human-reviewed/corrected in
-    # correct_aif() later (triaged by confidence -- see below -- so review
-    # effort scales with how many summaries actually look suspicious, not
-    # with project size), so this skips the retry menu: try each file once
-    # in parallel (see summarizer.generate_summaries) and fill failures with
-    # a placeholder (a wrong summary still gets fixed in the next step).
-    pending = {
-        fp: data for fp, data in files_data.items() if not data.get("summary")
-    }
+    pending = {fp: data for fp, data in files_data.items() if not data.get("summary")}
     if use_llm:
         print(pick("\n🤖 Analyzing with LLM...", "\n🤖 LLM 분석 중..."))
-        for fp, summary in summarizer.generate_summaries(pending, root, lang=lang).items():
-            files_data[fp]["summary"] = summary
+
+        def remember(fp: str, summary: str) -> None:
+            if cache is not None:
+                cache.put(lang, files_data[fp].get("content_hash"), summary)
+
+        try:
+            summaries = summarizer.generate_summaries(pending, root, lang=lang, on_result=remember)
+        finally:
+            if cache is not None:
+                cache.flush()
     else:
         print(pick(
             "\n📐 Generating summaries from structural info only (--no-llm, LLM unused)...",
             "\n📐 구조 정보만으로 요약 생성 중 (--no-llm, LLM 미사용)...",
         ))
-        for fp, summary in summarizer.generate_structural_summaries(pending, root, lang=lang).items():
-            files_data[fp]["summary"] = summary
+        summaries = summarizer.generate_structural_summaries(pending, root, lang=lang)
+    for fp, summary in summaries.items():
+        files_data[fp]["summary"] = summary
 
-    # Confidence signal for every summary (reused, checkpoint-restored, or
-    # freshly generated) -- free, no LLM call: just how much of the file's
-    # own signature vocabulary shows up in its summary. correct_aif() uses
-    # this to decide which summaries are worth prompting a human about.
-    for data in files_data.values():
-        data["confidence"] = estimate_confidence(data["summary"], data["signatures"])
-
-    # A cancel requested *during* the summary step above (typically the
-    # longest-running one) only gets checked once that step actually
-    # finishes -- there's no way to interrupt generate_summaries()'s own
-    # thread pool mid-flight from here. Without this checkpoint, a request
-    # landing there would sit in job["cancel_action"] unconsumed until
-    # pack() finishes on its own (reviewing state), never actually taking
-    # effect.
-    if _maybe_stop(check_cancelled, root_path, root, files_data, carried_rules, restored_prompt, lang):
-        return {}
-
-    # Computed once here (not just at final assembly, where this used to be
-    # the only place it ran) so analyze_prompt() below can use it as real
-    # architecture context too -- reused, not recomputed, at assembly time.
     tech_stack = detect_tech_stack(root_path)
-
-    # A relative-keyed view of files_data for the two consumers below
-    # (_build_architecture_summary()/folder_summary's functions) -- files_data
-    # itself is still keyed by absolute path at this point in the pipeline
-    # (final assembly's own _rel_key() conversion happens later, in step 7),
-    # and an LLM prompt (or a shipped aif.json field) should never leak a
-    # local absolute filesystem path.
     rel_files_data = {_rel_key(fp, root): data for fp, data in files_data.items()}
+    rules = _extract_rules(files_data, signatures_map, root, lang, use_llm)
+    prompt = _generate_prompt(project_name, rel_files_data, tech_stack, rules, lang, use_llm)
+    folders = generate_structural_folder_summaries(rel_files_data, lang)
+    folder_file_counts = {folder: len(entries) for folder, entries in group_files_by_folder(rel_files_data).items()}
 
-    # Per-folder summaries run on a side thread while rules -> prompt run
-    # here: folders depend on neither, never checkpoint, and only read
-    # rel_files_data. An early exit sets folders_stop so unstarted chunks
-    # are skipped instead of billed.
-    _announce_folders(use_llm)
-    folders_stop = threading.Event()
-    folders_pool = ThreadPoolExecutor(max_workers=1)
-    folders_future = folders_pool.submit(
-        contextvars.copy_context().run,  # keep progress_i18n's log language
-        _generate_folders, rel_files_data, lang, use_llm, folders_stop.is_set,
-    )
-    try:
-        # extract rules (restored from checkpoint if available)
-        rules = _extract_rules(files_data, signatures_map, root, root_path, lang, use_llm, carried_rules, interactive)
-        if rules is None:
-            return {}
-
-        # generate prompt (restored from checkpoint if available)
-        prompt = _generate_prompt(
-            files_data, root, root_path, lang, use_llm,
-            project_name, rel_files_data, tech_stack, rules,
-            restored_prompt, lang_matches, interactive,
-        )
-        if prompt is None:
-            return {}
-
-        folders, folder_confidences, folder_file_counts = folders_future.result()
-    finally:
-        folders_stop.set()
-        folders_pool.shutdown(wait=False)
-
-    # Added after every checkpoint/summary/rules/folder step, so graph-only
-    # entries never reach an LLM prompt or a checkpoint's restored file set.
     files_data.update(_graph_only_entries(graph_only, root, graph, current_manifest, lang))
 
-    # 6. Token counting
-    # Compares raw project text against the actual per-file aif.json payload
-    # (just the summary -- signatures/dependencies/api/compressed are either
-    # working state pruned later in correct_aif(), or split out to a sibling
-    # detail.json by save_aif() and not part of what's loaded by default).
-    # files_data is fully populated with summaries by now, so this reflects
-    # the real savings an AI gets from reading aif.json.
     print(pick("\n📊 Analyzing tokens...", "\n📊 토큰 분석 중..."))
     token_results, _ = analyze_tokens_with_payload(selected, files_data)
-
-    # 7. Assemble AIF.json
-    security_scan = _compute_security_scan(dangerous, selected, root)
-    aif = _assemble_aif(
-        project_name, prompt, tech_stack, security_scan,
-        include, ignore, lang, rules, folders, folder_confidences, folder_file_counts,
-        token_results, files_data, root, selected, root_path, current_manifest,
-        deselected=deselected, use_llm=use_llm,
+    return _assemble_aif(
+        project_name, prompt, tech_stack, _compute_security_scan(dangerous, selected, root),
+        include, ignore, lang, rules, folders, folder_file_counts, token_results, files_data, root,
+        current_manifest, use_llm,
     )
-
-    # delete the checkpoint on success
-    ckpt.delete_checkpoint(root_path)
-
-    return aif
 
 
 def resolve_output_path(aif: dict, output_path: str | None, project_path: str | None = None) -> Path:
-    """The path save_aif() will write aif.json to, in priority order:
-    output_path if given; else <project_path>/DEFAULT_OUTPUT_SUBDIR/
-    <project name>.json if project_path is given; else the legacy
-    RESULT_DIR/<project name>.json (see that constant's own comment for why
-    this last resort is best avoided -- every real caller below always has
-    a project_path on hand and passes it).
-
-    No directory-creation or write side effects here, unlike save_aif()
-    itself -- factored out so a caller that needs to know the destination
-    *before* calling save_aif() can compute it identically instead of
-    keeping its own copy of this fallback that could silently drift from
-    save_aif()'s. gui/pack_service.py's submit_review() is exactly that
-    caller: it locks this same path (see _lock_for_path()'s own comment)
-    against a concurrent edit before finalizing and saving to it.
-    """
+    """Where save_aif() writes aif.json: output_path, else
+    <project_path>/.ziplex/<name>.json, else RESULT_DIR/<name>.json."""
     if output_path is not None:
         return Path(output_path)
     if project_path is not None:
@@ -1447,13 +435,9 @@ def resolve_output_path(aif: dict, output_path: str | None, project_path: str | 
 
 
 def _measure_saved_tokens(aif: dict, lean_aif: dict) -> None:
-    """Sets every model's `compressed`/`saved_pct` in `tokens` to the size of
-    the aif.json actually being written (in both dicts, so the caller's
-    printers and --max-tokens guard see it too). pack()'s own count only
-    covers per-file summaries -- the final file isn't known until
-    correct_aif() prunes the working fields -- and on Ziplex's own pack it
-    reported 8,387 tokens for a 13,358-token aif.json (relationships,
-    folders, rules and project left out)."""
+    """Sets every model's `compressed`/`saved_pct` to the size of the
+    aif.json actually written (in both dicts, so printers and the
+    --max-tokens guard see it)."""
     text = dumps_aif(lean_aif)
     for model, data in (lean_aif.get("tokens") or {}).items():
         compressed = count_tokens_for_model(text, model)
@@ -1465,73 +449,20 @@ def _measure_saved_tokens(aif: dict, lean_aif: dict) -> None:
 
 
 def save_aif(aif: dict, output_path: str | None = None, progress_lang: str = "ko", project_path: str | None = None) -> None:
-    """Writes the AIF result to output_path, or to
-    <project_path>/DEFAULT_OUTPUT_SUBDIR/<project name>.json if output_path
-    isn't given but project_path is (see resolve_output_path()) -- a
-    project-relative default, deliberately *not* anchored to Ziplex's own
-    install location (checkpoint.CHECKPOINT_DIR moved off it too, to
-    ~/.ziplex/checkpoints -- see
-    RESULT_DIR's own comment for why that used to be this function's
-    fallback too, and why it was a real bug for a real, non-editable
-    install). project_path is optional only for a caller that genuinely
-    doesn't have one on hand -- both real callers (cli.py's `pack`
-    subcommand, gui/pack_service.py's submit_review()) always pass it, so
-    every actual `ziplex pack <project>` run (no `-o`) lands its output
-    inside that same project, not somewhere tied to wherever Ziplex itself
-    happens to be installed.
-
-    Splits two things out of `aif` into sibling files, keyed the same way as
-    `files`:
-    - `compressed` -> "<name>.detail.json". aif.json (summary + relationships)
-      is what an AI reads by default -- for a file with no compressed body to
-      strip (README, config, lang files, ...) `compressed` is close to the raw
-      original, so shipping it unconditionally on every file undoes the token
-      savings for exactly the files that benefit least from it. mcp_server.py's
-      get_detail tool is what actually fetches detail.json today, only for
-      files an AI decides it needs.
-    - `_manifest` -> "<name>.cache.json" (flat, not per-file). A {file: content
-      hash} snapshot of what was packed, for freshness.check_freshness() to
-      compare against later -- not part of aif.json itself, since it's
-      packaging-internal bookkeeping an AI reading the project has no use for.
-
-    progress_lang -- same meaning as pack()'s own param of the same name
-    (see its docstring), set here too rather than relying only on pack()'s
-    own contextvars.ContextVar: gui/pack_service.py's submit_review() calls
-    this well after the job's original pack() run has already returned
-    (once a human submits the review form), on a different Flask request
-    -- a fresh context with no memory of what pack() set earlier, so this
-    function needs its own explicit copy of whichever language that job
-    was started with rather than silently falling back to "ko".
-    """
+    """Writes aif.json (summaries + certain edges), <name>.detail.json
+    (compressed bodies + prose-mention `text_refs` per file) and
+    <name>.cache.json (the {file: content hash} manifest freshness checks
+    compare against). See resolve_output_path() for the location."""
     _set_progress_lang(progress_lang)
     output_path = resolve_output_path(aif, output_path, project_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    manifest = aif.get("_manifest")
-
-    lean_files = {}
-    detail = {}
+    lean_files, detail = {}, {}
     for name, data in aif["files"].items():
         lean_files[name] = {k: v for k, v in data.items() if k != "compressed"}
-        # A missing `confidence` means 1.0 (every reader defaults to that, and
-        # FORMAT_NOTES tells a cold reader so) -- ~100 of Ziplex's own 142
-        # files scored exactly 1.0, so omitting it there is free.
-        if lean_files[name].get("confidence") == 1.0:
-            del lean_files[name]["confidence"]
         detail[name] = {"compressed": data.get("compressed", "")}
-
     lean_aif = {k: v for k, v in aif.items() if k != "_manifest"}
     lean_aif["files"] = lean_files
-    # Same "missing means 1.0" rule for folders -- every reader already
-    # defaults it (query_service, skill/flat export, GUI review).
-    if aif.get("folders"):
-        lean_aif["folders"] = {
-            path: {k: v for k, v in info.items() if not (k == "confidence" and v == 1.0)}
-            for path, info in aif["folders"].items()
-        }
-
-    # Certain edges stay in aif.json; prose-mention edges go to detail.json's
-    # per-file `text_refs` -- see aif_io.py's docstring.
     lean_aif["relationships"], weak_edges = detach_weak_edges(aif.get("relationships", {}))
     for name, refs in weak_edges.items():
         if name in detail:
@@ -1542,12 +473,11 @@ def save_aif(aif: dict, output_path: str | None = None, progress_lang: str = "ko
     print(pick(f"\n✅ AIF.json saved: {output_path}", f"\n✅ AIF.json 저장됨: {output_path}"))
 
     detail_path = output_path.with_name(f"{output_path.stem}.detail.json")
-    with open(detail_path, "w", encoding="utf-8") as f:
-        json.dump(detail, f, ensure_ascii=False, indent=2)
+    detail_path.write_text(json.dumps(detail, ensure_ascii=False, indent=2), encoding="utf-8")
     print(pick(f"📦 Detail (compressed) saved: {detail_path}", f"📦 상세 정보(compressed) 저장됨: {detail_path}"))
 
+    manifest = aif.get("_manifest")
     if manifest is not None:
         cache_path = output_path.with_name(f"{output_path.stem}.cache.json")
-        with open(cache_path, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, ensure_ascii=False, indent=2)
+        cache_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         print(pick(f"🗂️  Cache (hash) saved: {cache_path}", f"🗂️  캐시(해시) 저장됨: {cache_path}"))

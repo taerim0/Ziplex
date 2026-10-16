@@ -452,12 +452,6 @@ def test_analyze_prompt_lang_ko_asks_for_korean(monkeypatch):
     assert "Korean" in captured[0]
 
 
-def test_analyze_folder_summaries_lang_ko_asks_for_korean(monkeypatch):
-    captured = _capture_generate(monkeypatch)
-    llm.analyze_folder_summaries({"src": ["a.py: does a"]}, lang="ko")
-    assert "Korean" in captured[0]
-
-
 def test_analyze_prompt_instructs_to_focus_on_purpose_not_style(monkeypatch):
     # Real, reported bug: analyze_prompt() used to be called with an
     # always-empty `architecture` list (packager.py), so the only real
@@ -526,12 +520,6 @@ def test_analyze_prompt_labels_the_retry_with_a_fixed_name(monkeypatch):
     labels = _capture_generate_labels(monkeypatch)
     llm.analyze_prompt("myproj", [], [])
     assert labels == ["AI 가이드"]
-
-
-def test_analyze_folder_summaries_labels_the_retry_with_a_fixed_name(monkeypatch):
-    labels = _capture_generate_labels(monkeypatch)
-    llm.analyze_folder_summaries({"src": ["a.py: does a"]})
-    assert labels == ["폴더 요약"]
 
 
 # Real bug reported directly: packing this same repo scored ~17 low-confidence
@@ -693,7 +681,6 @@ def test_mock_provider_never_records_usage():
     llm.reset_usage()
     llm.MockProvider().generate('{"summary": "..."}')
     assert llm.get_usage() == {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-
 
 
 def test_generate_returns_empty_json_on_an_unexpected_response_shape_instead_of_raising(monkeypatch):
@@ -912,11 +899,3 @@ def test_analyze_rules_is_deterministic(monkeypatch):
     assert captured[0] == captured[1]
 
 
-def test_format_folder_block_caps_listed_entries():
-    entries = [f"f{i}.py: " + "word " * 100 for i in range(100)]
-    block = llm.format_folder_block("src", entries)
-    lines = block.splitlines()
-    assert lines[:2] == ["Folder: src", "Files:"]
-    assert len(lines) == 2 + llm.MAX_FOLDER_ENTRIES_LISTED + 1
-    assert lines[-1] == f"- (+{100 - llm.MAX_FOLDER_ENTRIES_LISTED} more)"
-    assert all(len(line) <= llm.MAX_FOLDER_ENTRY_CHARS + 2 for line in lines[2:])

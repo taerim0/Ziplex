@@ -26,6 +26,7 @@ import contextvars
 from ..core.graph import code_dependencies_of
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Callable
 import json
 
 from ..file.textutil import relative_key as _rel_key
@@ -249,7 +250,9 @@ def request_batch_summaries(batch: list[tuple[str, dict]], lang: str = "en", _re
     return result
 
 
-def generate_summaries(pending: dict[str, dict], root: Path, lang: str = "en") -> dict[str, str]:
+def generate_summaries(
+    pending: dict[str, dict], root: Path, lang: str = "en", on_result: Callable[[str, str], None] | None = None,
+) -> dict[str, str]:
     """Requests a summary for every entry in `pending` ({absolute file path:
     data}), batching BATCH_SIZE-at-a-time (see llm.analyze_batch_summaries)
     across a MAX_WORKERS thread pool, printing progress as each one lands.
@@ -292,12 +295,14 @@ def generate_summaries(pending: dict[str, dict], root: Path, lang: str = "en") -
                 fp = name_to_fp[name]
                 if summary:
                     results[fp] = summary
+                    if on_result is not None:  # persisted as it arrives (packager's summary cache)
+                        on_result(fp, summary)
                     print(f"  ✅ {name}")
                 else:
                     results[fp] = placeholder
                     print(pick(
-                        f"  ❌ {name} (summary generation failed -- needs review)",
-                        f"  ❌ {name} (요약 생성 실패 -- 검토 단계에서 확인 필요)",
+                        f"  ❌ {name} (summary generation failed -- retried on the next pack)",
+                        f"  ❌ {name} (요약 생성 실패 -- 다음 pack에서 다시 시도)",
                     ))
     return results
 

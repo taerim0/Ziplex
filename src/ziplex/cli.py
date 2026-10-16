@@ -18,12 +18,7 @@ from .tokenizer import analyze_tokens_with_compression
 from .enrich.llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider, get_usage
 from .packager import pack, save_aif, resolve_output_path
 from .enrich import summarizer
-from .corrector import correct_aif
-from .edits import finalize_aif, set_file_summary, set_folder_summary
-from .file.relationship import (
-    print_tree as print_dependency_tree, add_relationship, remove_relationship, CycleError,
-)
-from .aif_io import save_relationships_edit, write_aif
+from .file.relationship import print_tree as print_dependency_tree
 from .search import search_files, read_detail_range
 from .freshness import check_freshness_scoped, load_pack_scope, scope_from_aif, cache_path_for_aif, aif_path_for_cache
 from .skill_export import (
@@ -33,7 +28,6 @@ from .flat_export import export_flat
 from .config import init_config, CONFIG_FILENAME, collection_kwargs as _collection_kwargs, collect_and_scan as _collect_and_scan
 from . import __version__
 from . import settings as app_settings
-from . import checkpoint as app_checkpoint
 from . import doctor as app_doctor
 from .file.textutil import human_size as _human_size
 
@@ -126,25 +120,6 @@ def _print_settings(settings: dict) -> None:
     print(f"\nproject_output_dirs: {pin_count}개 프로젝트에 폴더 핀 고정됨 (GUI Options 페이지에서 확인)")
 
 
-def _print_checkpoints(checkpoints: list[dict]) -> None:
-    """`ziplex checkpoint list`'s read path. Each entry's own recorded
-    project name (not the checkpoint filename's one-way hash suffix -- see
-    checkpoint.list_checkpoints()'s docstring for why that can't be
-    reversed back into a project path) plus how many files it has pending
-    and how long ago it was saved, so a human can tell a fresh in-flight
-    checkpoint apart from one abandoned months ago worth clearing.
-    """
-    if not checkpoints:
-        print(f"체크포인트 없음 ({app_checkpoint.CHECKPOINT_DIR})")
-        return
-    print(f"📂 체크포인트 {len(checkpoints)}개 ({app_checkpoint.CHECKPOINT_DIR})\n")
-    for cp in checkpoints:
-        saved_at = datetime.fromtimestamp(cp["modified"]).strftime("%Y-%m-%d %H:%M")
-        print(f"  {cp['path'].name}")
-        print(f"    프로젝트: {cp['project_name']} | 대기 중인 파일: {cp['pending_files']}개"
-              f" | {_human_size(cp['size_bytes'])} | 저장 시각: {saved_at}")
-
-
 def _print_doctor(report: dict) -> None:
     """`ziplex doctor`'s read path -- one line per check, ✅/⚠️/❌ marking
     whether it needs attention (❌ blocks a real pack from working at all;
@@ -171,11 +146,6 @@ def _print_doctor(report: dict) -> None:
     settings_state = "있음" if report["settings_file_present"] else "없음 (기본값 사용 중)"
     print(f"  ℹ️  {app_settings.SETTINGS_PATH}: {settings_state}")
 
-    if report["checkpoint_count"]:
-        print(f"  ⚠️  남은 체크포인트: {report['checkpoint_count']}개 -- `ziplex checkpoint`로 확인")
-    else:
-        print("  ✅ 남은 체크포인트: 없음")
-
     if "project_path" in report:
         print()
         proj_ok = "✅" if report["project_is_dir"] else "❌"
@@ -200,32 +170,24 @@ def _print_doctor(report: dict) -> None:
 # alternative shown only on a genuinely empty invocation, not a translation
 # of the whole help system.
 _COMMAND_OVERVIEW = [
-    ("pack <path>", "Full pipeline (or just run `ziplex-gui` -- no flags to remember)"),
-    ("init <path>", "Scaffold .ziplex.json (include/ignore glob patterns)"),
-    ("collect <path>", "File collection + security scan only"),
-    ("tokens <path>", "Token count, before/after compression"),
-    ("tree <path>", "Dependency tree only"),
-    ("search <path> <pattern>", "Regex search across all safe files"),
-    ("detail <name>.detail.json <file>", "Partial read of one file's compressed body"),
-    ("freshness <path> <name>.cache.json", "Hash-check aif.json against disk -- no LLM calls"),
-    ("skill <name>.json", "Export as a Claude Agent Skill"),
-    ("flatten <name>.json", "Export as one flat Markdown file (summary+code inline, no tool access needed)"),
-    ("link / unlink <name>.json <file> <target>", "Add/remove a dependency edge"),
-    ("summary <name>.json <file> <text> [--folder]", "Fix a saved file's (or folder's) summary, no re-pack"),
-    ("settings [set <key> <value>]", "View/change ~/.ziplex/settings.json"),
-    ("checkpoint [clean [<path>|--all]]", "List/delete leftover checkpoint files"),
-    ("doctor [<path>]", "Environment sanity check -- no LLM calls"),
-    ("index [<path>] [--check]", "Refresh the dependency-graph index (.ziplex/index.db) -- no LLM calls"),
-    ("deps <file...> [--in]", "What a file imports, or (--in) what depends on it"),
     ("impact [<file...>] [--diff REF]", "Tests affected by a change, plus the command to run them"),
+    ("deps <file...> [--in]", "What a file imports, or (--in) what depends on it"),
     ("path <a> <b>", "Shortest import chain between two files"),
+    ("index [<path>] [--check]", "Refresh the dependency-graph index (.ziplex/index.db)"),
     ("install claude [--hook]", "Register the MCP server (and the post-edit hook) with Claude Code"),
-    ("signatures | dependencies | api | compress | debug <file>", "One extraction step on a single file"),
+    ("tree <path>", "Print the dependency tree"),
+    ("pack <path>", "Pack the project into aif.json (summaries, rules, guide; --no-llm for no API key)"),
+    ("freshness <path> <name>.cache.json", "Hash-check a committed aif.json against disk"),
+    ("skill <name>.json / flatten <name>.json", "Export a pack as a Claude Agent Skill / one Markdown file"),
+    ("init <path>", "Scaffold .ziplex.json (include/ignore glob patterns)"),
+    ("settings [set <key> <value>]", "View/change ~/.ziplex/settings.json (LLM provider, keys)"),
+    ("doctor [<path>]", "Environment sanity check"),
+    ("dev <tool> ...", "Debug tools: collect, tokens, search, detail, signatures, dependencies, api, compress, debug"),
 ]
 
 
 def _print_command_overview() -> None:
-    print(f"Ziplex {__version__} -- local project -> aif.json, a token-reduced context format for AI\n")
+    print(f"Ziplex {__version__} -- which tests a change affects, and what depends on what (zero-config dependency graph)\n")
     print("Usage: ziplex <command> [options]\n")
     width = max(len(cmd) for cmd, _ in _COMMAND_OVERVIEW)
     for cmd, desc in _COMMAND_OVERVIEW:
@@ -289,47 +251,6 @@ def _load_json_or_exit(path: str) -> dict:
     except (OSError, json.JSONDecodeError) as e:
         print(f"❌ {path} 읽기 실패: {e}")
         sys.exit(1)
-
-
-def _edit_saved_relationship(aif_path: str, file_name: str, target: str, edit_fn, verb: str) -> None:
-    """Shared body for `ziplex link`/`ziplex unlink` -- both are a one-shot
-    wrapper over file/relationship.py's add_relationship()/
-    remove_relationship(), operating directly on an already-packed
-    aif.json's `relationships` field. The same shape gui_server.py's
-    /api/relationships/link|unlink routes edit (via gui/pack_service.py's
-    link_saved_relationship()/unlink_saved_relationship()) -- not reused
-    directly here since that pair also carries per-path locking meant for
-    a long-running server juggling concurrent requests, which a one-shot
-    CLI invocation (start, do one edit, exit) has no need for. Never
-    touches detail.json/cache.json -- only `relationships` changes,
-    rewritten byte for byte identical apart from that one field, same
-    "don't call packager.save_aif() on an already-finished pack" reasoning
-    pack_service.py's own _edit_saved_relationships() documents.
-
-    Added specifically so a wrong dependency edge can be fixed without
-    pack's own interactive `correct_relationships()` loop -- built for a
-    single reparent move at a time via typed numbers, which doesn't scale
-    past a handful of files (see that function's own module docstring for
-    the fuller reasoning; the GUI's relationship editor is still the
-    better tool for anything past a couple of quick edge fixes).
-    """
-    if "relationships" not in _load_json_or_exit(aif_path):
-        print(f"❌ {aif_path}에 relationships가 없습니다 -- pack이 완료된 aif.json인지 확인하세요")
-        sys.exit(1)
-
-    def edit(relationships: dict) -> dict:
-        edit_fn(relationships, file_name, target)
-        return relationships
-
-    try:
-        # aif_io owns the read-modify-write: prose-mention edges live in
-        # detail.json now, and rewriting only aif.json would drop them.
-        save_relationships_edit(aif_path, edit)
-    except (ValueError, CycleError) as e:
-        print(f"⚠️  {e}")
-        sys.exit(1)
-
-    print(f"✅ {file_name} → {target} {verb}")
 
 
 def _check_max_tokens(aif_tokens: dict, max_tokens: int, model: str) -> tuple[bool, int | None]:
@@ -413,8 +334,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("pack", help="프로젝트 패킹")
     p.add_argument("path", help="프로젝트 폴더 경로")
     p.add_argument("--output", "-o", default=None, help="출력 파일 경로 (기본값: result/<프로젝트 폴더명>.json)")
-    p.add_argument("--auto", action="store_true", help="파일 자동 선택 (전체 안전 파일 포함)")
-    p.add_argument("--auto-correct", action="store_true", help="LLM 결과 자동 승인 (대화형 보정 건너뜀)")
+    # Kept so old scripts keep working: pack is always non-interactive now.
+    p.add_argument("--auto", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--auto-correct", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--no-cache", action="store_true", help="변경 없는 파일도 요약을 다시 생성 (이전 pack 재사용 끄기)")
     p.add_argument("--no-llm", action="store_true",
                     help="LLM 호출 없이 구조 정보(시그니처/의존성)만으로 패킹 -- GEMINI_API_KEY 불필요, rules/AI 가이드는 생성되지 않음")
@@ -479,46 +401,12 @@ def _build_parser() -> argparse.ArgumentParser:
     st_set.add_argument("value", help="설정할 값 -- 빈 문자열(\"\")을 주면 미설정 상태로 되돌림")
     st_set.set_defaults(_settings_set_parser=st_set)
 
-    ckp = sub.add_parser(
-        "checkpoint",
-        help="pack 중단 후 남은 체크포인트 파일 확인/삭제 (checkpoint/*.json -- 재개용 임시 파일, LLM 호출 없음)",
-    )
-    ckp_sub = ckp.add_subparsers(dest="checkpoint_action")
-    ckp_sub.add_parser("list", help="남은 체크포인트 목록 출력 (인자 없이 `ziplex checkpoint`만 실행해도 동일)")
-    ckp_clean = ckp_sub.add_parser("clean", help="체크포인트 삭제")
-    ckp_clean.add_argument("path", nargs="?", default=None, help="이 프로젝트의 체크포인트만 삭제 (프로젝트 폴더 경로 -- pack에 준 경로와 동일해야 함)")
-    ckp_clean.add_argument("--all", action="store_true", help="모든 프로젝트의 체크포인트를 전부 삭제")
-    ckp_clean.set_defaults(_checkpoint_clean_parser=ckp_clean)
-
     dc = sub.add_parser(
         "doctor",
         help="환경 점검 -- Python 버전/활성 LLM provider/API key/secretlint/남은 체크포인트를 한 번에 확인 (LLM 호출 없음)",
     )
     dc.add_argument("path", nargs="?", default=None, help="선택: 프로젝트 폴더 경로 (주면 .env/git 저장소 여부도 확인)")
 
-    lk = sub.add_parser(
-        "link",
-        help="이미 저장된 aif.json에서 두 파일 사이 의존 관계를 한 번에 연결 (pack의 인터랙티브 관계 수정 루프 대신 쓰는 one-shot 명령어)",
-    )
-    lk.add_argument("aif_path", help="aif.json 경로")
-    lk.add_argument("file", help="의존하는 쪽 파일 (relationships의 키, 예: src/a.py)")
-    lk.add_argument("target", help="의존받는 쪽 파일")
-
-    ulk = sub.add_parser("unlink", help="이미 저장된 aif.json에서 두 파일 사이 의존 관계를 해제")
-    ulk.add_argument("aif_path", help="aif.json 경로")
-    ulk.add_argument("file", help="의존하는 쪽 파일")
-    ulk.add_argument("target", help="의존받는 쪽 파일")
-
-    sm = sub.add_parser(
-        "summary",
-        help="이미 저장된 aif.json에서 파일(또는 --folder로 폴더) 하나의 summary를 한 번에 수정 (재패킹 없이)",
-    )
-    sm.add_argument("aif_path", help="aif.json 경로")
-    sm.add_argument("file", help="수정할 파일 (files의 키, 예: src/a.py) -- --folder를 주면 폴더 경로")
-    sm.add_argument("summary", help="새 summary 텍스트")
-    sm.add_argument("--folder", action="store_true", help="file 인자를 aif['files'] 대신 aif['folders']의 키로 취급")
-
-    # ---- graph index commands (ziplex.core.api; never pack, never an LLM) ----
     ix = sub.add_parser("index", help="의존성 그래프 인덱스(.ziplex/index.db)를 디스크와 동기화 (LLM 호출 없음)")
     ix.add_argument("path", nargs="?", default=".", help="프로젝트 폴더 경로 (기본값: 현재 폴더)")
     ix.add_argument("--check", action="store_true",
@@ -691,10 +579,8 @@ def _cmd_pack(args) -> None:
         if args.max_tokens is not None:
             _enforce_max_tokens(aif, args)
         return
-    # --auto-correct also means no terminal to prompt if an LLM call
-    # keeps failing inside pack() itself (see handle_llm_failure).
     aif = pack(
-        args.path, auto=args.auto, interactive=not args.auto_correct, use_cache=not args.no_cache,
+        args.path, use_cache=not args.no_cache,
         use_llm=not args.no_llm,
         include=_split_patterns(args.include),
         ignore=_split_patterns(args.ignore),
@@ -706,10 +592,6 @@ def _cmd_pack(args) -> None:
         result_dir=Path(args.output).parent if args.output else None,
     )
     if aif:
-        if args.auto_correct:
-            aif = finalize_aif(aif)  # skip interactive review, still build relationships
-        else:
-            aif = correct_aif(aif)  # interactive correct + build relationships
         save_aif(aif, args.output, project_path=args.path)
 
         print("\n" + "=" * 50)
@@ -983,69 +865,9 @@ def _cmd_settings(args) -> None:
         _print_settings(app_settings.load_settings())
 
 
-def _cmd_checkpoint(args) -> None:
-    if args.checkpoint_action == "clean":
-        if args.all:
-            removed = app_checkpoint.clear_all_checkpoints()
-            print(f"🗑️  체크포인트 {removed}개 삭제됨")
-        elif args.path:
-            existed = app_checkpoint.load_checkpoint(args.path) is not None
-            app_checkpoint.delete_checkpoint(args.path)
-            print(f"🗑️  체크포인트 삭제됨: {args.path}" if existed else f"체크포인트 없음: {args.path}")
-        else:
-            # Neither `path` nor `--all` given -- an ambiguous "clean
-            # what?" rather than a silent no-op. .error() (not a plain
-            # print+sys.exit) matches every other invalid-usage message
-            # in this CLI, which argparse itself already renders this
-            # way for its own choices=/required checks.
-            args._checkpoint_clean_parser.error("삭제할 프로젝트 경로 또는 --all 중 하나가 필요합니다")
-    else:  # "list" or omitted -- ziplex checkpoint alone is the read path
-        _print_checkpoints(app_checkpoint.list_checkpoints())
-
-
 def _cmd_doctor(args) -> None:
     _print_doctor(app_doctor.run_diagnostics(args.path))
 
-
-def _cmd_link(args) -> None:
-    _edit_saved_relationship(args.aif_path, args.file, args.target, add_relationship, "연결됨")
-
-
-def _cmd_unlink(args) -> None:
-    _edit_saved_relationship(args.aif_path, args.file, args.target, remove_relationship, "연결 해제됨")
-
-
-def _cmd_summary(args) -> None:
-    """`ziplex summary` -- link/unlink's counterpart for fixing a wrong
-    per-file (or, with --folder, per-folder) summary in an already-saved
-    aif.json without a full re-pack. One-shot, no per-path locking (see
-    _edit_saved_relationship()'s own docstring for why a CLI invocation
-    doesn't need gui/pack_service.py's locking) -- wraps
-    edits.set_file_summary()/set_folder_summary() directly, the same
-    functions gui_server.py's /api/files/summary and /api/folders/summary
-    routes reach via gui/pack_service.py's edit_saved_summary()/
-    edit_saved_folder_summary().
-    """
-    aif = _load_json_or_exit(args.aif_path)
-    set_fn, container_key, label = (
-        (set_folder_summary, "folders", "폴더") if args.folder else (set_file_summary, "files", "파일")
-    )
-    key = normalize_path(args.file)
-    if key not in aif.get(container_key, {}):
-        print(f"❌ {args.aif_path}에 {label} '{key}'이(가) 없습니다")
-        sys.exit(1)
-
-    set_fn(aif, key, args.summary)
-
-    write_aif(args.aif_path, aif)
-
-    print(f"✅ {args.file} summary 수정됨")
-
-
-# ---- graph index commands ----------------------------------------------------
-# All run on ziplex.core.api.Graph: refresh the index, then query it. Output
-# is English (it is api.render_*'s / machine-readable); a bad file argument
-# or a git failure is a usage error -> stderr + exit 2.
 
 def _open_graph(project: str):
     from .core.api import Graph  # deferred: keeps `ziplex hook` and unrelated commands light
@@ -1289,11 +1111,7 @@ _COMMANDS: dict[str, Callable[[argparse.Namespace], None]] = {
     "flatten": _cmd_flatten,
     "init": _cmd_init,
     "settings": _cmd_settings,
-    "checkpoint": _cmd_checkpoint,
     "doctor": _cmd_doctor,
-    "link": _cmd_link,
-    "unlink": _cmd_unlink,
-    "summary": _cmd_summary,
     "index": _cmd_index,
     "deps": _cmd_deps,
     "impact": _cmd_impact,
@@ -1320,7 +1138,10 @@ def main():
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
     parser = _build_parser()
-    args = parser.parse_args()
+    argv = sys.argv[1:]
+    if argv[:1] == ["dev"]:  # `ziplex dev <tool>` == the debug tool's own subcommand
+        argv = argv[1:]
+    args = parser.parse_args(argv)
 
     handler = _COMMANDS.get(args.command)
     if handler is None:

@@ -80,13 +80,19 @@ def _is_context_file(path: str) -> bool:
     return name in _CONTEXT_NAMES or (name.startswith("tsconfig") and name.endswith(".json"))
 
 
-def _ensure_gitignore(index_dir: Path) -> None:
-    ignore = index_dir / ".gitignore"
-    line = "index.db*"
+# Local caches under .ziplex/ that must never be committed (a packed
+# aif.json next to them may be).
+LOCAL_CACHE_PATTERNS = ("index.db*", "summaries.json")
+
+
+def ensure_gitignore(cache_dir: Path) -> None:
+    ignore = cache_dir / ".gitignore"
     try:
         existing = ignore.read_text(encoding="utf-8") if ignore.exists() else ""
-        if line not in existing.split():
-            ignore.write_text(existing + ("" if not existing or existing.endswith("\n") else "\n") + line + "\n", encoding="utf-8")
+        missing = [p for p in LOCAL_CACHE_PATTERNS if p not in existing.split()]
+        if missing:
+            sep = "" if not existing or existing.endswith("\n") else "\n"
+            ignore.write_text(existing + sep + "\n".join(missing) + "\n", encoding="utf-8")
     except OSError:
         pass
 
@@ -112,7 +118,7 @@ class GraphIndex:
         path = Path(db_path) if db_path else index_path(self.root)
         path.parent.mkdir(parents=True, exist_ok=True)
         if db_path is None:
-            _ensure_gitignore(path.parent)
+            ensure_gitignore(path.parent)
         self.db_path = path
         self.conn = self._connect()
 

@@ -9,7 +9,7 @@ suite never depends on this machine's real Python version, real
 import subprocess
 from types import SimpleNamespace
 
-from ziplex import checkpoint
+
 from ziplex import doctor
 from ziplex.enrich import llm
 from ziplex import settings as app_settings
@@ -65,15 +65,6 @@ def test_run_diagnostics_settings_file_present_reflects_the_real_path(tmp_path, 
     present.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(app_settings, "SETTINGS_PATH", present)
     assert doctor.run_diagnostics()["settings_file_present"] is True
-
-
-def test_run_diagnostics_checkpoint_count_reflects_leftover_checkpoints(tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "describe_active_provider", lambda: _fake_provider())
-    monkeypatch.setattr(doctor, "_secretlint_available", lambda: True)
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path)
-    checkpoint.save_checkpoint(str(tmp_path / "proj"), {"project": {"name": "proj"}})
-
-    assert doctor.run_diagnostics()["checkpoint_count"] == 1
 
 
 def test_run_diagnostics_without_project_path_omits_project_keys(monkeypatch):

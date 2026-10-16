@@ -21,7 +21,6 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from . import checkpoint as _checkpoint
 from .enrich import llm
 from . import settings as app_settings
 from .paths import REPO_ROOT
@@ -98,7 +97,6 @@ def run_diagnostics(project_path: str | None = None) -> dict:
         "llm_api_key_present": provider["api_key_present"],
         "secretlint_available": _secretlint_available(),
         "settings_file_present": app_settings.SETTINGS_PATH.exists(),
-        "checkpoint_count": len(_checkpoint.list_checkpoints()),
     }
     if project_path:
         root = Path(project_path)

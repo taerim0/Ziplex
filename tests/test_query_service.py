@@ -8,11 +8,10 @@ import json
 
 import pytest
 
-from ziplex import checkpoint
+
 from ziplex.enrich import llm
 from ziplex import packager
 from ziplex import query_service
-from ziplex.confidence import REVIEW_THRESHOLD
 
 
 def _write(path, content):
@@ -22,7 +21,6 @@ def _write(path, content):
 
 def test_check_freshness_does_not_flag_ziplex_json_excluded_files_as_added(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "src" / "main.py", "def add(a, b):\n    return a + b\n")
@@ -43,61 +41,8 @@ def test_check_freshness_does_not_flag_ziplex_json_excluded_files_as_added(tmp_p
     assert report["removed"] == []
 
 
-def test_check_freshness_does_not_flag_a_previously_included_dangerous_file_as_removed(tmp_path, monkeypatch):
-    # Real bug reported directly: a file flagged sensitive by scan_files()
-    # but included in the pack anyway (here via `preselected`, the GUI's
-    # own mechanism -- see file/AGENTS.md's selector.py section) gets
-    # re-flagged as dangerous on every later scan regardless of that
-    # earlier decision, dropped from collect_and_scan()'s own "safe" list
-    # every time -- check_freshness() used to only ever look at "safe", so
-    # it reported this exact file as permanently removed even though it's
-    # unchanged and still on disk.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "config.py", 'API_KEY = "abc123"\n')
-
-    aif = packager.pack(str(project), preselected=["config.py"], interactive=False)
-    aif_path = tmp_path / "out.json"
-    packager.save_aif(aif, str(aif_path))
-
-    report = query_service.check_freshness(str(project), str(aif_path))
-
-    assert report["is_stale"] is False
-    assert report["removed"] == []
-    assert report["unchanged_count"] == 1
-
-
-def test_get_overview_stale_field_does_not_flag_a_previously_included_dangerous_file(tmp_path, monkeypatch):
-    # Same bug as the standalone check_freshness() test above, but for
-    # _stale_warning() -- a *separate* private helper with its own inline
-    # collect_and_scan()["safe"] call, missed in the first pass at this fix
-    # since it lives in a different function than the one the bug was
-    # originally reported against. Symptom that made the miss visible:
-    # opening a project in the GUI showed "changed" for the previously-
-    # included file for about a second, until the page's own live watcher
-    # (gui/watcher.py, fixed correctly the first time) caught up and
-    # corrected the badge -- get_overview()'s own "_stale" field is what
-    # the *initial* page load actually shows before that correction lands.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    _write(project / "config.py", 'API_KEY = "abc123"\n')
-
-    aif = packager.pack(str(project), preselected=["config.py"], interactive=False)
-    aif_path = tmp_path / "out.json"
-    packager.save_aif(aif, str(aif_path))
-
-    result = query_service.get_overview(str(aif_path), str(project))
-
-    assert "_stale" not in result
-
-
 def test_stale_warning_is_none_for_an_unchanged_scoped_project(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
 
     project = tmp_path / "project"
     _write(project / "src" / "main.py", "def add(a, b):\n    return a + b\n")
@@ -127,35 +72,6 @@ def test_get_folders_returns_empty_dict_for_an_aif_json_packed_before_this_field
     aif_path.write_text(json.dumps({"project": {}, "files": {}}), encoding="utf-8")
 
     assert query_service.get_folders(str(aif_path)) == {}
-
-
-def test_get_overview_confidence_summary_rolls_up_per_file_scores(tmp_path):
-    # A real gap found dogfooding Ziplex on its own repo: finding out how
-    # much of a pack needs review took a separate list_files(confidence_
-    # below=...) call -- get_overview() should answer "is this pack worth
-    # trusting" from the same call that already reports file_count/_stale.
-    aif_path = tmp_path / "out.json"
-    aif_path.write_text(json.dumps({
-        "project": {},
-        "files": {
-            "a.py": {"summary": "x", "confidence": 1.0},
-            "b.py": {"summary": "y", "confidence": 0.0},
-            "c.py": {"summary": "z", "confidence": 0.5},
-        },
-    }), encoding="utf-8")
-
-    result = query_service.get_overview(str(aif_path))
-
-    assert result["confidence_summary"] == {"average": 0.5, "needs_review_count": 1}
-
-
-def test_get_overview_confidence_summary_defaults_for_a_project_with_no_files(tmp_path):
-    aif_path = tmp_path / "out.json"
-    aif_path.write_text(json.dumps({"project": {}, "files": {}}), encoding="utf-8")
-
-    result = query_service.get_overview(str(aif_path))
-
-    assert result["confidence_summary"] == {"average": 1.0, "needs_review_count": 0}
 
 
 def test_search_project_does_not_search_ziplex_json_ignored_files(tmp_path):
@@ -236,14 +152,6 @@ def test_list_files_folder_filter_normalizes_trailing_slash_and_empty_string(tmp
     assert set(query_service.list_files(aif_path, folder="")) == {"top.py"}
 
 
-def test_list_files_confidence_below_filters_by_the_given_cutoff(tmp_path):
-    aif_path = _write_mixed_confidence_aif(tmp_path)
-
-    result = query_service.list_files(aif_path, confidence_below=REVIEW_THRESHOLD)
-
-    assert set(result) == {"src/b.py"}
-
-
 def test_list_files_confidence_below_accepts_a_custom_cutoff(tmp_path):
     # Not hardcoded to REVIEW_THRESHOLD -- a caller can ask for a stricter
     # or looser cutoff, e.g. "show me everything under 0.95".
@@ -252,14 +160,6 @@ def test_list_files_confidence_below_accepts_a_custom_cutoff(tmp_path):
     result = query_service.list_files(aif_path, confidence_below=0.95)
 
     assert set(result) == {"src/a.py", "src/b.py"}
-
-
-def test_list_files_folder_and_confidence_filters_compose(tmp_path):
-    aif_path = _write_mixed_confidence_aif(tmp_path)
-
-    result = query_service.list_files(aif_path, folder="src", confidence_below=REVIEW_THRESHOLD)
-
-    assert set(result) == {"src/b.py"}
 
 
 def test_list_files_default_is_unfiltered(tmp_path):
