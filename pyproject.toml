@@ -35,14 +35,8 @@ dependencies = [
     "tree-sitter-bash",
     "tree-sitter-mlua",
     "tree-sitter-language-pack",
-    "tiktoken",
     "pathspec",
-    "python-dotenv",
-    "requests",
     "mcp",
-    "flask",
-    "pywebview",
-    "watchdog",
     "ruamel.yaml",
     # tomllib is stdlib-only on 3.11+; tech_stack.py falls back to this
     # pure-Python backport (same API) on 3.10, where TOML manifest parsing
@@ -51,8 +45,13 @@ dependencies = [
     "tomli; python_version < \"3.11\"",
 ]
 
+# The graph (index/deps/impact/path, MCP, hook) needs only the core
+# dependencies above. LLM summaries and the GUI are opt-in.
 [project.optional-dependencies]
-dev = ["pytest"]
+llm = ["requests", "python-dotenv", "tiktoken"]
+gui = ["flask", "pywebview", "watchdog"]
+all = ["ziplex[llm,gui]"]
+dev = ["pytest", "ziplex[all]"]
 
 [project.urls]
 Homepage = "https://github.com/taerim0/Ziplex"
@@ -77,7 +76,7 @@ ziplex-hook = "ziplex.hook:main"
 # docstring for the full story, including why --no-window's log/URL output
 # is unaffected.
 [project.gui-scripts]
-ziplex-gui = "ziplex.gui.gui_server:main"
+ziplex-gui = "ziplex.gui:main"
 
 [tool.setuptools.dynamic]
 version = { attr = "ziplex.__version__" }

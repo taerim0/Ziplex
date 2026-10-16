@@ -572,6 +572,10 @@ def _up_to_date_pack(args) -> tuple[Path, dict] | None:
 
 def _cmd_pack(args) -> None:
     _require_dir_or_exit(args.path)
+    if not args.no_llm:
+        from .enrich import llm
+        if llm.requests is None and llm.describe_active_provider().get("name") != "mock":
+            sys.exit(f"❌ {llm.MISSING_EXTRA_MESSAGE} -- 또는 `ziplex pack --no-llm`")
     up_to_date = _up_to_date_pack(args)
     if up_to_date:
         aif_path, aif = up_to_date
