@@ -1,38 +1,10 @@
-// GUI display-language switcher -- Korean/English translation of the
-// GUI's own chrome (buttons, labels, messages), *not* a packed project's
-// content (summaries/AI guide/rules stay whatever language they were
-// packed in; that's a separate, still-open item -- see the roadmap
-// memory). Deliberately a small hand-written dictionary + lookup, not a
-// runtime AI/translation-API call: the GUI's own text is a small, fixed,
-// already-known set of strings, so translating it once at dev time (like
-// this file) costs nothing per view, needs no API key, and works with
-// --no-window/no network exactly like everything else in this frontend.
+// GUI chrome translation (ko/en): a small hand-written dictionary, not a
+// packed project's content (summaries stay in whatever language they were
+// packed in). No imports -- the lowest-level module.
 //
-// Real ES modules (native browser support, `<script type="module">` in
-// index.html -- no bundler, still no build step) -- this has no imports
-// of its own, since it's the lowest layer everything else depends on.
-//
-// This file: LANG_KEY/getLang()/setLang() (localStorage-backed, same
-// pattern as app.js's aif_path/project_path -- a client-side display
-// preference that lives alongside the other browser-only state rather
-// than in settings.py's per-user config file, which only ever holds
-// things the *backend* needs to know on its own), the I18N dictionary
-// (ko/en), t(key, vars) (the lookup + optional interpolation), and
-// applyStaticI18n() (for index.html's own static markup -- the
-// sidebar/topbar links aren't rendered by any render*() function, so
-// nothing else in this app would ever re-translate them on a language
-// switch without this). Not persisted to the backend -- landing.js sends
-// getLang() along as a plain `progress_lang` request field on two calls,
-// a one-off value each time, not a stored preference: the pack-start
-// request (so a pack job's own progress log matches this same language --
-// see packager.pack()'s param of the same name) and the file-selection
-// request before it (so a flagged file's scan reason -- scanner.py's
-// scan_file(), routed through progress_i18n.pick() -- matches too, even
-// before a pack job exists to carry the value any other way). Either
-// request omitting it falls back to gui_server.py's own default ("ko") --
-// see that file's `_reset_progress_lang` before_request hook, the more
-// general backstop behind both call sites.
-
+// getLang()/setLang() persist the choice in localStorage; t(key, vars)
+// looks a string up (function entries interpolate vars); applyStaticI18n()
+// re-translates index.html's static topbar/sidebar markup.
 const LANG_KEY = "ziplex.lang";
 
 export function getLang() {
@@ -80,58 +52,9 @@ const I18N = {
     "graph.editor.searchPlaceholder": "🔍 파일 검색...",
     "graph.editor.noMatch": "일치하는 파일 없음",
     "graph.editor.selectPrompt": "왼쪽에서 파일을 선택하세요.",
-    "graph.editor.unlink": "끊기",
     "graph.editor.noDependencies": "(이 파일이 의존하는 대상 없음)",
     "graph.editor.dependentsOf": (v) => `이 파일에 의존하는 파일 ${v.n}개: ${v.list}`,
-    "graph.editor.linkSearchPlaceholder": "🔍 연결할 파일 검색...",
-    "graph.editor.addLink": "+ 연결 추가",
 
-    "pack.status.running": "진행 중...",
-    "pack.status.reviewing": "검토 대기 중",
-    "pack.status.error": "오류",
-    "pack.status.done": "완료",
-    "pack.stopSave": "저장 후 취소",
-    "pack.stopDiscard": "그냥 취소",
-    "pack.confirmStopSave": "지금까지 진행 상황을 저장하고 중단할까요? 다음에 같은 프로젝트를 pack하면 이어서 진행됩니다.",
-    "pack.confirmStopDiscard": "저장하지 않고 중단할까요? 지금까지 진행 상황이 모두 사라집니다.",
-    "pack.guard.runningModalMessage": "패킹이 아직 진행 중입니다. 지금 벗어나면 패킹이 중단됩니다.",
-    "pack.guard.stay": "머무르기",
-    "pack.guard.confirm": "확인",
-    "pack.guard.cancel": "취소",
-    "pack.title": "패킹 진행 상황",
-    "pack.log": "로그",
-    "pack.saved": (v) => `저장됨: ${v.path}`,
-    "pack.openResult": "결과 열기",
-    "pack.unknownError": "알 수 없는 오류",
-    "pack.retry": "🔄 다시 시도",
-    "pack.backToPackForm": "새 패킹 화면으로",
-    "pack.review.moreSignatures": (v) => `+ ${v.n}개 더`,
-    "pack.review.deleteRule": "삭제",
-    "pack.review.newRulePlaceholder": "새 룰 추가",
-    "pack.review.addRule": "추가",
-    "pack.review.backToTree": "← 트리로 돌아가기",
-    "pack.review.submit": "완료 및 저장",
-    "pack.review.cancel": "취소",
-    "pack.review.confirmCancel": "검토 중인 내용을 취소하고 버릴까요? 저장되지 않은 편집 내용이 모두 사라집니다.",
-    // The two confirmDiscardReview() button labels -- deliberately separate
-    // keys from pack.guard.stay/pack.review.cancel (see pack.js's own
-    // comment on that function) rather than reusing either: a bare "취소"
-    // on this specific modal didn't say what it actually does (leaves the
-    // review screen, discarding every edit) -- reported directly.
-    "pack.review.leaveWithoutSaving": "저장하지 않고 이동",
-    "pack.review.stayCancel": "취소 (머무르기)",
-    "pack.review.projectName": "프로젝트 이름",
-    "pack.review.aiGuide": "AI 가이드",
-    "pack.review.codingRules": "코딩 룰",
-    "pack.review.fileRelations": "파일 관계",
-    "pack.review.relationsHelp": "전체 의존성 트리입니다 (▶ 를 클릭해 하위 트리를 접거나 펼치세요). 수정하고 싶은 파일 이름을 클릭하면 그 파일의 관계 편집 화면이 열립니다 -- 그래프의 다른 파일 노드를 클릭해 이동하거나, \"끊기\"로 의존성을 제거하거나, 검색창에 파일명을 입력해 새 의존성을 추가할 수 있습니다. 외부 패키지(📦)는 읽기 전용입니다.",
-    // 프로젝트 확인의 Files 트리와 같은 방식(폴더 트리 + 인라인 ✏️ 수정)
-    // -- 예전의 "검토 필요"/"자동 승인" 플랫 리스트는 낮은 신뢰도 파일이
-    // 많아지면 스크롤이 끝없이 길어진다는 지적을 받아 대체됨.
-    "pack.review.summariesHeader": "파일 / 폴더 Summary",
-    "pack.review.summariesHelp": (v) => `⚠️ 낮은 신뢰도로 표시된 항목 ${v.n}개를 확인하세요 (빨간 배지). 나머지는 자동 승인되지만 필요하면 그대로 수정할 수 있습니다.`,
-
-    "nav.pack": "📦 프로젝트 패킹",
     "nav.check": "📂 프로젝트 확인",
     "nav.options": "⚙️ 옵션",
     "nav.changeProject": "📂 프로젝트 변경",
@@ -142,30 +65,14 @@ const I18N = {
     "nav.relationships": "🔗 관계",
     "nav.search": "🔍 검색",
 
+    "home.packHintTitle": "aif.json 만들기",
+    "home.packHint": "이 GUI는 이미 pack된 프로젝트를 읽기 전용으로 보여줍니다. 먼저 터미널에서 실행하세요:",
+    "home.packHintThen": "그다음 \"프로젝트 확인\"에서 생성된 aif.json을 여세요 (기본 위치: <프로젝트>/.ziplex/<이름>.json). ziplex index는 그래프 인덱스만 만듭니다.",
+    "check.form.packHint": "아직 aif.json이 없다면 먼저 터미널에서 ziplex pack <프로젝트>를 실행하세요.",
+    "relationships.title": "파일 관계",
+    "relationships.help": "▶ 를 클릭해 하위 트리를 접거나 펼치세요. 파일 이름을 클릭하면 그 파일의 의존성 그래프가 열립니다 (읽기 전용).",
+    "relationships.backToTree": "← 트리로 돌아가기",
     "home.tagline": "로컬 프로젝트를 압축된 컨텍스트로 요약해, 원본 대신 AI에게 보여주는 도구입니다.",
-
-    "pack.form.projectPathPlaceholder": "예: C:\\path\\to\\my-project",
-    "pack.form.outputPathPlaceholder": "선택. 비우면 프로젝트 폴더의 .ziplex/<프로젝트명>.json",
-    "pack.form.loadFiles": "파일 목록 불러오기",
-    "pack.form.start": "패킹 시작",
-    "pack.form.noSafeFiles": "선택 가능한 안전한 파일이 없습니다.",
-    "pack.form.allFiles": (v) => `전체 ${v.n}개 파일`,
-    "pack.form.dangerousDetected": (v) => `⚠️ 민감 파일 ${v.n}개 감지됨 (기본 제외 -- 아래에서 확인 후 필요하면 포함)`,
-    "pack.form.dangerousExplain": "체크한 파일은 원본 내용이 그대로 패킹 결과(aif.json)에 포함됩니다. 아래 감지 사유와 일치한 줄을 확인한 뒤, 실제로 민감한 정보가 아님을 확인한 경우에만 포함하세요.",
-    "pack.form.dangerousSelectAll": "⚠️ 감지된 파일 전체 포함",
-    "pack.form.dangerousDefaultReason": "민감 정보로 추정됨",
-    "pack.form.dangerousLine": (v) => `${v.line}번째 줄: ${v.text}`,
-    "pack.form.noFilesSelected": "선택된 파일이 없습니다",
-    "pack.form.pathChanged": "프로젝트 경로가 바뀌었습니다 -- 파일 목록을 다시 불러와 주세요",
-    "pack.form.description": "파일을 선택해 LLM 요약을 생성한 뒤, 저장 전에 검토/수정할 수 있습니다 (CLI의 대화형 pack과 동일).",
-    "pack.form.projectPathLabel": "프로젝트 폴더 경로",
-    "pack.form.outputPathLabel": "출력 경로 (선택)",
-    "pack.form.noCacheLabel": "이전 pack 캐시 무시 (변경 없는 파일도 전체 재요약)",
-    "pack.form.noLlmLabel": "LLM 사용 안 함 (GEMINI_API_KEY 불필요 -- 요약은 시그니처/의존성만으로 자동 생성, 코딩 룰/AI 가이드 생략)",
-    "pack.form.langLabel": "패킹 언어",
-    "pack.form.langHint": "파일별 summary/coding rules/AI 가이드가 작성될 언어입니다 (이 GUI 화면 자체의 언어와는 별개). 영어가 기본값이자 권장값입니다.",
-    "pack.form.langEnglish": "English (권장)",
-    "pack.form.langKorean": "한국어",
 
     "check.form.aifPlaceholder": "예: .ziplex/my-project.json",
     "check.form.projectPlaceholder": "예: C:\\path\\to\\my-project (선택, 최신 여부 확인용)",
@@ -179,18 +86,14 @@ const I18N = {
 
     "options.themeDark": "다크",
     "options.themeLight": "라이트",
-    "options.outputDirPlaceholder": "비우면 각 프로젝트 폴더의 .ziplex/<프로젝트명>.json",
     "options.save": "저장",
     "options.saved": "저장됨",
-    "options.apiKeyTitle": "Gemini API 키",
     "options.apiKeyDescription": "패킹 시 요약/코딩 룰/AI 가이드 생성에 사용할 Gemini API 키입니다. 비워두면 .env의 GEMINI_API_KEY를 그대로 사용합니다 (여기서 설정하면 이 값이 우선함).",
     "options.apiKeyPlaceholder": "비우면 .env의 GEMINI_API_KEY 사용",
     "options.apiKeyLabel": "API 키",
     "options.geminiModelLabel": "모델 (선택)",
     "options.geminiModelPlaceholder": "비우면 gemini-flash-latest 사용 (과부하 시 gemini-3.5-flash 같은 고정 버전 권장)",
     "options.geminiModelHint": "비워두면 최신 Flash 모델을 자동으로 가리키는 gemini-flash-latest를 사용합니다. 이 이름은 Google이 계속 최신 버전으로 갱신하는 \"떠다니는\" 별칭이라 트래픽이 몰리는 시간대엔 503 오류가 반복될 수 있어요 — 그럴 땐 gemini-2.5-flash처럼 특정 버전을 직접 적어 고정하세요.",
-    "options.outputDirTitle": "기본 저장 폴더",
-    "options.outputDirDescription": "새로 패킹하는 프로젝트가 기본으로 저장될 폴더입니다. 패킹 화면의 \"출력 경로\"에 직접 경로를 입력한 프로젝트는 이 설정 대신 그 경로를 계속 기억해 사용합니다.",
 
     "options.providerTitle": "AI 프로바이더",
     "options.providerDescription": "패킹 시 요약/코딩 룰/AI 가이드 생성에 사용할 AI를 선택하세요.",
@@ -224,18 +127,12 @@ const I18N = {
     "files.hideSummaries": "요약 전체 숨기기",
     "files.showSummaries": "요약 전체 표시",
 
-    "relationships.help": "▶ 를 클릭해 하위 트리를 접거나 펼치세요. 수정하고 싶은 파일 이름을 클릭하면 편집 화면이 열립니다 -- 변경 사항은 즉시 aif.json에 저장됩니다.",
-
     "fileDetail.none": "(없음)",
     "fileDetail.dependents": "Dependents (이 파일에 의존하는 파일)",
     "fileDetail.blastRadius": "Blast radius (이 파일 변경 시 영향받는 전체 범위)",
     "fileDetail.noContent": "(내용 없음)",
     "fileDetail.copyAll": "📋 전체 복사",
     "fileDetail.includeTextRefs": "텍스트 언급(파일명만 일치)도 포함",
-    "fileDetail.editSummary": "✏️ 수정",
-    "fileDetail.saveSummary": "저장",
-    "fileDetail.cancelEdit": "취소",
-    "fileDetail.summarySaved": "저장됨",
 
     "search.patternPlaceholder": "정규식 패턴 (예: TODO|FIXME)",
     "search.searching": "검색 중...",
@@ -273,54 +170,9 @@ const I18N = {
     "graph.editor.searchPlaceholder": "🔍 Search files...",
     "graph.editor.noMatch": "No matching files",
     "graph.editor.selectPrompt": "Select a file on the left.",
-    "graph.editor.unlink": "Unlink",
     "graph.editor.noDependencies": "(this file has no dependencies)",
     "graph.editor.dependentsOf": (v) => `${v.n} file(s) depend on this: ${v.list}`,
-    "graph.editor.linkSearchPlaceholder": "🔍 Search files to link...",
-    "graph.editor.addLink": "+ Add link",
 
-    "pack.status.running": "Running...",
-    "pack.status.reviewing": "Awaiting review",
-    "pack.status.error": "Error",
-    "pack.status.done": "Done",
-    "pack.stopSave": "Save & Stop",
-    "pack.stopDiscard": "Just Stop",
-    "pack.confirmStopSave": "Save progress so far and stop? Packing the same project again later will resume from here.",
-    "pack.confirmStopDiscard": "Stop without saving? All progress so far will be lost.",
-    "pack.guard.runningModalMessage": "Packing is still in progress. Leaving now will stop it.",
-    "pack.guard.stay": "Stay",
-    "pack.guard.confirm": "Confirm",
-    "pack.guard.cancel": "Cancel",
-    "pack.title": "Pack Progress",
-    "pack.log": "Log",
-    "pack.saved": (v) => `Saved: ${v.path}`,
-    "pack.openResult": "Open Result",
-    "pack.unknownError": "Unknown error",
-    "pack.retry": "🔄 Retry",
-    "pack.backToPackForm": "Back to Pack Form",
-    "pack.review.moreSignatures": (v) => `+ ${v.n} more`,
-    "pack.review.deleteRule": "Delete",
-    "pack.review.newRulePlaceholder": "Add a new rule",
-    "pack.review.addRule": "Add",
-    "pack.review.backToTree": "← Back to tree",
-    "pack.review.submit": "Finish & Save",
-    "pack.review.cancel": "Cancel",
-    "pack.review.confirmCancel": "Cancel and discard this review? Any unsaved edits will be lost.",
-    "pack.review.leaveWithoutSaving": "Leave without saving",
-    "pack.review.stayCancel": "Cancel (stay)",
-    "pack.review.projectName": "Project name",
-    "pack.review.aiGuide": "AI guide",
-    "pack.review.codingRules": "Coding rules",
-    "pack.review.fileRelations": "File relationships",
-    "pack.review.relationsHelp": "This is the full dependency tree (click ▶ to expand/collapse a subtree). Click a file's name to open its relationship editor -- from there, click another file node in the graph to jump to it, \"Unlink\" to remove a dependency, or type a filename in the search box to add a new one. External packages (📦) are read-only.",
-    // Same folder tree + inline ✏️ editor as the post-pack Files page --
-    // replaced the old flat "needs review"/"auto-kept" list, reported as
-    // unusably long once a project had more than a handful of
-    // low-confidence files.
-    "pack.review.summariesHeader": "File / folder summaries",
-    "pack.review.summariesHelp": (v) => `⚠️ ${v.n} item(s) flagged as low-confidence (red badge) are worth a look. Everything else is auto-kept but still editable.`,
-
-    "nav.pack": "📦 Pack Project",
     "nav.check": "📂 Check Project",
     "nav.options": "⚙️ Options",
     "nav.changeProject": "📂 Change Project",
@@ -331,30 +183,14 @@ const I18N = {
     "nav.relationships": "🔗 Relationships",
     "nav.search": "🔍 Search",
 
+    "home.packHintTitle": "Making an aif.json",
+    "home.packHint": "This GUI is a read-only viewer for an already-packed project. Run this in a terminal first:",
+    "home.packHintThen": "Then open the resulting aif.json from \"Check Project\" (default: <project>/.ziplex/<name>.json). ziplex index builds only the graph index.",
+    "check.form.packHint": "No aif.json yet? Run ziplex pack <project> in a terminal first.",
+    "relationships.title": "File relationships",
+    "relationships.help": "Click ▶ to expand/collapse a subtree. Click a file's name to open its dependency graph (read-only).",
+    "relationships.backToTree": "← Back to tree",
     "home.tagline": "Summarizes a local project into compressed context, for an AI to read instead of the original.",
-
-    "pack.form.projectPathPlaceholder": "e.g. C:\\path\\to\\my-project",
-    "pack.form.outputPathPlaceholder": "Optional. Defaults to .ziplex/<project-name>.json inside the project folder",
-    "pack.form.loadFiles": "Load File List",
-    "pack.form.start": "Start Packing",
-    "pack.form.noSafeFiles": "No selectable safe files.",
-    "pack.form.allFiles": (v) => `All ${v.n} files`,
-    "pack.form.dangerousDetected": (v) => `⚠️ ${v.n} sensitive file(s) detected (excluded by default -- review below and include if needed)`,
-    "pack.form.dangerousExplain": "A checked file is included in the packed output (aif.json) with its original content, unredacted. Review the reason and matched line below for each one, and only include it after confirming it isn't actually sensitive.",
-    "pack.form.dangerousSelectAll": "⚠️ Include all detected files",
-    "pack.form.dangerousDefaultReason": "Suspected sensitive data",
-    "pack.form.dangerousLine": (v) => `Line ${v.line}: ${v.text}`,
-    "pack.form.noFilesSelected": "No files selected",
-    "pack.form.pathChanged": "The project path changed -- load the file list again",
-    "pack.form.description": "Select files to generate LLM summaries, then review/edit before saving (same as the CLI's interactive pack).",
-    "pack.form.projectPathLabel": "Project folder path",
-    "pack.form.outputPathLabel": "Output path (optional)",
-    "pack.form.noCacheLabel": "Ignore previous pack cache (re-summarize every file, even unchanged ones)",
-    "pack.form.noLlmLabel": "Don't use an LLM (no GEMINI_API_KEY needed -- summaries auto-generated from signatures/dependencies only, coding rules/AI guide skipped)",
-    "pack.form.langLabel": "Packing language",
-    "pack.form.langHint": "The language each file's summary/coding rules/AI guide will be written in (separate from this GUI screen's own language). English is the default and recommended choice.",
-    "pack.form.langEnglish": "English (recommended)",
-    "pack.form.langKorean": "Korean (한국어)",
 
     "check.form.aifPlaceholder": "e.g. .ziplex/my-project.json",
     "check.form.projectPlaceholder": "e.g. C:\\path\\to\\my-project (optional, for the freshness check)",
@@ -368,18 +204,14 @@ const I18N = {
 
     "options.themeDark": "Dark",
     "options.themeLight": "Light",
-    "options.outputDirPlaceholder": "Defaults to .ziplex/<project-name>.json inside each project's own folder",
     "options.save": "Save",
     "options.saved": "Saved",
-    "options.apiKeyTitle": "Gemini API Key",
     "options.apiKeyDescription": "The Gemini API key used to generate summaries/coding rules/AI guide when packing. Leave blank to use .env's GEMINI_API_KEY as-is (setting one here takes priority over it).",
     "options.apiKeyPlaceholder": "Leave blank to use .env's GEMINI_API_KEY",
     "options.apiKeyLabel": "API Key",
     "options.geminiModelLabel": "Model (optional)",
     "options.geminiModelPlaceholder": "Leave blank for gemini-flash-latest (a pinned version like gemini-3.5-flash is recommended if it's overloaded)",
     "options.geminiModelHint": "Leave blank to use gemini-flash-latest, an alias Google keeps pointing at whatever its newest Flash model is. Because it floats, it can hit repeated 503 errors during high-traffic periods — pin a specific version like gemini-2.5-flash here if that happens.",
-    "options.outputDirTitle": "Default Output Folder",
-    "options.outputDirDescription": "The folder new packs save to by default. A project with an explicit path typed into the pack screen's \"Output path\" keeps remembering that path instead of this setting.",
 
     "options.providerTitle": "AI Provider",
     "options.providerDescription": "Choose which AI generates summaries/coding rules/the AI guide when packing.",
@@ -413,18 +245,12 @@ const I18N = {
     "files.hideSummaries": "Hide all summaries",
     "files.showSummaries": "Show all summaries",
 
-    "relationships.help": "Click ▶ to expand/collapse a subtree. Click a file's name you want to edit to open its editor -- changes save to aif.json immediately.",
-
     "fileDetail.none": "(none)",
     "fileDetail.dependents": "Dependents (files that depend on this one)",
     "fileDetail.blastRadius": "Blast radius (everything affected if this file changes)",
     "fileDetail.noContent": "(no content)",
     "fileDetail.copyAll": "📋 Copy All",
     "fileDetail.includeTextRefs": "Include text-only mentions (filename match, not a real import)",
-    "fileDetail.editSummary": "✏️ Edit",
-    "fileDetail.saveSummary": "Save",
-    "fileDetail.cancelEdit": "Cancel",
-    "fileDetail.summarySaved": "Saved",
 
     "search.patternPlaceholder": "Regex pattern (e.g. TODO|FIXME)",
     "search.searching": "Searching...",

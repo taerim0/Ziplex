@@ -4,7 +4,7 @@
    than a hue, so "this is the important one" reads through contrast and
    weight the way the logo's own black-on-white does, not through a brand
    color. --warn/--success/--danger stay real, distinguishable colors
-   (confidence/status still needs to be scannable at a glance) but
+   (status still needs to be scannable at a glance) but
    deliberately desaturated/dusty rather than vivid, so they read as this
    same muted family instead of clashing accent colors dropped on top of it.
 
@@ -82,13 +82,13 @@ body {
 
 /* A thin native-menu-bar-style strip, not a SaaS dashboard's wide top nav:
    just the app name plus a couple of global, always-reachable destinations
-   (start a pack, open options) that exist above and outside any loaded
+   (open a project, options) that exist above and outside any loaded
    project. The per-project section nav (Overview/Files/Relationships/
    Search) stays exactly where it was -- the sidebar below -- since that
    nav only makes sense once a project is actually loaded; this bar is the
    one piece of chrome present on every screen, loaded project or not
-   (landing, mid-pack, review, browse). Sticky so it stays put while a long
-   page (Files, a big pack log) scrolls under it. See the sidebar's own
+   (landing, browse). Sticky so it stays put while a long
+   page (Files) scrolls under it. See the sidebar's own
    comment just below for why a local desktop program's chrome still reads
    as sidebar-first, not top-bar-first -- this bar is deliberately thin and
    sparse (menu bar, not a tab strip) to keep that same "runs on your
@@ -306,7 +306,7 @@ body {
 .recent-detail.hidden { display: none; }
 
 main { padding: 24px 32px; max-width: 1000px; flex: 1; min-width: 0; }
-/* Sidebar hidden (landing page, the pack job/review flow) -- main is the
+/* Sidebar hidden (home/check/options) -- main is the
    shell's only child then, so go back to plain centered-block behavior
    (width:100% + margin:auto) instead of flex-filling the row flush left,
    matching how the landing page centered itself before the sidebar existed. */
@@ -328,9 +328,6 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
   align-items: center;
   gap: 10px;
 }
-.landing-pack h2 { margin-top: 0; }
-.landing-pack label:first-of-type { margin-top: 4px; }
-
 .recent-card h2 { margin-top: 0; }
 .recent-list { display: flex; flex-direction: column; gap: 2px; }
 .recent-row {
@@ -351,120 +348,6 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
 .recent-meta { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.8em; margin-top: 2px; }
 .recent-freshness.stale { color: var(--danger); }
 .recent-remove { padding: 4px 8px; flex-shrink: 0; }
-
-.pack-status {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 10px;
-  font-size: 0.85em;
-  font-weight: 600;
-}
-.pack-status.running { background: rgba(var(--accent-rgb), 0.15); color: var(--accent); }
-.pack-status.reviewing { background: rgba(var(--warn-rgb), 0.15); color: var(--warn); }
-.pack-status.done { background: rgba(var(--success-rgb), 0.15); color: var(--success); }
-.pack-status.error { background: rgba(var(--danger-rgb), 0.15); color: var(--danger); }
-
-.pack-log {
-  max-height: 320px;
-  overflow-y: auto;
-}
-
-.file-checklist {
-  max-height: 280px;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 10px;
-  margin: 6px 0 14px;
-}
-.file-checklist-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 6px;
-  margin: 1px 0;
-  border-radius: 4px;
-  font-family: var(--mono);
-  font-size: 0.9em;
-  cursor: pointer;
-}
-/* The label wrapping a checkbox already makes the whole row clickable, but
-   without a visible hit area the checkbox itself -- a native ~13px box --
-   reads as the only clickable thing. Reported directly ("체크박스의
-   히트박스크기가 너무 작다") -- a bigger checkbox plus a hover highlight on
-   the row it sits in makes the actual (already-larger) click target visible
-   rather than just technically present. */
-.file-checklist-row:hover { background: var(--hover-overlay); }
-.file-checklist-row input[type="checkbox"] {
-  width: 17px;
-  height: 17px;
-  flex-shrink: 0;
-  cursor: pointer;
-}
-/* Shared "this row toggles everything below it" header styling -- both the
-   safe-files list's own select-all and the dangerous-files one (below) are
-   this shape; the dangerous one layers .dangerous-select-all's own
-   warning-specific look on top rather than duplicating the bold weight. */
-.select-all-row { font-weight: 600; }
-
-/* Pack form's per-folder select tree (landing.js's folderNode()) -- a
-   plain div row, not a <label>, since it also carries its own toggle
-   <button> and a checkbox neither of which should double-fire off a
-   label's native click-forwarding. .folder-select-name gets its own
-   pointer cursor + click handler instead, so clicking the folder name
-   toggles its checkbox the same way clicking a file row's label does. */
-.folder-select-row { font-weight: 600; }
-.folder-select-name { cursor: pointer; }
-.tree-toggle-btn {
-  flex-shrink: 0;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  line-height: 1;
-  font-size: 0.75em;
-}
-/* Nested folders indent the same way the post-pack Files tree does. */
-.file-checklist .tree-children { margin: 2px 0 2px 8px; }
-
-.dangerous-files { margin: 6px 0 14px; }
-.dangerous-explain {
-  color: var(--muted);
-  font-size: 0.85em;
-  margin: -4px 0 10px;
-}
-.dangerous-select-all {
-  color: var(--danger);
-  padding: 5px 6px 9px;
-  margin-bottom: 4px;
-  border-bottom: 1px solid var(--border);
-}
-.dangerous-file-row {
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--danger);
-  border-radius: 6px;
-  padding: 8px 10px;
-  margin-bottom: 8px;
-}
-.dangerous-file-row .file-checklist-row { padding: 2px 4px 6px; margin: 0; }
-.dangerous-file-row .file-checklist-row:hover { background: rgba(var(--danger-rgb), 0.08); }
-.dangerous-file-detail {
-  margin-left: 24px;
-  font-family: var(--mono);
-  font-size: 0.82em;
-  color: var(--muted);
-}
-.dangerous-file-line { overflow-wrap: anywhere; }
-
-
-.rules-edit { list-style: none; padding: 0; margin: 6px 0 14px; }
-.rules-edit li {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--border);
-}
 
 .file-edit-name { font-family: var(--mono); font-size: 0.9em; }
 
@@ -507,16 +390,10 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
 .tree-row { display: flex; align-items: baseline; gap: 2px; padding: 3px 6px; border-radius: 4px; cursor: pointer; }
 .tree-row:hover { background: var(--hover-overlay); }
 .tree-name { overflow-wrap: anywhere; }
-.tree-row.tree-flagged .tree-name { color: var(--danger); }
-/* pack.js's pre-save review tree applies .tree-flagged to a folder's own
-   <summary> label too (a low-confidence aggregate score, same threshold
-   as a file row) -- files.js's post-pack folder rows don't need this,
-   since they don't carry a confidence badge at all. */
-.tree-node > summary.tree-flagged .tree-name { color: var(--danger); }
 .tree-row.muted { cursor: default; }
 .tree-row.muted:hover { background: none; }
 /* A true cycle (buildNode()'s ancestors.has(dep) branch) reuses the same
-   --danger accent as the confidence flag above, but bold + its own note
+   --danger accent, bold + its own note
    color -- distinct from the plain-muted "(already shown elsewhere)" row
    it otherwise looks identical to, so a genuine mutual-import cycle reads
    as worth a second look rather than ordinary sharing. */
@@ -544,20 +421,6 @@ h2 { font-size: 1.1em; color: var(--muted); margin-top: 0; }
    one of them (independent of each folder's own separate expand/collapse
    state) is this one rule, not a walk over every row. */
 .tree-overview.hide-summaries .tree-desc { display: none; }
-
-/* Folder summary editor (files.js's folderNode()) -- lives inline inside
-   the folder row's own <summary>, so it has to stay a flex sibling of
-   .tree-name/.tree-desc rather than a block of its own. .tree-edit-btn
-   stays small/shrink-to-fit so it never crowds out the description text
-   it sits after; .tree-folder-edit takes over .tree-desc's own "grow to
-   fill the row" role while editing is open, since .tree-desc itself is
-   hidden by folderNode() during that state. The error line is forced onto
-   its own row (flex-basis: 100%) rather than squeezing into the same line
-   as the name/textarea. */
-.tree-edit-btn { flex-shrink: 0; padding: 2px 6px; font-size: 0.85em; }
-.tree-folder-edit { display: flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; }
-.tree-folder-edit textarea { flex: 1 1 auto; min-width: 80px; font-size: 0.85em; padding: 3px 6px; }
-.tree-node > summary .error { flex-basis: 100%; margin: 4px 0 0; padding: 4px 8px; font-size: 0.85em; }
 
 .rel-master-detail {
   display: flex;
@@ -698,11 +561,6 @@ table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { color: var(--muted); font-weight: 500; font-size: 0.85em; }
 
-.confidence { font-family: var(--mono); font-size: 0.85em; margin-left: 4px; }
-.confidence.low { color: var(--danger); }
-.confidence.medium { color: var(--warn); }
-.confidence.high { color: var(--success); }
-
 pre {
   background: var(--code-bg);
   border: 1px solid var(--border);
@@ -730,28 +588,21 @@ pre {
 .copy-row { margin-top: 8px; }
 .hidden { display: none; }
 
-/* app.js's showConfirmModal() -- an in-page, themed confirmation dialog
-   replacing window.confirm()'s native OS-styled box for choices that need
-   more than a bare Yes/No (pack.js's leave-an-active-pack-job guard needs
-   three: save & leave / discard & leave / stay), or that should just look
-   like part of the app rather than the browser's own chrome. */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-.modal-box {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 20px 22px;
-  max-width: 420px;
-  width: 90%;
-}
-.modal-box p { margin: 0 0 18px; line-height: 1.5; }
-.modal-buttons { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 .loading { padding: 20px 0; }
+
+/* Home's "how to make an aif.json" card and its link-styled button. */
+.pack-hint pre { margin: 8px 0; }
+.button-link {
+  display: inline-block;
+  background: var(--accent);
+  color: var(--accent-text);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.button-link:hover { opacity: 0.9; }
+.rel-edge-link { cursor: pointer; }
+.rel-edge-link:hover { color: var(--accent); }
+.file-edit-name a { color: var(--accent); text-decoration: none; }
+.file-edit-name a:hover { text-decoration: underline; }

@@ -1,29 +1,18 @@
-"""Verifies gui_server.py's /api/* routes correctly adapt query params to
-query_service.py calls and shape JSON responses -- not the underlying logic,
-which is already covered via query_service through test_mcp_server.py (same
-core, different transport) and test_relationship.py/test_search.py directly.
-Also checks static file serving (index.html, the app-*.js frontend split,
-style.css) and the real behavior that lives in gui_server.py itself: turning
-get_detail's/search_project's ValueError, and a bad aif_path/project_path's
-OSError/JSONDecodeError, into clean JSON error responses instead of a 500;
-and _find_free_port()'s fallback when the requested port is already taken.
+"""gui_server.py's read-only /api/* routes: query params adapted to
+query_service calls, JSON error shapes for bad paths/regexes/unknown files,
+static file serving, the settings route, the watcher routes, and
+_find_free_port()/_Api. The query logic itself is covered via
+query_service's own tests.
 """
 
 import json
 import socket
-import threading
-import time
-from unittest import mock
 
 import pytest
 
 import ziplex
-from ziplex import checkpoint
 from ziplex import freshness
-from ziplex import progress_i18n
 from ziplex.gui import gui_server
-from ziplex import llm
-from ziplex import packager
 from ziplex import settings as app_settings
 
 
@@ -62,18 +51,36 @@ def test_index_serves_static_shell(client):
 
 
 def test_static_assets_are_served(client):
-    # app.js used to be one flat file, then split into six flat app-*.js
-    # files, then (see src/gui/AGENTS.md's Frontend section) into real ES
-    # modules under js/ -- index.html now loads only js/router.js, but
-    # every module it transitively imports still has to be independently
-    # servable, since the browser fetches each one as its own request.
+    # index.html loads only js/router.js; every module it imports is
+    # fetched as its own request.
     for name in [
-        "js/i18n.js", "js/app.js", "js/graph.js", "js/pack.js", "js/router.js",
+        "js/i18n.js", "js/app.js", "js/graph.js", "js/router.js", "js/theme.js",
         "js/pages/landing.js", "js/pages/options.js", "js/pages/overview.js",
         "js/pages/files.js", "js/pages/relationships.js", "js/pages/search.js",
     ]:
         assert client.get(f"/{name}").status_code == 200, name
     assert client.get("/style.css").status_code == 200
+
+
+def test_the_pack_flow_frontend_is_gone(client):
+    assert client.get("/js/pack.js").status_code == 404
+
+
+def test_only_settings_and_watch_start_accept_writes():
+    # Read-only viewer: nothing may pack, edit, or rewrite aif.json.
+    writable = sorted(
+        rule.rule for rule in gui_server.app.url_map.iter_rules()
+        if rule.methods & {"POST", "PUT", "PATCH", "DELETE"}
+    )
+    assert writable == ["/api/settings", "/api/watch/start"]
+
+
+@pytest.mark.parametrize("path", [
+    "/api/pack", "/api/pack/finalize", "/api/relationships/link", "/api/files/summary",
+])
+def test_removed_write_routes_are_gone(client, path):
+    # 405, not 404: the catch-all static route still matches GET.
+    assert client.post(path, json={}).status_code == 405
 
 
 def test_config_reflects_startup_defaults(client):
@@ -174,449 +181,6 @@ def test_settings_post_sets_the_claude_fields(client, tmp_path, monkeypatch):
     assert body["claude_model"] == "claude-sonnet-4-5"
 
 
-def _wait_for_job(client, job_id, timeout=10):
-    since = 0
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        res = client.get("/api/pack/status", query_string={"job_id": job_id, "since": since})
-        data = res.get_json()
-        since = data["log_len"]
-        if data["state"] != "running":
-            return data
-        time.sleep(0.02)
-    raise AssertionError("pack job did not finish in time")
-
-
-def test_api_select_files_splits_safe_and_dangerous(client, tmp_path):
-    project = tmp_path / "project"
-    (project).mkdir()
-    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-    (project / "secret.env").write_text('API_KEY = "abc123"\n', encoding="utf-8")
-
-    res = client.get("/api/select_files", query_string={"project_path": str(project)})
-    assert res.status_code == 200
-    data = res.get_json()
-    assert "main.py" in data["safe"]
-    # "dangerous" carries why, not just which -- a flat name list would
-    # give a GUI file-selection screen nothing to show a human beyond "this
-    # one's excluded, trust us"
-    assert data["dangerous"] == [{
-        "file": "secret.env", "reason": mock.ANY, "line": 1, "matched_text": 'API_KEY = "abc123"',
-    }]
-
-
-def test_api_select_files_progress_lang_reaches_the_scan_reason(client, tmp_path):
-    # conftest.py's autouse _reset_progress_lang handles restoring
-    # progress_i18n's (process-wide) ContextVar afterward.
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "secret.env").write_text('API_KEY = "abc123"\n', encoding="utf-8")
-
-    res = client.get(
-        "/api/select_files",
-        query_string={"project_path": str(project), "progress_lang": "en"},
-    )
-    assert res.status_code == 200
-    assert res.get_json()["dangerous"][0]["reason"].startswith("Pattern match:")
-
-
-def test_before_request_resets_progress_lang_even_for_a_route_that_never_touches_it(client):
-    # The scenario _reset_progress_lang's own docstring describes: Werkzeug's
-    # threaded dev server can reuse the same OS thread (and thus the same
-    # ContextVar context) across several keep-alive requests, so a value one
-    # request's route left behind could otherwise leak into the next one.
-    # /api/select_files and /api/pack both have their own explicit
-    # progress_lang handling, so they'd pass this test even without the
-    # before_request hook -- this hits /api/config instead (a route with no
-    # progress_lang logic of its own at all) specifically to prove the hook
-    # itself is what resets the ContextVar, not some route-level fallback.
-    progress_i18n.set_current("en")
-
-    client.get("/api/config")
-
-    assert progress_i18n.current() == "ko"
-
-
-def test_api_select_files_missing_project_dir_is_404(client, tmp_path):
-    res = client.get("/api/select_files", query_string={"project_path": str(tmp_path / "does_not_exist")})
-    assert res.status_code == 404
-    assert "error" in res.get_json()
-
-
-def test_api_pack_requires_project_path(client):
-    res = client.post("/api/pack", json={})
-    assert res.status_code == 400
-    assert "error" in res.get_json()
-
-
-def test_api_pack_missing_project_dir_is_404(client, tmp_path):
-    res = client.post("/api/pack", json={"project_path": str(tmp_path / "does_not_exist"), "selected_files": ["a.py"]})
-    assert res.status_code == 404
-    assert "error" in res.get_json()
-
-
-def test_api_pack_requires_selected_files(client, tmp_path):
-    project = tmp_path / "project"
-    project.mkdir()
-    res = client.post("/api/pack", json={"project_path": str(project), "selected_files": []})
-    assert res.status_code == 400
-    assert "error" in res.get_json()
-
-
-def test_api_pack_status_unknown_job_is_404(client):
-    res = client.get("/api/pack/status", query_string={"job_id": "no-such-job"})
-    assert res.status_code == 404
-    assert "error" in res.get_json()
-
-
-def test_api_pack_review_unknown_job_is_404(client):
-    res = client.get("/api/pack/review", query_string={"job_id": "no-such-job"})
-    assert res.status_code == 404
-    assert "error" in res.get_json()
-
-
-def test_api_pack_finalize_requires_job_id(client):
-    res = client.post("/api/pack/finalize", json={})
-    assert res.status_code == 400
-    assert "error" in res.get_json()
-
-
-def test_api_pack_finalize_unknown_job_is_404(client):
-    res = client.post("/api/pack/finalize", json={"job_id": "no-such-job"})
-    assert res.status_code == 404
-    assert "error" in res.get_json()
-
-
-def test_api_pack_cancel_unknown_job_is_404(client):
-    res = client.post("/api/pack/cancel", json={"job_id": "no-such-job"})
-    assert res.status_code == 404
-    assert "error" in res.get_json()
-
-
-def test_api_pack_runs_end_to_end_with_mock_provider(client, tmp_path, monkeypatch):
-    # This is the route-adapter test (starts the job over HTTP, polls it over
-    # HTTP, reviews and finalizes it over HTTP, checks the job actually
-    # reaches the filesystem) -- pack_service.py's own job-lifecycle behavior
-    # (log capture, since= slicing, error state, review/edit application) is
-    # covered directly in test_pack_service.py.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-    output_path = tmp_path / "out" / "project.json"
-
-    files = client.get("/api/select_files", query_string={"project_path": str(project)}).get_json()
-    assert files["safe"] == ["main.py"]
-
-    start = client.post("/api/pack", json={
-        "project_path": str(project), "output_path": str(output_path), "selected_files": files["safe"],
-    })
-    assert start.status_code == 200
-    job_id = start.get_json()["job_id"]
-
-    status = _wait_for_job(client, job_id)
-    assert status["state"] == "reviewing"
-    assert not output_path.exists()  # paused for review, nothing saved yet
-
-    review = client.get("/api/pack/review", query_string={"job_id": job_id})
-    assert review.status_code == 200
-    review_data = review.get_json()
-    assert review_data["project"]["name"] == "project"
-    all_reviewed = review_data["needs_review"] + review_data["auto_kept"]
-    assert [e["file"] for e in all_reviewed] == ["main.py"]
-
-    finalize = client.post("/api/pack/finalize", json={
-        "job_id": job_id,
-        "project_name": "",  # blank -> keep as-is, same as pressing enter through a terminal prompt
-        "rules": review_data["rules"],
-        "summaries": {"main.py": "Adds two numbers."},
-    })
-    assert finalize.status_code == 200
-    assert finalize.get_json() == {"aif_path": str(output_path), "project_path": str(project)}
-    assert output_path.exists()
-
-    saved = json.loads(output_path.read_text(encoding="utf-8"))
-    assert saved["files"]["main.py"]["summary"] == "Adds two numbers."
-
-    # the review payload is gone once a job is finalized -- nothing left to review
-    assert client.get("/api/pack/review", query_string={"job_id": job_id}).status_code == 404
-
-
-def test_api_pack_no_llm_flag_reaches_pack_service(client, tmp_path, monkeypatch):
-    # Route-level check that the "no_llm" checkbox's value actually reaches
-    # pack_service.start_pack_job() -- pack_service.py's own test suite
-    # covers the resulting structural-summary behavior in detail.
-    class _RaisingProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
-            raise AssertionError("no_llm=True must never call the LLM provider")
-
-    monkeypatch.setattr(llm, "_provider", _RaisingProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-
-    start = client.post("/api/pack", json={
-        "project_path": str(project), "selected_files": ["main.py"], "no_llm": True,
-    })
-    job_id = start.get_json()["job_id"]
-
-    status = _wait_for_job(client, job_id)
-    assert status["state"] == "reviewing"
-    review = client.get("/api/pack/review", query_string={"job_id": job_id}).get_json()
-    assert review["project"]["prompt"] == packager.STRUCTURAL_ONLY_NOTE["en"]
-
-
-def test_api_pack_lang_flag_reaches_pack_service(client, tmp_path, monkeypatch):
-    # Route-level check that the pack form's "lang" value actually reaches
-    # packager.pack() and lands in the saved aif -- llm.py's own tests cover
-    # the prompt-construction detail, pack_service.py's the job-state
-    # plumbing; this just confirms the route wires them together.
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-
-    start = client.post("/api/pack", json={
-        "project_path": str(project), "selected_files": ["main.py"], "lang": "ko",
-    })
-    job_id = start.get_json()["job_id"]
-
-    status = _wait_for_job(client, job_id)
-    assert status["state"] == "reviewing"
-    review = client.get("/api/pack/review", query_string={"job_id": job_id}).get_json()
-    assert review["project"]["language"] == "ko"
-
-
-def test_api_pack_unrecognized_lang_falls_back_to_english(client, tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-
-    start = client.post("/api/pack", json={
-        "project_path": str(project), "selected_files": ["main.py"], "lang": "fr",
-    })
-    job_id = start.get_json()["job_id"]
-
-    status = _wait_for_job(client, job_id)
-    review = client.get("/api/pack/review", query_string={"job_id": job_id}).get_json()
-    assert review["project"]["language"] == "en"
-
-
-def test_api_pack_status_retry_params_can_resume_a_failed_job_over_http(client, tmp_path, monkeypatch):
-    # Item 8: the pack-progress screen used to have no way forward at all
-    # once a job landed in "error" (a repeated LLM failure) -- retry_params
-    # in /api/pack/status is what js/pack.js's retry button reposts to
-    # /api/pack, and this is the route-level proof that round-trip actually
-    # resumes from the checkpoint instead of starting over. pack_service.py's
-    # own test suite covers the same behavior below the HTTP layer.
-    class _EmptyRulesProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
-            if '"rules"' in prompt:
-                return "{}"
-            return super().generate(prompt, retry=retry)
-
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-
-    monkeypatch.setattr(llm, "_provider", _EmptyRulesProvider())
-    start = client.post("/api/pack", json={"project_path": str(project), "selected_files": ["main.py"]})
-    job_id = start.get_json()["job_id"]
-    status = _wait_for_job(client, job_id)
-    assert status["state"] == "error"
-    retry_params = status["retry_params"]
-    assert retry_params["project_path"] == str(project)
-
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    retry = client.post("/api/pack", json=retry_params)
-    assert retry.status_code == 200
-    retry_job_id = retry.get_json()["job_id"]
-    retry_status = _wait_for_job(client, retry_job_id)
-    assert retry_status["state"] == "reviewing"
-
-    # _wait_for_job's own returned "log" is only the tail since its last
-    # poll tick (it advances `since` each time, same pagination the real
-    # frontend uses) -- refetch from since=0 for the full accumulated log
-    # instead of misreading that tail as "nothing was restored".
-    full_log = client.get(
-        "/api/pack/status", query_string={"job_id": retry_job_id, "since": 0}
-    ).get_json()["log"]
-    assert any("체크포인트에서 복원" in line for line in full_log)
-
-
-def test_api_pack_retry_with_no_cache_only_resumes_when_resume_flag_is_sent(client, tmp_path, monkeypatch):
-    # Real bug reported directly: a job started with no_cache=True
-    # ("완전히 재패킹" checked) that failed during rules generation still
-    # checkpointed its already-generated summaries -- but retrying it
-    # discarded that checkpoint outright, since no_cache=True alone made
-    # packager.pack() treat any leftover checkpoint as stale regardless of
-    # how fresh it actually was, re-billing every summary again on every
-    # retry. /api/pack's `resume` field (only ever sent by js/pack.js's
-    # retry button, never a fresh pack-form submission) is the fix -- this
-    # is the route-level proof, on top of pack_service.py's own test for
-    # the same fix below the HTTP layer.
-    class _EmptyRulesProvider(llm.MockProvider):
-        def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
-            if '"rules"' in prompt:
-                return "{}"
-            return super().generate(prompt, retry=retry)
-
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-
-    monkeypatch.setattr(llm, "_provider", _EmptyRulesProvider())
-    start = client.post("/api/pack", json={
-        "project_path": str(project), "selected_files": ["main.py"], "no_cache": True,
-    })
-    job_id = start.get_json()["job_id"]
-    status = _wait_for_job(client, job_id)
-    assert status["state"] == "error"
-    retry_params = status["retry_params"]
-    assert retry_params["no_cache"] is True
-
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    retry = client.post("/api/pack", json={**retry_params, "resume": True})
-    assert retry.status_code == 200
-    retry_job_id = retry.get_json()["job_id"]
-    retry_status = _wait_for_job(client, retry_job_id)
-    assert retry_status["state"] == "reviewing"
-
-    full_log = client.get(
-        "/api/pack/status", query_string={"job_id": retry_job_id, "since": 0}
-    ).get_json()["log"]
-    assert any("체크포인트에서 복원" in line for line in full_log)
-
-
-def test_api_pack_link_adds_an_edge_and_rejects_cycles(client, tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "a.py").write_text("def a():\n    pass\n", encoding="utf-8")
-    (project / "b.py").write_text("def b():\n    pass\n", encoding="utf-8")
-
-    start = client.post("/api/pack", json={"project_path": str(project), "selected_files": ["a.py", "b.py"]})
-    job_id = start.get_json()["job_id"]
-    _wait_for_job(client, job_id)
-
-    link = client.post("/api/pack/link", json={"job_id": job_id, "file": "a.py", "target": "b.py"})
-    assert link.status_code == 200
-    assert link.get_json()["tree"]["a.py"]["internal"] == ["b.py"]
-
-    cycle = client.post("/api/pack/link", json={"job_id": job_id, "file": "b.py", "target": "a.py"})
-    assert cycle.status_code == 409
-    assert "error" in cycle.get_json()
-
-    missing = client.post("/api/pack/link", json={"job_id": "no-such-job", "file": "a.py", "target": "b.py"})
-    assert missing.status_code == 404
-
-
-def test_api_pack_unlink_removes_only_that_edge(client, tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "a.py").write_text("def a():\n    pass\n", encoding="utf-8")
-    (project / "b.py").write_text("def b():\n    pass\n", encoding="utf-8")
-    (project / "c.py").write_text("def c():\n    pass\n", encoding="utf-8")
-
-    start = client.post("/api/pack", json={"project_path": str(project), "selected_files": ["a.py", "b.py", "c.py"]})
-    job_id = start.get_json()["job_id"]
-    _wait_for_job(client, job_id)
-
-    client.post("/api/pack/link", json={"job_id": job_id, "file": "a.py", "target": "b.py"})
-    client.post("/api/pack/link", json={"job_id": job_id, "file": "a.py", "target": "c.py"})
-
-    unlink = client.post("/api/pack/unlink", json={"job_id": job_id, "file": "a.py", "target": "b.py"})
-    assert unlink.status_code == 200
-    assert unlink.get_json()["tree"]["a.py"]["internal"] == ["c.py"]
-
-    missing = client.post("/api/pack/unlink", json={"job_id": "no-such-job", "file": "a.py", "target": "b.py"})
-    assert missing.status_code == 404
-
-
-def test_api_pack_cancel_discards_a_reviewing_job(client, tmp_path, monkeypatch):
-    monkeypatch.setattr(llm, "_provider", llm.MockProvider())
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-
-    start = client.post("/api/pack", json={"project_path": str(project), "selected_files": ["main.py"]})
-    job_id = start.get_json()["job_id"]
-    _wait_for_job(client, job_id)
-
-    cancel = client.post("/api/pack/cancel", json={"job_id": job_id})
-    assert cancel.status_code == 200
-    assert cancel.get_json() == {"ok": True}
-
-    status = client.get("/api/pack/status", query_string={"job_id": job_id}).get_json()
-    assert status["state"] == "error"
-
-
-def test_api_pack_stop_unknown_job_is_404(client):
-    res = client.post("/api/pack/stop", json={"job_id": "no-such-job", "save": True})
-    assert res.status_code == 404
-
-
-class _BlockingProvider(llm.MockProvider):
-    """Blocks generate() until the test releases it -- MockProvider alone
-    answers instantly, so a real pack job would reach "reviewing" before a
-    test could ever hit /api/pack/stop while it's genuinely still "running".
-    """
-
-    def __init__(self, started: threading.Event, release: threading.Event):
-        self.started = started
-        self.release = release
-
-    def generate(self, prompt: str, retry: int = 5, label: str = "") -> str:
-        self.started.set()
-        self.release.wait(timeout=5)
-        return super().generate(prompt, retry)
-
-
-def test_api_pack_stop_saves_and_stops_a_running_job(client, tmp_path, monkeypatch):
-    started, release = threading.Event(), threading.Event()
-    monkeypatch.setattr(llm, "_provider", _BlockingProvider(started, release))
-    monkeypatch.setattr(checkpoint, "CHECKPOINT_DIR", tmp_path / "checkpoint")
-
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "main.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
-
-    start = client.post("/api/pack", json={"project_path": str(project), "selected_files": ["main.py"]})
-    job_id = start.get_json()["job_id"]
-    assert started.wait(timeout=5), "generate() was never entered"
-
-    stop = client.post("/api/pack/stop", json={"job_id": job_id, "save": True})
-    assert stop.status_code == 200
-    assert stop.get_json() == {"ok": True}
-
-    release.set()
-    status = _wait_for_job(client, job_id)
-
-    assert status["state"] == "error"
-    assert "체크포인트에 저장됨" in status["error"]
-    assert checkpoint._checkpoint_path(str(project)).exists()
-
-
 def test_api_overview(client, tmp_path):
     aif_path = _write_sample_aif(tmp_path)
     res = client.get("/api/overview", query_string={"aif_path": aif_path})
@@ -635,9 +199,9 @@ def test_api_overview_requires_aif_path(client):
 def test_api_files(client, tmp_path):
     aif_path = _write_sample_aif(tmp_path)
     res = client.get("/api/files", query_string={"aif_path": aif_path})
-    assert res.get_json() == {
-        "a.py": {"summary": "does a thing", "confidence": 1.0},
-        "b.py": {"summary": "uses a.py", "confidence": 1.0},
+    data = res.get_json()
+    assert {name: info["summary"] for name, info in data.items()} == {
+        "a.py": "does a thing", "b.py": "uses a.py",
     }
 
 
@@ -652,21 +216,9 @@ def test_api_files_scopes_by_folder(client, tmp_path):
     }), encoding="utf-8")
 
     res = client.get("/api/files", query_string={"aif_path": str(aif_path), "folder": "src"})
-    assert res.get_json() == {"src/b.py": {"summary": "nested file", "confidence": 1.0}}
-
-
-def test_api_files_scopes_by_confidence_below(client, tmp_path):
-    aif_path = tmp_path / "sample.json"
-    aif_path.write_text(json.dumps({
-        "project": {"name": "sample"},
-        "files": {
-            "a.py": {"summary": "confident", "confidence": 0.9},
-            "b.py": {"summary": "shaky", "confidence": 0.1},
-        },
-    }), encoding="utf-8")
-
-    res = client.get("/api/files", query_string={"aif_path": str(aif_path), "confidence_below": "0.34"})
-    assert list(res.get_json().keys()) == ["b.py"]
+    data = res.get_json()
+    assert list(data) == ["src/b.py"]
+    assert data["src/b.py"]["summary"] == "nested file"
 
 
 def test_api_folders(client, tmp_path):
@@ -725,94 +277,6 @@ def test_api_relationships_scopes_by_files(client, tmp_path):
     aif_path = _write_sample_aif(tmp_path)
     res = client.get("/api/relationships", query_string={"aif_path": aif_path, "files": ["b.py"]})
     assert res.get_json() == {"b.py": {"internal": ["a.py"], "external": [], "internal_text_refs": []}}
-
-
-def test_api_relationships_link(client, tmp_path):
-    # _write_sample_aif already has b.py -> a.py, so link a.py -> b.py here
-    # would close a cycle (see test_api_relationships_link_rejects_a_cycle
-    # below) -- unlink that edge first so this test exercises a plain link.
-    aif_path = _write_sample_aif(tmp_path)
-    client.post("/api/relationships/unlink", json={"aif_path": aif_path, "file": "b.py", "target": "a.py"})
-
-    res = client.post("/api/relationships/link", json={"aif_path": aif_path, "file": "a.py", "target": "b.py"})
-    assert res.status_code == 200
-    assert res.get_json()["relationships"]["a.py"]["internal"] == ["b.py"]
-
-    # persisted -- a second, independent read sees the same edit
-    reread = client.get("/api/relationships", query_string={"aif_path": aif_path})
-    assert reread.get_json()["a.py"]["internal"] == ["b.py"]
-
-
-def test_api_relationships_link_rejects_a_cycle(client, tmp_path):
-    aif_path = _write_sample_aif(tmp_path)  # b.py already depends on a.py
-    res = client.post("/api/relationships/link", json={"aif_path": aif_path, "file": "a.py", "target": "b.py"})
-    assert res.status_code == 409
-
-
-def test_api_relationships_link_requires_all_fields(client):
-    res = client.post("/api/relationships/link", json={"aif_path": "x.json"})
-    assert res.status_code == 400
-
-
-def test_api_relationships_unlink(client, tmp_path):
-    aif_path = _write_sample_aif(tmp_path)
-    res = client.post("/api/relationships/unlink", json={"aif_path": aif_path, "file": "b.py", "target": "a.py"})
-    assert res.status_code == 200
-    assert res.get_json()["relationships"]["b.py"]["internal"] == []
-
-
-# Real gap found by code review: relationships already had a post-save edit
-# escape hatch (/api/relationships/link|unlink) for a human noticing a wrong
-# edge while browsing an already-packed project -- summaries didn't, even
-# though a one-line text fix is a smaller edit than a graph edge.
-def test_api_files_summary_edit(client, tmp_path):
-    aif_path = _write_sample_aif(tmp_path)
-    res = client.post("/api/files/summary", json={"aif_path": aif_path, "file": "a.py", "summary": "fixed summary"})
-    assert res.status_code == 200
-    assert res.get_json() == {"file": "a.py", "summary": "fixed summary"}
-
-    # persisted -- a second, independent read sees the same edit
-    reread = client.get("/api/files", query_string={"aif_path": aif_path})
-    assert reread.get_json()["a.py"]["summary"] == "fixed summary"
-
-
-def test_api_files_summary_edit_unknown_file_returns_404(client, tmp_path):
-    aif_path = _write_sample_aif(tmp_path)
-    res = client.post("/api/files/summary", json={"aif_path": aif_path, "file": "nope.py", "summary": "x"})
-    assert res.status_code == 404
-
-
-def test_api_files_summary_edit_requires_all_fields(client):
-    res = client.post("/api/files/summary", json={"aif_path": "x.json"})
-    assert res.status_code == 400
-
-
-def test_api_folders_summary_edit(client, tmp_path):
-    aif_path = tmp_path / "sample.json"
-    aif_path.write_text(json.dumps({
-        "project": {"name": "sample"},
-        "files": {"a.py": {"summary": "does a thing"}},
-        "folders": {".": {"summary": "Top-level project files."}},
-    }), encoding="utf-8")
-
-    res = client.post("/api/folders/summary", json={"aif_path": str(aif_path), "folder": ".", "summary": "fixed"})
-    assert res.status_code == 200
-    assert res.get_json() == {"folder": ".", "summary": "fixed"}
-
-    reread = client.get("/api/folders", query_string={"aif_path": str(aif_path)})
-    assert reread.get_json()["."]["summary"] == "fixed"
-
-
-def test_api_folders_summary_edit_unknown_folder_returns_404(client, tmp_path):
-    aif_path = tmp_path / "sample.json"
-    aif_path.write_text(json.dumps({
-        "project": {"name": "sample"},
-        "files": {"a.py": {"summary": "does a thing"}},
-        "folders": {".": {"summary": "Top-level project files."}},
-    }), encoding="utf-8")
-
-    res = client.post("/api/folders/summary", json={"aif_path": str(aif_path), "folder": "nope", "summary": "x"})
-    assert res.status_code == 404
 
 
 def test_api_blast_radius(client, tmp_path):
@@ -1027,23 +491,16 @@ def test_find_free_port_skips_a_port_in_use():
 class _FakeFileDialog:
     FOLDER = "folder"
     OPEN = "open"
-    SAVE = "save"
 
 
 class _FakeWindow:
-    def __init__(self, dialog_result=None, confirm_result=None):
+    def __init__(self, dialog_result=None):
         self._dialog_result = dialog_result
-        self.confirm_calls = []
-        self._confirm_result = confirm_result
         self.create_file_dialog_calls = []
 
     def create_file_dialog(self, *args, **kwargs):
         self.create_file_dialog_calls.append((args, kwargs))
         return self._dialog_result
-
-    def create_confirmation_dialog(self, title, message):
-        self.confirm_calls.append((title, message))
-        return self._confirm_result
 
 
 class _FakeWebview:
@@ -1053,10 +510,8 @@ class _FakeWebview:
         self.windows = [window]
 
 
-# _Api and _confirm_close_if_reviewing used to be nested inside main() --
-# defined at module level now specifically so they're reachable like this,
-# with a fake `webview` module standing in for the real one (which needs an
-# actual OS window and can't run in a test process).
+# _Api takes the webview module as an argument, so a fake stands in for the
+# real one (which needs an OS window).
 
 def test_api_choose_folder_returns_the_picked_path():
     window = _FakeWindow(dialog_result=["C:/some/project"])
@@ -1078,27 +533,3 @@ def test_api_choose_aif_file_uses_an_open_dialog_filtered_to_json():
     args, kwargs = window.create_file_dialog_calls[0]
     assert args == ("open",)
     assert kwargs["file_types"] == gui_server._JSON_FILE_TYPES
-
-
-def test_api_choose_save_file_uses_a_save_dialog():
-    window = _FakeWindow(dialog_result=["C:/some/new.json"])
-    api = gui_server._Api(_FakeWebview(window))
-    assert api.choose_save_file() == "C:/some/new.json"
-    args, kwargs = window.create_file_dialog_calls[0]
-    assert args == ("save",)
-    assert kwargs["save_filename"] == "project.json"
-
-
-def test_confirm_close_skips_the_dialog_when_no_job_is_reviewing(monkeypatch):
-    monkeypatch.setattr(gui_server.pack_service, "has_reviewing_job", lambda: False)
-    window = _FakeWindow()
-    assert gui_server._confirm_close_if_reviewing(window) is None
-    assert window.confirm_calls == []
-
-
-def test_confirm_close_shows_a_native_dialog_when_a_job_is_reviewing(monkeypatch):
-    monkeypatch.setattr(gui_server.pack_service, "has_reviewing_job", lambda: True)
-    window = _FakeWindow(confirm_result=False)  # user chose "cancel the close"
-    result = gui_server._confirm_close_if_reviewing(window)
-    assert result is False
-    assert len(window.confirm_calls) == 1

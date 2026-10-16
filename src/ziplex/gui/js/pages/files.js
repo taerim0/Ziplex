@@ -1,11 +1,7 @@
-// The sidebar's Files section (a collapsible folder tree, plus a single
-// file's detail page) -- see app.js's header comment for the overall
-// module split. Files used to be a flat sortable table; redesigned into a
-// folder tree (real folder role summaries alongside each folder, not just
-// a flat file list) after a reported usability gap: a human browsing the
-// GUI to understand a project had no sense of directory structure at all.
+// The sidebar's Files section: a collapsible folder tree (with folder
+// summaries) plus a single file's read-only detail page.
 
-import { app, nav, el, api, apiPost, getAif, getProject, setStale, showError, showLoading, confidenceLevel, copyButton, startStaleWatch, buildPathTree, createSummaryEditor, navigationToken, isCurrentNavigation } from "../app.js";
+import { app, nav, el, api, getAif, getProject, setStale, showError, showLoading, copyButton, startStaleWatch, buildPathTree, navigationToken, isCurrentNavigation } from "../app.js";
 import { t } from "../i18n.js";
 
 export async function renderFiles() {
@@ -44,23 +40,17 @@ export async function renderFiles() {
 
     function fileRow(name) {
       const info = files[name] || {};
-      const conf = info.confidence ?? 1.0;
-      const level = confidenceLevel(conf);
-      const row = el("div", { class: `tree-row${level === "low" ? " tree-flagged" : ""}` }, [
+      const row = el("div", { class: "tree-row" }, [
         el("span", { text: "📄 " }),
         el("span", { class: "tree-name tree-name-fixed", text: name.split("/").pop() }),
-        el("span", { class: `confidence ${level}`, text: conf.toFixed(2) }),
         info.summary ? el("span", { class: "muted tree-desc", text: ` — ${info.summary}` }) : null,
       ]);
       row.addEventListener("click", () => { location.hash = `#/files/${encodeURIComponent(name)}`; });
       return row;
     }
 
-    // path is the folder's own key into `folders` ("." for the project
-    // root, matching folder_summary.group_files_by_folder()'s own
-    // convention) -- not necessarily unique display text, so the root's
-    // own label is swapped for a translated placeholder rather than a
-    // bare ".".
+    // path is the folder's key into `folders` ("." for the project root,
+    // shown as a translated placeholder).
     function folderNode(path, node, matches) {
       const fileRows = node.files.filter(name => matches.has(name)).map(fileRow);
       const childNodes = Object.entries(node.folders)
@@ -79,44 +69,11 @@ export async function renderFiles() {
       // biggest source of cramped/wrapped tree rows.
       const displayName = path === "." ? t("files.rootFolder") : path.split("/").pop();
 
-      // Editable folder summary -- the same post-pack fix-without-a-re-pack
-      // escape hatch renderFileDetail's per-file summary editor already
-      // has (see that function's own comment). The tricky part reported
-      // directly: a folder row is a native <details>/<summary> disclosure
-      // triangle, so clicking *anywhere* on the row already means
-      // "toggle open/closed" -- a naive "click the summary text to edit"
-      // affordance would be indistinguishable from that and unreachable.
-      // Solved with a small dedicated ✏️ button instead (same icon/pattern
-      // as the per-file editor, for consistency): its own click handler
-      // calls preventDefault()+stopPropagation() first, which is what
-      // actually suppresses <summary>'s native "toggle on click" behavior
-      // (the toggle is that click event's default action) -- every other
-      // click on the row (the folder name, the description text) still
-      // toggles exactly as before.
-      const editor = createSummaryEditor({
-        getValue: () => folders[path]?.summary || "",
-        formatDisplay: (v) => v ? ` — ${v}` : "",
-        displayClass: "muted tree-desc",
-        editBtnClass: "secondary tree-edit-btn",
-        rows: "2",
-        stopPropagation: true,
-        buildEditRow: (textarea, saveBtn, cancelBtn) => el("span", { class: "tree-folder-edit" }, [textarea, saveBtn, cancelBtn]),
-        onSave: async (newSummary) => {
-          await apiPost("/api/folders/summary", { aif_path: getAif(), folder: path, summary: newSummary });
-          folders[path] = { ...(folders[path] || {}), summary: newSummary };
-        },
-      });
-
+      const summary = folders[path]?.summary;
       const label = el("summary", {}, [
         el("span", { text: "📁 " }),
         el("span", { class: "tree-name tree-name-fixed", text: displayName }),
-        editor.displayEl,
-        // Only a folder with a saved summary can be edited: a pure container
-        // (no files of its own) or a one-file folder has no aif.folders entry,
-        // so /api/folders/summary would 404 on save.
-        ...(folders[path] ? [editor.editBtn] : []),
-        editor.editRow,
-        editor.errorEl,
+        summary ? el("span", { class: "muted tree-desc", text: ` — ${summary}` }) : null,
       ]);
       return el("details", { class: "tree-node", open: "" }, [
         label,
@@ -133,9 +90,7 @@ export async function renderFiles() {
       );
 
       treeBox.innerHTML = "";
-      // buildPathTree() groups by *immediate* parent one level at a time,
-      // mirroring folder_summary.py's own group_files_by_folder() -- so the
-      // two trees agree on which folder summary belongs to which files.
+      // Grouped by immediate parent folder, the same keys aif["folders"] uses.
       const rootNode = folderNode(".", buildPathTree(Object.keys(files)), matches);
       treeBox.appendChild(rootNode || el("p", { class: "muted", text: t("files.noResults") }));
     }
@@ -179,23 +134,7 @@ export async function renderFileDetail(name, params) {
 
     const fullText = () => `# ${name}\n\n${info.summary || ""}\n\n\`\`\`\n${detail.compressed}\n\`\`\``;
 
-    // Post-pack summary editing (a real gap found by code review:
-    // relationships already had this post-save escape hatch via the
-    // Relationships page/`ziplex link`, summaries didn't, even though a
-    // one-line text fix is a smaller edit than a graph edge) -- swaps the
-    // read-only <p> for a textarea + Save/Cancel in place, no page
-    // navigation. `info.summary` is mutated in place on a successful save
-    // so fullText()'s Copy button reflects the edit without a re-fetch.
-    const editor = createSummaryEditor({
-      getValue: () => info.summary || "",
-      displayTag: "p",
-      buildEditRow: (textarea, saveBtn, cancelBtn) => el("div", {}, [textarea, el("div", { class: "toolbar" }, [saveBtn, cancelBtn])]),
-      onSave: async (newSummary) => {
-        await apiPost("/api/files/summary", { aif_path: getAif(), file: name, summary: newSummary });
-        info.summary = newSummary;
-      },
-    });
-    const summarySection = el("div", {}, [editor.displayEl, editor.editBtn, editor.editRow, editor.errorEl]);
+    const summarySection = el("p", { text: info.summary || "" });
 
     // A dependent/blast-radius entry reached only via text_references.py's
     // filename-mention matching (a README naming this file, a Godot scene's
