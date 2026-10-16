@@ -217,31 +217,23 @@ With `--hook`, `ziplex install claude` adds a `PostToolUse` entry (`ziplex-hook`
 
 ## MCP server
 
-Query an already-packed project directly from Claude Code, Cursor, or any other MCP client — no copy-pasting `aif.json` into a prompt.
+`ziplex-mcp` gives Claude Code, Cursor or any MCP client the same live graph as the commands above -- no pack needed, refreshed from disk before every call.
 
 ```bash
-ziplex-mcp                                                     # run directly (stdio transport)
-ziplex-mcp --aif .ziplex/Ziplex.json --project .                # bake in defaults so calls can omit them
-claude mcp add ziplex -- ziplex-mcp --aif .ziplex/Ziplex.json --project .   # register with Claude Code
+claude mcp add ziplex -- ziplex-mcp --project /abs/path/to/project   # or: ziplex install claude
 ```
 
-`--aif`/`--project` set this server's *default* `aif_path`/`project_path` — every tool below still accepts either explicitly (which always wins), but a session that only ever talks to one packed project doesn't have to repeat the same path on every single call. Omitting both flags is fine too; every tool then just requires the path per call, as before.
-
-| Tool | What it does |
+| Tool | What it answers |
 |---|---|
-| `get_overview(aif_path?, project_path?)` | Project guide, coding rules, token stats — call this first |
-| `list_files(aif_path?, project_path?, folder?, confidence_below?)` | Every file mapped to its summary + confidence score — optionally scoped to one folder and/or filtered to a confidence cutoff |
-| `get_folders(aif_path?)` | Every folder mapped to a one-sentence summary of its role |
-| `get_relationships(aif_path?, files?)` | The whole dependency graph at once — every file's internal/external edges — or just the given files' entries |
-| `get_dependents(aif_path?, file)` | Files that directly depend on `file` |
-| `get_blast_radius(aif_path?, file)` | Every file transitively affected by a change to `file` |
-| `get_detail(aif_path?, file, start_line?, end_line?)` | A file's compressed source, in full or by line range |
-| `check_freshness(project_path?, aif_path?)` | Hash-check the pack against the files on disk — no LLM calls |
-| `search_project(project_path?, pattern, ...)` | Regex search across the project's original files |
+| `graph_overview(scope?)` | Hubs, import cycles, folder layering, unresolved relative imports -- start here in an unfamiliar repo |
+| `who_depends_on(files, depth?, include_mentions?)` | Who imports these files (with the import line), or everything transitively affected, by hop |
+| `dependencies_of(files, external?)` | What these files import, resolved to files (aliases, workspaces, Python packages, Go packages) |
+| `impacted_tests(files?, diff?)` | Tests affected by a change or a git diff, with the import chain and a ready-to-run command |
+| `dependency_path(source, target)` | The shortest import chain between two files |
 
-Read-only and deliberately so: every tool serves an `aif.json`/`detail.json` a human already reviewed via `correct_aif()` — none of them re-pack or re-correct a project on their own, since that would skip the human-in-the-loop step that's the point of Ziplex. `get_dependents`/`get_blast_radius` run on the same human-corrected `relationships` graph `pack` builds — not a fresh, uncorrected guess.
+Answers are compact text (tens to a few hundred tokens), and the five tool definitions cost ~720 tokens per session. Paths can be repo-relative, absolute or a unique suffix (`query_service.py`).
 
-`aif.json`/`detail.json` are snapshots from the last `pack` run, so they can drift from an actively-changing project. Every tool above except `search_project` (which always reads files live) trusts that snapshot — call `check_freshness` first if you suspect it's gone stale, or just pass `project_path` to `get_overview`/`list_files` and let them check for you: a stale pack gets an extra `_stale` field in the result instead of silently being trusted. It won't fix anything, but it tells you whether a re-`pack` is warranted before you trust the rest.
+**Legacy mode.** `ziplex-mcp --aif <name>.json [--project .]` (or `--legacy-tools`) serves the previous ten tools over a packed `aif.json` instead (`get_overview`, `list_files`, `get_folders`, `get_relationships`, `get_graph_summary`, `get_dependents`, `get_blast_radius`, `get_detail`, `check_freshness`, `search_project`), so existing registrations keep working.
 
 ## GUI
 

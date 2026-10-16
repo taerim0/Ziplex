@@ -10,7 +10,7 @@ Directory-scoped detail lives in nested AGENTS.md files, auto-loaded when workin
 - `src/ziplex/file/AGENTS.md` — file collection, security scanning, dependency-graph API.
 - `src/ziplex/gui/AGENTS.md` — local GUI (Flask + pywebview backend, ES-module frontend).
 
-Packaging: a real installable package (`pyproject.toml`, src-layout — `src/ziplex/` is the actual `ziplex` package). Internal imports are package-relative; nothing under `src/ziplex/` imports a sibling module by bare name. `pip install -e .` registers three console scripts: `ziplex`, `ziplex-gui`, `ziplex-mcp`.
+Packaging: a real installable package (`pyproject.toml`, src-layout — `src/ziplex/` is the actual `ziplex` package). Internal imports are package-relative; nothing under `src/ziplex/` imports a sibling module by bare name. `pip install -e .` registers four console scripts: `ziplex`, `ziplex-gui`, `ziplex-mcp`, `ziplex-hook`.
 
 ## What this is
 
@@ -75,10 +75,10 @@ ziplex-hook                                      # the Claude Code PostToolUse h
 `impact` always exits 0. When a targeted run is unsafe (`run_all`: a build/config/lockfile changed, or a file was deleted) `--format paths` prints nothing -- so `pytest $(ziplex impact --format paths)` runs the whole suite -- and `--format commands` prints the whole-suite commands (`pytest`, `npx jest`, `go test ./...`); the reason goes to stderr. No affected tests also prints nothing to stdout, so a script that must tell "nothing to run" from "run everything" uses `--format json`. `index --check` is a staleness gate for a *persisted* index (e.g. restored from a CI cache); on a fresh checkout it always exits 1. The hook acts only inside a project that already has `.ziplex/index.db` (nearest ancestor of the edited file), refreshes just that file, and emits at most once per (session, file) per 10 minutes (`.ziplex/hook_state.json`) when the file has dependents or affected tests.
 (`<project_path>` is *any* target project being packed/inspected — `--include "src/**/*.py"` is that target project's own `src/`, unrelated to Ziplex's own.)
 
-MCP server (exposes an already-packed project's `aif.json`/`detail.json`, read-only):
+MCP server (v2 by default: five live-graph tools over the index; `--aif`/`--legacy-tools` serves the old ten aif.json tools -- see `src/ziplex/AGENTS.md`'s `mcp_server.py`):
 ```
-ziplex-mcp                                  # run directly, stdio transport
-claude mcp add ziplex -- ziplex-mcp         # register with Claude Code
+ziplex-mcp [--project PATH]                 # stdio transport, project defaults to cwd
+claude mcp add ziplex -- ziplex-mcp --project <abs path>
 ```
 
 Local GUI (browse an already-packed project, or pack one interactively — see `src/ziplex/gui/AGENTS.md`):

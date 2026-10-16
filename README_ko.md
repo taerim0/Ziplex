@@ -216,31 +216,23 @@ ziplex install claude --hook                  # Claude Code에 MCP 서버 + 편�
 
 ## MCP 서버
 
-Claude Code, Cursor 등 MCP 클라이언트에서 이미 패킹된 프로젝트를 바로 질의할 수 있습니다 — `aif.json`을 프롬프트에 복사-붙여넣기할 필요 없이요.
+`ziplex-mcp`는 Claude Code, Cursor 등 MCP 클라이언트에 위 명령들과 같은 실시간 그래프를 제공합니다. pack이 필요 없고, 호출마다 디스크 기준으로 갱신됩니다.
 
 ```bash
-ziplex-mcp                                                     # 직접 실행 (stdio 트랜스포트)
-ziplex-mcp --aif .ziplex/Ziplex.json --project .                # 기본값을 지정해서 호출마다 안 넘겨도 되게
-claude mcp add ziplex -- ziplex-mcp --aif .ziplex/Ziplex.json --project .   # Claude Code에 등록
+claude mcp add ziplex -- ziplex-mcp --project /abs/path/to/project   # 또는: ziplex install claude
 ```
 
-`--aif`/`--project`는 이 서버의 *기본* `aif_path`/`project_path`를 지정합니다 — 아래 모든 툴은 여전히 명시적으로 넘기는 값을 우선하지만, 세션 내내 하나의 패킹된 프로젝트만 다룬다면 매 호출마다 같은 경로를 반복 안 넘겨도 됩니다. 두 플래그 다 생략해도 무방합니다 — 그러면 예전처럼 매 호출마다 경로가 필요할 뿐입니다.
-
-| 툴 | 하는 일 |
+| 도구 | 답하는 질문 |
 |---|---|
-| `get_overview(aif_path?, project_path?)` | 프로젝트 가이드, 코딩 룰, 토큰 통계 — 가장 먼저 호출하면 됩니다 |
-| `list_files(aif_path?, project_path?, folder?, confidence_below?)` | 모든 파일을 요약 + 신뢰도 점수와 함께 매핑 — 폴더 하나로 좁히거나 신뢰도 기준치로 필터링 가능 |
-| `get_folders(aif_path?)` | 모든 폴더를 그 역할을 설명하는 한 문장과 함께 매핑 |
-| `get_relationships(aif_path?, files?)` | 전체 의존성 그래프를 한 번에 — 모든 파일의 내부/외부 엣지 — 또는 지정한 파일들만 |
-| `get_dependents(aif_path?, file)` | `file`을 직접 의존하는 파일들 |
-| `get_blast_radius(aif_path?, file)` | `file`이 바뀌면 직간접적으로 영향받는 모든 파일 |
-| `get_detail(aif_path?, file, start_line?, end_line?)` | 파일의 압축 소스, 전체 또는 줄 범위로 |
-| `check_freshness(project_path?, aif_path?)` | 패킹 결과가 디스크의 실제 파일과 맞는지 해시로 확인 — LLM 호출 없음 |
-| `search_project(project_path?, pattern, ...)` | 프로젝트 원본 파일 전체에서 정규식 검색 |
+| `graph_overview(scope?)` | 허브 파일, import 순환, 폴더 간 의존 방향, 해석되지 않은 상대 import -- 처음 보는 저장소라면 여기서 시작 |
+| `who_depends_on(files, depth?, include_mentions?)` | 이 파일을 import하는 곳(import 라인 포함), 또는 hop별로 전이적으로 영향받는 전체 |
+| `dependencies_of(files, external?)` | 이 파일이 import하는 것을 실제 파일로 해석한 결과 (alias, workspace, Python 패키지, Go 패키지) |
+| `impacted_tests(files?, diff?)` | 변경이나 git diff로 영향받는 테스트, import 경로, 바로 실행할 명령 |
+| `dependency_path(source, target)` | 두 파일 사이의 최단 import 경로 |
 
-의도적으로 읽기 전용입니다 — 모든 툴은 사람이 `correct_aif()`로 이미 검토한 `aif.json`/`detail.json`을 그대로 서빙할 뿐, 어떤 툴도 프로젝트를 알아서 다시 패킹하거나 보정하지 않습니다. 그건 Ziplex의 핵심인 human-in-the-loop 단계를 건너뛰는 거니까요. `get_dependents`/`get_blast_radius`도 `pack`이 만드는 것과 같은, 사람이 보정한 `relationships` 그래프 위에서 동작합니다 — 방금 추출한 검토 안 된 그래프가 아니라요.
+응답은 압축된 텍스트(수십~수백 토큰)이고, 도구 5개의 정의는 세션당 약 720토큰입니다. 경로는 저장소 기준 상대 경로, 절대 경로, 또는 겹치지 않는 끝부분(`query_service.py`)으로 넘기면 됩니다.
 
-`aif.json`/`detail.json`은 마지막 `pack` 실행 시점의 스냅샷이라, 활발히 바뀌는 프로젝트에서는 실제 상태와 어긋날 수 있습니다. `search_project`(항상 파일을 직접 읽음)를 제외한 나머지 툴은 전부 이 스냅샷을 그대로 믿습니다 — 오래됐을까 걱정되면 `check_freshness`부터 호출하거나, `get_overview`/`list_files`에 `project_path`를 함께 넘겨서 알아서 확인하게 하세요: 스냅샷이 오래됐으면 결과에 `_stale` 필드가 추가로 붙어서 옵니다. 뭘 고쳐주진 않지만, 나머지를 믿기 전에 다시 `pack`할 필요가 있는지는 알려줍니다.
+**레거시 모드.** `ziplex-mcp --aif <name>.json [--project .]`(또는 `--legacy-tools`)로 실행하면 pack한 `aif.json`을 대상으로 하는 예전 도구 10개(`get_overview`, `list_files`, `get_folders`, `get_relationships`, `get_graph_summary`, `get_dependents`, `get_blast_radius`, `get_detail`, `check_freshness`, `search_project`)를 제공합니다. 기존 등록은 그대로 동작합니다.
 
 ## GUI
 
