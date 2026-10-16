@@ -9,7 +9,7 @@ import json
 import pytest
 
 from ziplex import checkpoint
-from ziplex import llm
+from ziplex.enrich import llm
 from ziplex import packager
 from ziplex import query_service
 from ziplex.confidence import REVIEW_THRESHOLD

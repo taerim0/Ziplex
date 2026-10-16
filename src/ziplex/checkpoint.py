@@ -19,7 +19,7 @@ from pathlib import Path
 from .file.textutil import relative_key as _rel_key
 from .paths import REPO_ROOT
 from .progress_i18n import pick
-from . import llm
+from .enrich import llm
 
 # Per-user, next to settings.json -- always writable. The old location,
 # REPO_ROOT / "checkpoint", sits under the *install* directory: for a

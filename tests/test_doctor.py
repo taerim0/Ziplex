@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 from ziplex import checkpoint
 from ziplex import doctor
-from ziplex import llm
+from ziplex.enrich import llm
 from ziplex import settings as app_settings
 
 

@@ -15,9 +15,9 @@ from .file.scanner import scan_files
 from .file.media import classify_media_file
 from .file.textutil import relative_key as _rel_key, normalize_path
 from .tokenizer import analyze_tokens_with_compression
-from .llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider, get_usage
+from .enrich.llm import LANGUAGE_NAMES, DEFAULT_PROVIDER_NAME, PROVIDERS, GeminiProvider, OpenAIProvider, ClaudeProvider, get_usage
 from .packager import pack, save_aif, resolve_output_path
-from . import summarizer
+from .enrich import summarizer
 from .corrector import correct_aif
 from .edits import finalize_aif, set_file_summary, set_folder_summary
 from .file.relationship import (

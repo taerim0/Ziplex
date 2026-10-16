@@ -17,9 +17,9 @@ import struct
 from pathlib import Path
 
 from ziplex import checkpoint
-from ziplex import llm
+from ziplex.enrich import llm
 from ziplex import packager
-from ziplex import summarizer
+from ziplex.enrich import summarizer
 
 
 def _write(path, content):

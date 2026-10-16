@@ -329,7 +329,7 @@ def test_a_checkpoint_left_in_the_legacy_folder_is_still_resumed_listed_and_clea
 def test_handle_llm_failure_retry_closes_the_circuit_breaker(monkeypatch):
     # With the breaker still open, "retry" failed instantly without
     # sending anything -- the user was asked the same question forever.
-    from ziplex import llm
+    from ziplex.enrich import llm
     for _ in range(llm.CIRCUIT_BREAKER_THRESHOLD):
         llm._circuit.record(exhausted=True)
     assert llm._circuit.allow_request() is False

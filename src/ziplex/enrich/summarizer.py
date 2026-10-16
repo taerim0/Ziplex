@@ -23,15 +23,15 @@ subject, not a concern of the LLM-call batching this module actually owns.
 """
 
 import contextvars
-from .core.graph import code_dependencies_of
+from ..core.graph import code_dependencies_of
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import json
 
-from .file.textutil import relative_key as _rel_key
+from ..file.textutil import relative_key as _rel_key
 from . import llm
 from .llm import analyze_file_summary, analyze_text_summary, analyze_batch_summaries
-from .progress_i18n import pick
+from ..progress_i18n import pick
 
 # Concurrency used when requesting per-file summaries in parallel.
 # Kept conservative with LLM API rate limits in mind — adjust if needed.

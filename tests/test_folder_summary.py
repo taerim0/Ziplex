@@ -5,7 +5,8 @@ llm.MockProvider).
 
 import json
 
-from ziplex import folder_summary, llm
+from ziplex import folder_summary
+from ziplex.enrich import llm
 
 
 def test_group_files_by_folder_groups_by_direct_parent_only():

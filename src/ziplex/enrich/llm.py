@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -6,11 +8,21 @@ import threading
 import time
 from typing import Protocol
 
-import requests
-from dotenv import load_dotenv
+# requests/python-dotenv are the optional `ziplex[llm]` extra: the module
+# stays importable without them (MockProvider, --no-llm), and a real
+# provider call explains what to install (_post()).
+try:
+    import requests
+except ImportError:
+    requests = None
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args, **kwargs):
+        return False
 
-from . import settings as app_settings
-from .progress_i18n import pick
+from .. import settings as app_settings
+from ..progress_i18n import pick
 
 load_dotenv()
 
@@ -54,7 +66,8 @@ def request_timeout(prompt: str) -> float:
 # keeps the pooling benefit within a thread while giving each thread its own
 # jar to race with only itself.
 _thread_local = threading.local()
-_ORIGINAL_REQUESTS_POST = requests.post
+_ORIGINAL_REQUESTS_POST = requests.post if requests is not None else None
+MISSING_EXTRA_MESSAGE = 'LLM summaries need the optional dependencies: pip install "ziplex[llm]"'
 
 
 def _get_session() -> requests.Session:
@@ -70,6 +83,8 @@ def _post(url: str, **kwargs) -> requests.Response:
     connection-pooling session. Honors monkeypatched requests.post (e.g. in
     test suites).
     """
+    if requests is None:
+        raise RuntimeError(MISSING_EXTRA_MESSAGE)
     if requests.post is not _ORIGINAL_REQUESTS_POST:
         return requests.post(url, **kwargs)
     return _get_session().post(url, **kwargs)

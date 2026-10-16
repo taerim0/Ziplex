@@ -1,5 +1,5 @@
 from ziplex.confidence import estimate_confidence, confidence_level, triage, project_confidence_summary, REVIEW_THRESHOLD
-from ziplex.summarizer import SUMMARY_FAILED_PLACEHOLDERS
+from ziplex.enrich.summarizer import SUMMARY_FAILED_PLACEHOLDERS
 
 
 def test_estimate_confidence_high_when_summary_uses_signature_words():

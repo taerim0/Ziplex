@@ -20,7 +20,7 @@ difference. It's a triage signal, not a substitute for reading the file.
 
 import re
 
-from .summarizer import is_summary_failed_placeholder
+from .enrich.summarizer import is_summary_failed_placeholder
 
 # Below this, a file's summary gets flagged for review in correct_aif();
 # at or above, it's auto-kept. Matches confidence_level()'s low/medium

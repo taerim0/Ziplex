@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import __version__
 from . import checkpoint as _checkpoint
-from . import llm
+from .enrich import llm
 from . import settings as app_settings
 from .paths import REPO_ROOT
 from .toml_compat import tomllib

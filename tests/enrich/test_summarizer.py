@@ -5,7 +5,7 @@ llm.MockProvider).
 
 import json
 
-from ziplex import summarizer
+from ziplex.enrich import summarizer
 
 
 def test_chunked_splits_into_groups_of_size():
@@ -259,7 +259,7 @@ def test_generate_structural_summaries_returns_one_summary_per_pending_file(tmp_
 
 def _exhausted_batch(monkeypatch):
     """analyze_batch_summaries() giving up with retries exhausted."""
-    from ziplex import llm
+    from ziplex.enrich import llm
 
     def _analyze(items, lang="en"):
         llm._call_state.exhausted = True
@@ -364,7 +364,8 @@ def test_summary_workers_inherit_the_progress_language(tmp_path, monkeypatch):
     # ThreadPoolExecutor doesn't copy contextvars on submit; without an
     # explicit copy, worker progress lines fell back to the default language.
     import contextvars
-    from ziplex import progress_i18n, summarizer as summ
+    from ziplex import progress_i18n
+    from ziplex.enrich import summarizer as summ
 
     seen = []
 

@@ -15,7 +15,7 @@ from .core.text_references import merge_text_references
 from .core.graph import GraphBuilder, code_dependencies_of
 from .tokenizer import analyze_tokens_with_payload, count_tokens_for_model
 from .aif_io import detach_weak_edges, dumps_aif, write_aif, WEAK_KEY
-from .llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES, reset_usage, get_usage
+from .enrich.llm import analyze_rules, analyze_prompt, LANGUAGE_NAMES, reset_usage, get_usage
 from .freshness import build_manifest, load_previous_summaries
 from .confidence import estimate_confidence, REVIEW_THRESHOLD
 from .config import collection_kwargs, load_config
@@ -24,7 +24,7 @@ from .paths import REPO_ROOT
 from . import __version__
 from .progress_i18n import pick, set_current as _set_progress_lang
 from . import checkpoint as ckpt
-from . import summarizer
+from .enrich import summarizer
 from . import folder_summary
 
 DEFAULT_OUTPUT_SUBDIR = ".ziplex"

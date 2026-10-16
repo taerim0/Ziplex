@@ -5,7 +5,7 @@ import pytest
 
 from ziplex import checkpoint as app_checkpoint
 from ziplex import cli
-from ziplex import llm
+from ziplex.enrich import llm
 from ziplex import settings as app_settings
 from ziplex.cli import _split_patterns, _check_max_tokens, _mask_secret, _require_dir_or_exit, _require_file_or_exit
 from ziplex.freshness import build_manifest
@@ -393,7 +393,7 @@ def test_settings_get_hints_use_llm_py_own_default_constants(tmp_path, monkeypat
     # code-review finding: the unset-field hints must read llm.py's real
     # DEFAULT_MODEL/DEFAULT_BASE_URL/DEFAULT_PROVIDER_NAME, not a
     # hand-typed copy that can silently go stale when a default changes.
-    from ziplex import llm
+    from ziplex.enrich import llm
 
     monkeypatch.setattr(app_settings, "SETTINGS_PATH", tmp_path / "settings.json")
     monkeypatch.setattr(sys, "argv", ["cli.py", "settings"])
@@ -544,7 +544,7 @@ def test_checkpoint_clean_without_path_or_all_errors_out(tmp_path, monkeypatch, 
 
 
 def test_doctor_prints_python_and_provider_status(monkeypatch, capsys):
-    from ziplex import llm
+    from ziplex.enrich import llm
 
     monkeypatch.setattr(llm, "describe_active_provider", lambda: {
         "name": "gemini", "model": "gemini-flash-latest", "api_key_present": True,
@@ -562,7 +562,7 @@ def test_doctor_prints_python_and_provider_status(monkeypatch, capsys):
 
 
 def test_doctor_with_project_path_reports_missing_directory(tmp_path, monkeypatch, capsys):
-    from ziplex import llm
+    from ziplex.enrich import llm
 
     monkeypatch.setattr(llm, "describe_active_provider", lambda: {
         "name": "gemini", "model": "gemini-flash-latest", "api_key_present": False,

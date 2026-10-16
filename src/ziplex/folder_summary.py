@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Callable
 
 from .file.textutil import parent_folder
-from .llm import analyze_folder_summaries, format_folder_block, FOLDER_PROMPT_OVERHEAD_CHARS
+from .enrich.llm import analyze_folder_summaries, format_folder_block, FOLDER_PROMPT_OVERHEAD_CHARS
 
 # One analyze_folder_summaries() call covers at most this many folders and
 # this many prompt chars (template included). A single uncapped call was
