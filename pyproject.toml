@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ziplex"
 dynamic = ["version"]
-description = "Turn any local project into a token-reduced context file (aif.json) an AI can load instantly, instead of reading through hundreds of raw files."
+description = "Which tests does this change affect? A zero-config, incremental dependency graph (Python/TS/JS/Go) for CI test selection, editor hooks and coding agents (MCP)."
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "rim" }]

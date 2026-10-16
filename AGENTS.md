@@ -14,7 +14,9 @@ Packaging: a real installable package (`pyproject.toml`, src-layout — `src/zip
 
 ## What this is
 
-Local project → `aif.json`: a token-reduced context format an AI reads instead of raw files. Pipeline: Tree-sitter compression/extraction → Gemini summarization → optional human correction. `aif.json` carries only summaries + relationships, never full per-file code — shape at the bottom of this file.
+Two products sharing one parser/resolver:
+- **The graph (the lead, since 0.6)** — `src/ziplex/core/`: a zero-config, incremental dependency-graph index (`<project>/.ziplex/index.db`) answering "which tests does this change affect / what depends on X / how does A reach B", via the CLI (`index`/`deps`/`impact`/`path`), MCP v2 (`ziplex-mcp`), the editor hook (`ziplex-hook`) and a CI template (`docs/ci/impacted-tests.yml`). No LLM. Evidence for this direction: `docs/REVIEW-2026-10-14.md`, `docs/EXPERIMENTS.md` #10-#16.
+- **The pack** — local project → `aif.json`: Tree-sitter compression/extraction → optional LLM summarization → optional human correction. `aif.json` carries only summaries + relationships, never full per-file code — shape at the bottom of this file. Served by legacy MCP (`ziplex-mcp --aif`), the GUI and skill export.
 
 ## Commands
 

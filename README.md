@@ -4,24 +4,41 @@
 
 **English** | [한국어](README_ko.md)
 
-**Turn any local project into a context file an AI can load instantly — instead of reading through hundreds of raw files.**
+**Which tests does this change affect, and what depends on this file? Ziplex answers from a zero-config dependency graph — for your CI, your editor hook and your coding agent.**
 
-Ziplex walks a project, compresses and structures it with Tree-sitter, summarizes it with an LLM (optional — see [Quick start](#quick-start) for the no-API-key path), and lets a human correct the result before it ships. The output is `aif.json`: a small, structured "AI context format" file.
+Ziplex parses a project with Tree-sitter and resolves imports the way the toolchain does — relative/index files, tsconfig `paths` aliases, pnpm/npm workspace packages and their `exports`, Python packages, re-exports, `conftest.py` and package `__init__.py` files, Go packages — into one graph across languages. It keeps that graph in an incremental local index (no LLM, no network, no API key) and answers from it in milliseconds.
 
-> ⚠️ Under active development. Interfaces and output format may still change.
+> ⚠️ Under active development. Interfaces may still change.
 
 ---
 
 ## Where it helps
 
-- **Giving an AI assistant your project's shape once, not every session** — paste `aif.json` into a chat, point an MCP client at it, or open it in the [GUI](#gui), instead of re-explaining file layout and conventions every time.
-- **Multi-language projects** — a TypeScript frontend, a Python or Java backend, config and docs in between: one pack covers all of it, with cross-file relationships intact.
-- **Game modding and asset projects that aren't git repos** — a Godot scene referencing a GDScript/Lua script by path, a Lua mod with loose asset files: Ziplex tracks those relationships even for files with no Tree-sitter grammar of their own (see [Features](#features)).
-- **Onboarding an AI onto a codebase you didn't write** — summaries are human-reviewed before they ship, so you're not trusting a raw LLM guess about unfamiliar code.
-- **Keeping a CI context budget honest** — `--max-tokens` fails a build if the packed payload grows past what a target model can hold.
-- **Sharing one AI context across a team** — `aif.json`/`detail.json` are just files; commit them like any other generated artifact (see [Team use](#team-use)).
+- **Running only the tests a change can affect** — locally (`pytest $(ziplex impact --format paths)`) or on every pull request ([CI template](docs/ci/impacted-tests.yml)). Measured on 99 real commits of repos Ziplex was never tuned on: recall 0.976, or 0.988 without the imports pytest itself makes ([eval](eval/README.md)). It falls back to the full suite whenever a targeted run isn't safe.
+- **Giving a coding agent the impact answers grep can't produce in one step** — `ziplex-mcp` answers "which tests cover this change", "what is transitively affected", "how does A reach B". On held-out repos, Claude Code with it spent 57% less and finished 55% faster on those questions, at the same accuracy ([EXPERIMENTS #15](docs/EXPERIMENTS.md)).
+- **Polyglot and monorepo codebases** — a TypeScript frontend, a Python backend and shared workspace packages resolve into one graph, with no per-language tool to configure.
+- **An editor hook** — after Claude Code edits a file, one line tells it how many files depend on it and which tests to run.
+
+Honest scope: for a direct "who imports X" question a single grep is already enough (the MCP costs ~12% more there), and in small, local bug fixes agents gained nothing measurable from it ([EXPERIMENTS #16](docs/EXPERIMENTS.md)). The value is in transitive impact and test selection.
 
 ## Quick start
+
+```bash
+pip install ziplex                      # or: pipx install ziplex
+cd your-project
+ziplex impact                           # tests affected by your uncommitted changes
+pytest $(ziplex impact --format paths)  # run just those (prints nothing -> full suite when unsure)
+ziplex deps src/app.py --in --depth 2   # who depends on a file, by hop
+ziplex install claude --hook            # register the MCP server + post-edit hook with Claude Code
+```
+
+The first command builds `.ziplex/index.db` (gitignored automatically; django's 5,700 files take ~10s, later updates under a second). More in [Graph index](#graph-index-deps-impacted-tests-editor-hook), [MCP server](#mcp-server) and the [CI template](docs/ci/impacted-tests.yml).
+
+## Packing a project into aif.json (optional)
+
+Ziplex can also pack a project into `aif.json`: per-file summaries (structural, or written by an LLM you choose), inferred coding rules, a project guide and the relationship graph, reviewable in a GUI before it's saved. Useful for pasting a project's shape into a chat with no tool access; for agents that have tools, the graph commands above are what measurably helps ([EXPERIMENTS](docs/EXPERIMENTS.md) #1-#9).
+
+### Pack quick start
 
 ```bash
 pip install ziplex        # or: pipx install ziplex (isolated env, PATH handled for you automatically)
@@ -183,7 +200,7 @@ A pack produces three files, each read differently:
 - **Human-in-the-loop, but it scales** — every LLM output (summaries, rules, project guide, dependency tree) is reviewable and editable, or skippable entirely with `--auto-correct`. Only low-confidence summaries get flagged for review — review time doesn't grow with project size.
 - **Three ways to consume the result** — an [MCP server](#mcp-server) for Claude Code/Cursor/etc., a local [GUI](#gui) for packing and browsing without a terminal, or a [Claude Agent Skill export](#claude-agent-skill-export) that needs no server at all.
 - **Cheap to keep current** — incremental re-pack only re-summarizes files that actually changed (content hash), retries with backoff on LLM flakiness, and checkpoints a failed run instead of restarting from scratch.
-- **Bring your own LLM** — Gemini by default, or switch to any OpenAI-compatible endpoint (real OpenAI, Ollama, LM Studio, vLLM, OpenRouter, ...) or Claude directly, via `LLM_PROVIDER` or the GUI's Options page — including a fully local setup with no API key or network call at all (see [Other AI providers](#quick-start)).
+- **Bring your own LLM** — Gemini by default, or switch to any OpenAI-compatible endpoint (real OpenAI, Ollama, LM Studio, vLLM, OpenRouter, ...) or Claude directly, via `LLM_PROVIDER` or the GUI's Options page — including a fully local setup with no API key or network call at all (see [Other AI providers](#pack-quick-start)).
 - **No API key required, if you want** — `pack --no-llm` skips every LLM call and still produces structural summaries, dependency graphs, and tech-stack detection. Scope any pack with `.ziplex.json`/`--include`/`--ignore`, and guard CI budgets with `--max-tokens`.
 
 ## Testing
@@ -275,7 +292,7 @@ The same overview/files/relationships/detail/search views the MCP server exposes
 
 ![Options page: output folder, AI provider](docs/images/en/gui-options.png)
 
-The default output folder new packs save to, and which AI provider every pack uses (Gemini / OpenAI-compatible / Claude — see [Other AI providers](#quick-start)), with one-click presets for Ollama's and LM Studio's default local ports so a fully local setup needs no typed URL. Display language and light/dark theme live in the topbar itself instead (two small toggles next to the nav links) — a display-only chrome preference, not something worth a trip to a separate page for.
+The default output folder new packs save to, and which AI provider every pack uses (Gemini / OpenAI-compatible / Claude — see [Other AI providers](#pack-quick-start)), with one-click presets for Ollama's and LM Studio's default local ports so a fully local setup needs no typed URL. Display language and light/dark theme live in the topbar itself instead (two small toggles next to the nav links) — a display-only chrome preference, not something worth a trip to a separate page for.
 
 Binds to `127.0.0.1` only — no `--host` flag, no way to expose it to a network.
 
@@ -302,7 +319,7 @@ Ziplex packs one person's local snapshot — there's no shared server or live sy
 
 ## Tech stack
 
-Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby/Bash grammars, GDScript via `tree-sitter-language-pack`) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · plain REST via `requests` against Gemini (`gemini-flash-latest` by default, overridable via `GEMINI_MODEL`), any OpenAI-compatible endpoint (real OpenAI, Ollama, LM Studio, vLLM, OpenRouter, ...), or Claude — see [Other AI providers](#quick-start) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
+Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby/Bash grammars, GDScript via `tree-sitter-language-pack`) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · plain REST via `requests` against Gemini (`gemini-flash-latest` by default, overridable via `GEMINI_MODEL`), any OpenAI-compatible endpoint (real OpenAI, Ollama, LM Studio, vLLM, OpenRouter, ...), or Claude — see [Other AI providers](#pack-quick-start) · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
 
 ## License
 

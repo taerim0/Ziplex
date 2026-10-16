@@ -1,0 +1,68 @@
+# Run only the tests a pull request can affect (Python projects; the same
+# pattern works for jest/vitest/go -- see `ziplex impact --format commands`).
+#
+# `ziplex impact` builds a dependency-graph index of the checkout (no LLM, no
+# network, no API key) and follows reverse imports -- including tsconfig
+# aliases, workspace packages, Python packages/re-exports, conftest.py and
+# package __init__.py files -- from the files this PR changed to the test
+# files that load them. Measured on 99 real commits of held-out repos: recall
+# 0.976 (0.988 excluding imports pytest itself makes); see Ziplex's
+# eval/README.md. It is conservative on purpose: it falls back to the full
+# suite when a targeted run isn't safe (a build/config/lockfile changed, or a
+# file was deleted), and tests reached only through a function-local import
+# are included too.
+#
+# Keep running the full suite somewhere (on main, nightly, or in a merge
+# queue): dynamic imports (importlib, getattr-based plugin registries) are
+# invisible to any static graph.
+#
+# Copy this file to .github/workflows/ in the target project and adjust the
+# install step.
+
+name: Impacted tests
+
+on:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the diff needs the base branch
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -e . pytest ziplex   # adjust to the project's own dev install
+
+      - name: Select tests
+        id: select
+        run: |
+          ziplex impact --diff "origin/${{ github.base_ref }}...HEAD" --format json > impact.json
+          python - <<'EOF'
+          import json, os
+          result = json.load(open("impact.json"))
+          tests = [t["file"] for t in result["tests"]]
+          if result["run_all"]:
+              mode, reason = "all", "; ".join(result["run_all"])
+          elif tests:
+              mode, reason = "some", f"{len(tests)} affected test file(s)"
+          else:
+              mode, reason = "none", "no test reaches the changed files"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"mode={mode}\n")
+              out.write(f"tests={' '.join(tests)}\n")
+          print(f"{mode}: {reason}")
+          EOF
+
+      - name: Run affected tests
+        if: steps.select.outputs.mode == 'some'
+        run: pytest ${{ steps.select.outputs.tests }}
+
+      - name: Run the full suite (targeted run not safe)
+        if: steps.select.outputs.mode == 'all'
+        run: pytest

@@ -4,24 +4,41 @@
 
 [English](README.md) | **한국어**
 
-**로컬 프로젝트를 AI가 곧바로 읽을 수 있는 컨텍스트 파일 하나로 압축합니다.** 수백 개 파일을 일일이 넘겨줄 필요가 없습니다.
+**이 변경이 어떤 테스트에 영향을 주는지, 이 파일에 무엇이 의존하는지. Ziplex는 설정 없이 만드는 의존성 그래프로 답합니다. CI, 에디터 훅, 코딩 에이전트 어디서든 쓸 수 있습니다.**
 
-Ziplex는 프로젝트 전체를 훑으면서 Tree-sitter로 압축·구조화하고, LLM으로 요약을 붙인 다음(선택 사항 — API 키 없이 쓰는 방법은 [빠른 시작](#빠른-시작) 참고), 사람이 한 번 검토하고 나서야 결과물을 내보냅니다. 그 결과물이 `aif.json`입니다 — 작고 구조화된 "AI 컨텍스트 포맷" 파일입니다.
+Ziplex는 Tree-sitter로 프로젝트를 파싱하고, import를 툴체인과 같은 방식으로 해석해 여러 언어를 아우르는 그래프 하나로 만듭니다. 상대 경로와 index 파일, tsconfig `paths` alias, pnpm/npm workspace 패키지와 `exports`, Python 패키지와 re-export, `conftest.py`, 패키지 `__init__.py`, Go 패키지까지 해석합니다. 이 그래프는 로컬 증분 인덱스에 저장되고(LLM, 네트워크, API 키 모두 필요 없음), 질의에는 밀리초 단위로 답합니다.
 
-> ⚠️ 활발히 개발 중입니다. 인터페이스와 출력 포맷은 아직 바뀔 수 있습니다.
+> ⚠️ 활발히 개발 중입니다. 인터페이스가 바뀔 수 있습니다.
 
 ---
 
 ## 이럴 때 도움이 됩니다
 
-- **AI 어시스턴트에게 프로젝트 구조를 매번 다시 설명하지 않아도 됨** — `aif.json`을 채팅에 붙여넣거나, MCP 클라이언트로 열거나, [GUI](#gui)에서 열면 됩니다. 세션마다 파일 구조와 컨벤션을 처음부터 다시 설명할 필요가 없습니다.
-- **여러 언어가 섞인 프로젝트** — TypeScript 프론트엔드, Python/Java 백엔드, 그 사이의 설정 파일과 문서까지 — 한 번 패킹으로 파일 간 관계까지 그대로 담깁니다.
-- **git 저장소가 아닌 게임 모드/에셋 프로젝트** — Godot 씬이 경로로 GDScript/Lua 스크립트를 참조하거나, Lua 모드가 느슨한 에셋 파일들로 이루어진 경우에도, Tree-sitter 문법이 없는 파일끼리의 관계까지 잡아냅니다 (자세한 내용은 [주요 기능](#주요-기능) 참고).
-- **직접 작성하지 않은 코드베이스를 AI에게 맡길 때** — 요약은 저장되기 전에 사람이 검토하므로, 낯선 코드에 대한 LLM의 날것의 추측을 그대로 믿을 필요가 없습니다.
-- **CI에서 컨텍스트 예산을 지켜야 할 때** — `--max-tokens`로 패킹 결과가 목표 모델이 감당할 수 있는 토큰 수를 넘으면 빌드를 실패시킵니다.
-- **팀이 하나의 AI 컨텍스트를 공유할 때** — `aif.json`/`detail.json`은 그냥 파일이라, 다른 생성 산출물처럼 커밋하면 됩니다 (아래 [팀에서 사용하기](#팀에서-사용하기) 참고).
+- **변경이 영향을 줄 수 있는 테스트만 실행할 때**: 로컬에서는 `pytest $(ziplex impact --format paths)`로, PR마다는 [CI 템플릿](docs/ci/impacted-tests.yml)으로 실행합니다. Ziplex 튜닝에 한 번도 쓰지 않은 저장소의 실제 커밋 99개에서 측정한 recall은 0.976이고, pytest 자체가 하는 import를 빼면 0.988입니다([평가](eval/README.md)). 선별 실행이 안전하지 않으면 전체 스위트로 돌아갑니다.
+- **grep 한 번으로는 못 하는 영향 분석을 코딩 에이전트에게 맡길 때**: `ziplex-mcp`는 "이 변경을 커버하는 테스트", "전이적으로 영향받는 파일", "A가 B에 어떻게 닿는가"에 답합니다. held-out 저장소에서 이 질문들을 풀 때 Claude Code는 같은 정확도로 비용을 57% 덜 쓰고 55% 빨리 끝냈습니다([EXPERIMENTS #15](docs/EXPERIMENTS_ko.md)).
+- **다국어 프로젝트·모노레포**: TypeScript 프론트엔드, Python 백엔드, 공유 workspace 패키지가 언어별 도구 설정 없이 그래프 하나로 해석됩니다.
+- **에디터 훅**: Claude Code가 파일을 편집하면 그 파일에 의존하는 파일 수와 돌려야 할 테스트를 한 줄로 알려 줍니다.
+
+적용 범위도 솔직히 적어 둡니다. "누가 X를 import하나" 같은 직접 질문은 grep 한 번으로 충분하고, 이때는 MCP가 오히려 약 12% 더 비쌉니다. 작고 국소적인 버그 수정에서는 에이전트가 이 도구로 얻은 효과가 측정되지 않았습니다([EXPERIMENTS #16](docs/EXPERIMENTS_ko.md)). 가치는 전이적 영향 분석과 테스트 선택에 있습니다.
 
 ## 빠른 시작
+
+```bash
+pip install ziplex                      # 또는: pipx install ziplex
+cd your-project
+ziplex impact                           # 커밋하지 않은 변경이 영향을 주는 테스트
+pytest $(ziplex impact --format paths)  # 그 테스트만 실행 (확실하지 않을 때는 아무것도 출력하지 않아 전체 실행)
+ziplex deps src/app.py --in --depth 2   # 이 파일에 의존하는 곳을 hop 단위로
+ziplex install claude --hook            # Claude Code에 MCP 서버와 편집 후 훅 등록
+```
+
+첫 명령이 `.ziplex/index.db`를 만듭니다. 이 파일은 자동으로 gitignore 처리됩니다. django(파일 5,700개)는 처음 약 10초가 걸리고, 이후 갱신은 1초 이내입니다. 자세한 내용은 아래 그래프 인덱스, MCP 서버 절과 [CI 템플릿](docs/ci/impacted-tests.yml)을 참고하세요.
+
+## 프로젝트를 aif.json으로 패킹하기 (선택)
+
+Ziplex는 프로젝트를 `aif.json` 하나로 패킹할 수도 있습니다. 파일별 요약(구조 기반이거나, 직접 고른 LLM이 작성), 추론한 코딩 규칙, 프로젝트 가이드, 의존 관계 그래프가 들어가고, 저장하기 전에 GUI에서 검토할 수 있습니다. 도구를 쓸 수 없는 채팅에 프로젝트 구조를 붙여 넣을 때 유용합니다. 도구를 쓰는 에이전트라면 측정상 도움이 되는 쪽은 위의 그래프 명령입니다([EXPERIMENTS](docs/EXPERIMENTS_ko.md) #1-#9).
+
+### 패킹 빠른 시작
 
 ```bash
 pip install ziplex        # 또는: pipx install ziplex (격리된 환경 + PATH 자동 처리)
@@ -182,7 +199,7 @@ pack 한 번에 파일 세 개가 나오고, 각각 읽히는 방식이 다릅�
 - **검토는 선택 사항, 규모에 안 밀림** — LLM 결과물(요약, 룰, 가이드, 의존성 트리)은 저장 전에 검토·수정할 수 있고, `--auto-correct`로 통째로 건너뛸 수도 있습니다. 신뢰도 낮은 요약만 검토 대상으로 표시되니, 프로젝트가 커져도 검토 시간이 그만큼 늘진 않습니다.
 - **결과물을 쓰는 세 가지 방법** — Claude Code/Cursor 등을 위한 [MCP 서버](#mcp-서버), 터미널 없이 패킹/탐색하는 로컬 [GUI](#gui), 서버 없이도 되는 [Claude Agent Skill 내보내기](#claude-agent-skill-내보내기).
 - **최신 상태 유지가 저렴함** — Incremental re-pack은 실제로 바뀐 파일만 다시 요약하고, LLM이 불안정하면 백오프 후 재시도하며, 실행이 실패해도 체크포인트로 이어서 진행합니다.
-- **원하는 LLM을 골라 쓸 수 있음** — 기본은 Gemini지만, `LLM_PROVIDER`나 GUI Options 페이지로 OpenAI 호환 엔드포인트(실제 OpenAI, Ollama, LM Studio, vLLM, OpenRouter 등)나 Claude로 바로 바꿀 수 있습니다 — API 키도 네트워크도 필요 없는 완전 로컬 구성까지 포함해서요(자세한 내용은 [다른 AI 프로바이더](#빠른-시작) 참고).
+- **원하는 LLM을 골라 쓸 수 있음** — 기본은 Gemini지만, `LLM_PROVIDER`나 GUI Options 페이지로 OpenAI 호환 엔드포인트(실제 OpenAI, Ollama, LM Studio, vLLM, OpenRouter 등)나 Claude로 바로 바꿀 수 있습니다 — API 키도 네트워크도 필요 없는 완전 로컬 구성까지 포함해서요(자세한 내용은 [다른 AI 프로바이더](#패킹-빠른-시작) 참고).
 - **원하면 API 키 없이도** — `pack --no-llm`은 LLM 호출 없이도 구조 요약, 의존성 그래프, 기술 스택 감지를 만들어냅니다. `.ziplex.json`/`--include`/`--ignore`로 범위를 좁히고, `--max-tokens`로 CI 예산을 가드할 수 있습니다.
 
 ## 테스트
@@ -274,7 +291,7 @@ MCP 서버가 노출하는 overview/files/relationships/detail/search 뷰를 MCP
 
 ![Options 페이지: 출력 폴더, AI 프로바이더](docs/images/gui-options.png)
 
-새로 패킹할 때 기본으로 저장되는 출력 폴더, 그리고 패킹 전체에 쓸 AI 프로바이더(Gemini / OpenAI 호환 / Claude — [다른 AI 프로바이더](#빠른-시작) 참고)를 고릅니다. Ollama와 LM Studio의 기본 로컬 포트를 한 번 클릭으로 채워주는 프리셋 버튼도 있어서, 완전 로컬 구성도 URL을 직접 타이핑할 필요가 없습니다. 화면 표시 언어와 다크/라이트 테마는 대신 상단바 자체에 있습니다(내비게이션 링크 옆 작은 토글 2개) — 화면 취향일 뿐이라 별도 페이지까지 갈 필요는 없다고 판단했습니다.
+새로 패킹할 때 기본으로 저장되는 출력 폴더, 그리고 패킹 전체에 쓸 AI 프로바이더(Gemini / OpenAI 호환 / Claude — [다른 AI 프로바이더](#패킹-빠른-시작) 참고)를 고릅니다. Ollama와 LM Studio의 기본 로컬 포트를 한 번 클릭으로 채워주는 프리셋 버튼도 있어서, 완전 로컬 구성도 URL을 직접 타이핑할 필요가 없습니다. 화면 표시 언어와 다크/라이트 테마는 대신 상단바 자체에 있습니다(내비게이션 링크 옆 작은 토글 2개) — 화면 취향일 뿐이라 별도 페이지까지 갈 필요는 없다고 판단했습니다.
 
 `127.0.0.1`에만 바인딩됩니다 — `--host` 옵션이 없고, 네트워크에 노출할 방법도 없습니다.
 
@@ -301,7 +318,7 @@ Ziplex는 한 사람의 로컬 스냅샷을 패킹합니다 — 공유 서버나
 
 ## 기술 스택
 
-Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby/Bash 문법, GDScript는 `tree-sitter-language-pack` 경유) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · `requests`를 통한 순수 REST 호출로 Gemini(기본값 `gemini-flash-latest`, `GEMINI_MODEL`로 재정의 가능), OpenAI 호환 엔드포인트(실제 OpenAI, Ollama, LM Studio, vLLM, OpenRouter 등), 또는 Claude 중 선택 — [다른 AI 프로바이더](#빠른-시작) 참고 · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
+Python 3.10+ · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) (Python/Java/TypeScript/JavaScript/Lua/GDScript/Go/C++/Rust/C#/PHP/Ruby/Bash 문법, GDScript는 `tree-sitter-language-pack` 경유) · [tiktoken](https://github.com/openai/tiktoken) · [ruamel.yaml](https://yaml.readthedocs.io/) · `requests`를 통한 순수 REST 호출로 Gemini(기본값 `gemini-flash-latest`, `GEMINI_MODEL`로 재정의 가능), OpenAI 호환 엔드포인트(실제 OpenAI, Ollama, LM Studio, vLLM, OpenRouter 등), 또는 Claude 중 선택 — [다른 AI 프로바이더](#패킹-빠른-시작) 참고 · [MCP](https://modelcontextprotocol.io/) · Flask · pywebview · `secretlint` · `pathspec`
 
 ## 라이선스
 
