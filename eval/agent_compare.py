@@ -188,7 +188,7 @@ def run(args) -> None:
                               text=True, encoding="utf-8", errors="replace", timeout=args.timeout)
         row = {"id": q["id"], "type": q["type"], "target": q["target"], "condition": condition, "rep": rep,
                "wall_s": round(time.time() - started, 1), **_parse_stream(proc.stdout.splitlines())}
-        if row["is_error"] and not row["turns"]:
+        if row["is_error"] and not row["answered"]:
             # Auth/API failure before any work: recording it as F1=0 would
             # poison the comparison, so stop and let the run be resumed.
             sys.exit(f"claude run failed before doing anything ({q['id']} {condition}): "
