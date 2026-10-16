@@ -174,7 +174,9 @@ def run(args) -> None:
         if (q["id"], condition, rep) in done:
             continue
         cmd = [
-            args.claude, "-p", PROMPT.format(question=q["question"]),
+            # The prompt goes on stdin: a multi-line argument is cut at the
+            # first newline by the Windows claude.cmd shim.
+            args.claude, "-p",
             "--output-format", "stream-json", "--verbose",
             "--model", args.model, "--restricted", "--tools", "Read,Grep,Glob",
             "--strict-mcp-config", "--no-session-persistence", "--max-budget-usd", str(args.max_budget),
@@ -182,8 +184,8 @@ def run(args) -> None:
         if condition == "C1":
             cmd += ["--mcp-config", str(out / "mcp.json"), "--allowedTools", "mcp__ziplex"]
         started = time.time()
-        proc = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=args.timeout)
+        proc = subprocess.run(cmd, cwd=repo, input=PROMPT.format(question=q["question"]), capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=args.timeout)
         row = {"id": q["id"], "type": q["type"], "target": q["target"], "condition": condition, "rep": rep,
                "wall_s": round(time.time() - started, 1), **_parse_stream(proc.stdout.splitlines())}
         if row["is_error"] and not row["turns"]:
