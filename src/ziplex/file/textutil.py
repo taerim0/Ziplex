@@ -1,4 +1,5 @@
 import contextvars
+import os
 import functools
 import threading
 
@@ -75,8 +76,10 @@ def relative_key(file_path: str, root) -> str:
     """
     # String fast path for the common case (an already-normalized path under
     # root); anything unusual falls through to pathlib's lexical semantics.
-    root_str = str(root).replace("\\", "/").rstrip("/")
-    path_str = str(file_path).replace("\\", "/")
+    # A backslash is a separator only where the OS says so (a legal filename
+    # character on POSIX).
+    root_str = str(root).replace(os.sep, "/").rstrip("/")
+    path_str = str(file_path).replace(os.sep, "/")
     if root_str and path_str.startswith(root_str + "/") and "/./" not in path_str and "//" not in path_str[len(root_str):]:
         return path_str[len(root_str) + 1:]
 
