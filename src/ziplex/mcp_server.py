@@ -223,7 +223,7 @@ def build_legacy_server() -> MCPServer:
 
 # ---- v2 mode (live graph index) -------------------------------------------
 
-INSTRUCTIONS_V2 = """Ziplex keeps a live import graph of this repo (relative/index files, tsconfig aliases, workspace packages, Python and Go packages resolved), refreshed on every call. For structural questions use it instead of grepping imports: who imports X / what breaks if X changes (who_depends_on), what X imports (dependencies_of), which tests cover a change (impacted_tests), how A reaches B (dependency_path), hubs, cycles and folder layering (graph_overview). Use Grep/Read for text search and reading code. After editing files, call impacted_tests before finishing."""
+INSTRUCTIONS_V2 = """Ziplex keeps a live, resolved import graph of this repo (relative/index files, tsconfig aliases, workspace packages, Python and Go packages, re-exports), refreshed on every call. Use it for questions grep can't answer in one step: what is transitively affected if X changes (who_depends_on with depth>1), which tests cover a change (impacted_tests), how A reaches B (dependency_path), what X imports once resolved (dependencies_of), hubs, cycles and folder layering (graph_overview). Its answers already include aliased, re-exported and package imports, so there is no need to re-grep them; only dynamic imports (importlib, getattr) are invisible to it. For plain text search use Grep. After editing files, call impacted_tests before finishing."""
 
 TOOL_DESCRIPTIONS_V2 = {
     "graph_overview": "Repo or folder (scope=\"src/api\") structure: file/test/edge counts, most-depended-on "
@@ -233,8 +233,9 @@ TOOL_DESCRIPTIONS_V2 = {
     "dependencies_of": "What the given files import: internal files with line numbers, prose mentions, "
     "and (external=true) third-party modules.",
     "impacted_tests": "Tests reached from changed files over reverse imports (plus conftest/same-package), "
-    "with the chain and a ready-to-run command. Pass files, or diff=worktree|staged|<git rev or range>; "
-    "no arguments = uncommitted worktree changes.",
+    "with the chain and a ready-to-run command; tests reached only via a function-local import are listed "
+    "separately as possible. Pass files, or diff=worktree|staged|<git rev or range>; no arguments = "
+    "uncommitted worktree changes.",
     "dependency_path": "Shortest import chain from source to target, with the import line of each hop.",
 }
 
